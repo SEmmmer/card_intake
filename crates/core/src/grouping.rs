@@ -52,6 +52,7 @@ pub fn group_by_date(files: &[MediaFile]) -> Vec<ShootGroup> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan::TimeSource;
     use std::path::PathBuf;
 
     fn file(at: &str, kind: MediaKind, size: u64) -> MediaFile {
@@ -59,6 +60,7 @@ mod tests {
             path: PathBuf::from("x"),
             size,
             captured: NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M").unwrap(),
+            time_source: TimeSource::Exif,
             kind,
         }
     }

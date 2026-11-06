@@ -9,4 +9,7 @@ tauri-build = { workspace = true }
 
 [dependencies]
 card_intake_core = { path = "../../crates/core" }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tauri = { workspace = true }

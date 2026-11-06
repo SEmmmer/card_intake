@@ -25,6 +25,8 @@
   --ok-soft: #ddf0e4;
   --warn: #9a5b06;
   --warn-soft: #f8ecd4;
+  --bad: #b3261e;
+  --bad-soft: #f9e2df;
   --shadow: rgba(24, 34, 64, 0.16);
   --font-display: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
   --font-body: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
@@ -49,6 +51,8 @@
     --ok-soft: #122d1e;
     --warn: #e7a94d;
     --warn-soft: #33250e;
+    --bad: #f2877c;
+    --bad-soft: #3a1714;
     --shadow: rgba(0, 0, 0, 0.5);
     color-scheme: dark;
   }
@@ -69,6 +73,8 @@
   --ok-soft: #122d1e;
   --warn: #e7a94d;
   --warn-soft: #33250e;
+  --bad: #f2877c;
+  --bad-soft: #3a1714;
   --shadow: rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
@@ -94,11 +100,11 @@ code, .mono { font-family: var(--font-mono); }
 /* Top bar */
 .topbar { background: var(--surface); border-bottom: 1px solid var(--line); }
 .topbar .wrap { display: flex; align-items: center; justify-content: space-between; gap: 10px 24px; flex-wrap: wrap; padding-block: 14px; }
-.brand { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .brand h1 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 26px; line-height: 1.1; letter-spacing: 0.01em; }
-.tag { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); border: 1px dashed var(--stripe); padding: 2px 8px; border-radius: 4px; }
 .nas { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
-.nas .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); flex: none; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--stripe); }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .nas strong { color: var(--ink); font-family: var(--font-mono); font-weight: 500; }
 
 /* Page grid */
@@ -115,12 +121,23 @@ code, .mono { font-family: var(--font-mono); }
 .desk > .sec + .sec { border-top: 1px solid var(--line); }
 @media (max-width: 640px) { .desk > .sec { padding: 16px; } }
 
+.waiting { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: center; padding-block: 36px !important; }
+.waiting h2 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 28px; line-height: 1.15; }
+.waiting p { margin: 4px 0 0; color: var(--muted); max-width: 60ch; }
+.waiting.error h2 { color: var(--warn); }
+.pulse { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.45; } }
+
+.picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.picker button { font: 500 13px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; cursor: pointer; }
+.picker button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
 .card-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 16px 18px; align-items: center; }
 .glyph { width: 44px; height: 54px; display: block; }
 .glyph .body { fill: var(--sunken); stroke: var(--ink); stroke-width: 1.5; }
 .glyph .pins { fill: var(--accent); }
 .glyph .lbl { fill: var(--stripe); }
-.eyebrow { font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: 0.03em; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: 0.03em; overflow-wrap: anywhere; }
 .card-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
 .card-title h2 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 36px; line-height: 1; }
 .card-meta { font-size: 13px; color: var(--muted); margin-top: 4px; }
@@ -138,19 +155,20 @@ code, .mono { font-family: var(--font-mono); }
 .chip.live { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 
 .cap { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--sunken); border: 1px solid var(--line); margin-top: 18px; }
-.cap span { display: block; height: 100%; }
+.cap span { display: block; height: 100%; min-width: 0; }
 .cap .p { background: var(--accent); }
 .cap .v { background: var(--accent-mid); }
-.cap .d { background: repeating-linear-gradient(135deg, var(--stripe) 0 4px, transparent 4px 8px); }
-.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.cap .o { background: repeating-linear-gradient(135deg, var(--stripe) 0 4px, transparent 4px 8px); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); margin-top: 8px; font-variant-numeric: tabular-nums; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 .legend .p { background: var(--accent); }
 .legend .v { background: var(--accent-mid); }
-.legend .d { background: repeating-linear-gradient(135deg, var(--stripe) 0 3px, transparent 3px 6px); border: 1px solid var(--stripe); }
+.legend .o { background: repeating-linear-gradient(135deg, var(--stripe) 0 3px, transparent 3px 6px); border: 1px solid var(--stripe); }
 
 .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
 .stat b { display: block; font-family: var(--font-display); font-weight: 600; font-size: 26px; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 12.5px; color: var(--muted); }
+.stat.warn b { color: var(--warn); }
 @media (max-width: 640px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* Shoots */
@@ -190,13 +208,14 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 /* Action bar */
 .actions { display: flex; align-items: center; justify-content: space-between; gap: 14px 20px; flex-wrap: wrap; background: var(--sunken); }
 .summary { font-weight: 600; font-variant-numeric: tabular-nums; }
-.estimate { font-size: 13px; color: var(--muted); max-width: 56ch; margin-top: 2px; }
+.estimate { font-size: 13px; color: var(--muted); max-width: 60ch; margin-top: 2px; }
 .btn { font-family: var(--font-display); font-weight: 600; font-size: 19px; letter-spacing: 0.02em; color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 8px; padding: 11px 24px; cursor: pointer; }
 .btn:hover:not(:disabled) { filter: brightness(1.08); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn:focus-visible, .btn-quiet:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .btn-quiet { font: 500 13px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
 .btn-quiet:hover { border-color: var(--muted); }
+.demo-tag { display: inline-block; font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--warn); border: 1px dashed var(--warn); border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: 2px; }
 
 /* Progress */
 .progress .phase { font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
@@ -205,36 +224,20 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .bar { height: 8px; border-radius: 4px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; margin-top: 12px; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.1s linear; }
 .pline { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); margin-top: 10px; overflow-wrap: anywhere; }
-.demo-note { font-size: 12px; color: var(--muted); margin-top: 6px; }
-.stopped { margin: 0 0 12px; font-size: 14px; color: var(--warn); }
+.demo-note { font-size: 12px; color: var(--warn); margin-top: 6px; }
 
 /* Done */
-.done { background: var(--ok-soft); }
-.done-head { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; align-items: start; }
-.done-head svg { width: 30px; height: 30px; }
-.done-head svg circle { fill: var(--ok); }
-.done-head svg path { fill: none; stroke: var(--surface); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
-.done h3 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1.2; color: var(--ok); }
-.done p { margin: 4px 0 0; max-width: 62ch; }
+.done { background: var(--sunken); }
+.done h3 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1.2; }
+.done p { margin: 4px 0 0; max-width: 64ch; }
 .done-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
 .done-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px 14px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
-.dl-main { min-width: 0; flex: 1 1 260px; }
-.done-list code { display: block; font-size: 12.5px; overflow-wrap: anywhere; }
-.dl-cat { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
-.dl-btns { display: flex; gap: 8px; flex-wrap: wrap; }
-.btn-open { font: 600 13px var(--font-body); color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; white-space: nowrap; }
-.btn-open:hover { filter: brightness(1.08); }
-.btn-open:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-.done-all { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 12px; }
-.done-all span { font-size: 13px; color: var(--muted); }
-.done .next { font-size: 13px; color: var(--muted); margin-top: 12px; max-width: 70ch; }
-.cat-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
-.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 32px); background: var(--ink); color: var(--bg); font-size: 13.5px; line-height: 1.45; padding: 10px 16px; border-radius: 8px; box-shadow: 0 10px 30px -10px var(--shadow); z-index: 20; }
+.done-list code { font-size: 12.5px; overflow-wrap: anywhere; min-width: 0; flex: 1 1 260px; }
 
 /* Ledger */
 .ledger { display: grid; gap: 28px; }
 .list { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.list .empty { padding: 16px; font-size: 13.5px; color: var(--muted); }
 .item { padding: 14px 16px; }
 .item + .item { border-top: 1px solid var(--line); }
 .item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
@@ -244,20 +247,16 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .item-sub { font-size: 13px; color: var(--muted); margin-top: 1px; }
 .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 10px; margin: 12px 0 0; }
 .facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); line-height: 1.3; }
-.facts dd { margin: 2px 0 0; font-family: var(--font-mono); font-size: 14px; font-variant-numeric: tabular-nums; }
-.facts dd.warn { color: var(--warn); font-weight: 500; }
+.facts dd { margin: 2px 0 0; font-family: var(--font-mono); font-size: 13.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .src { font-size: 12px; color: var(--muted); margin-top: 10px; }
 @media (max-width: 460px) { .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .sn { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); background: var(--sunken); border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
 .shutter { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
 .shutter b { font-family: var(--font-display); font-weight: 700; font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
+.shutter b.none { color: var(--stripe); }
 .shutter .lbl { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
-.delta { font-size: 13px; color: var(--muted); text-align: right; }
-.delta strong { color: var(--ink); font-variant-numeric: tabular-nums; }
-.life { height: 6px; border-radius: 3px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; margin-top: 10px; }
-.life i { display: block; height: 100%; background: var(--ink); opacity: 0.75; }
-.life-note { font-size: 12.5px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.shutter-note { font-size: 13px; color: var(--muted); max-width: 34ch; text-align: right; }
 .spark { width: 100%; height: auto; display: block; margin-top: 12px; }
 .spark .grid { stroke: var(--line); stroke-width: 1; }
 .spark .area { fill: var(--accent-soft); }
@@ -265,25 +264,54 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .spark .end { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
 .spark-labels { display: flex; justify-content: space-between; gap: 12px; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 
+/* NAS folder panel */
+.nas-panel { padding: 14px 16px; }
+.nas-panel label { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-bottom: 4px; }
+.nas-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.nas-row input { flex: 1 1 180px; min-width: 0; font: 500 14px var(--font-mono); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
+.nas-row input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.btn-small { font: 600 13px var(--font-body); color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; white-space: nowrap; }
+.btn-small:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-small:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn-small:disabled, .btn-quiet:disabled { opacity: 0.5; cursor: wait; }
+.nas-note { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+.verdict { margin: 12px 0 0; font-weight: 600; font-size: 14px; }
+.verdict.pass { color: var(--ok); }
+.verdict.warn { color: var(--warn); }
+.verdict.fail { color: var(--bad); }
+.checks { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.checks li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 10px; align-items: start; font-size: 13.5px; }
+.checks b { font-weight: 500; display: block; }
+.checks span.detail { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.mark { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font: 700 11px var(--font-body); }
+.mark.pass { background: var(--ok-soft); color: var(--ok); }
+.mark.warn { background: var(--warn-soft); color: var(--warn); }
+.mark.fail { background: var(--bad-soft); color: var(--bad); }
+
+/* Card health */
+.health { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.health-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.health-head h3 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 19px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.health-note { font-size: 13px; color: var(--muted); margin: 6px 0 0; max-width: 70ch; }
+.health-note.warn { color: var(--warn); }
+.health .facts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 640px) { .health .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
 /* History */
-.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
-table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 980px; }
-th { text-align: left; font: 500 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); padding: 10px 14px; background: var(--sunken); border-bottom: 1px solid var(--line); white-space: nowrap; }
-td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
-tr:last-child td { border-bottom: 0; }
-td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
-td code { font-size: 12.5px; }
-tr.fresh td { background: var(--accent-soft); }
+.history-empty { background: var(--surface); border: 1px dashed var(--line); border-radius: var(--radius); padding: 22px; color: var(--muted); font-size: 14px; }
+.history-empty b { color: var(--ink); font-weight: 600; }
 
 /* Notes */
 .notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 28px; border-top: 1px solid var(--line); padding-top: 18px; }
 .notes h3 { margin: 0 0 4px; font-family: var(--font-display); font-weight: 600; font-size: 17px; }
 .notes p { margin: 0; font-size: 13px; color: var(--muted); max-width: 60ch; }
-.notes .foot { grid-column: 1 / -1; font-size: 12px; }
 @media (max-width: 860px) { .notes { grid-template-columns: minmax(0, 1fr); } }
+
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 32px); background: var(--ink); color: var(--bg); font-size: 13.5px; line-height: 1.45; padding: 10px 16px; border-radius: 8px; box-shadow: 0 10px 30px -10px var(--shadow); z-index: 20; }
 
 @media (prefers-reduced-motion: reduce) {
   .bar i { transition: none; }
+  .pulse { animation: none; }
 }
 </style>
 </head>
@@ -291,121 +319,36 @@ tr.fresh td { background: var(--accent-soft); }
 
 <header class="topbar">
   <div class="wrap">
-    <div class="brand">
-      <h1>Card Intake</h1>
-      <span class="tag">Example data</span>
-    </div>
-    <div class="nas" aria-label="NAS connection">
-      <span class="dot" aria-hidden="true"></span>
-      <strong>\\NAS\photos</strong>
-      <span>Connected · 10 GbE · <span id="nas-free" class="num">31.2 TB</span> free</span>
-    </div>
+    <div class="brand"><h1>Card Intake</h1></div>
+    <div class="nas" id="nas" aria-label="NAS connection"><span class="dot"></span><span>Checking the NAS…</span></div>
   </div>
 </header>
 
 <main class="wrap layout">
+  <section class="desk" id="desk" aria-label="Inserted card"></section>
 
-  <!-- The inserted card -->
-  <section class="desk" aria-labelledby="card-name">
-    <div class="sec">
-      <div class="card-head">
-        <svg class="glyph" viewBox="0 0 44 54" aria-hidden="true">
-          <path class="body" d="M4 2 H32 L40 10 V52 H4 Z"></path>
-          <rect class="lbl" x="9" y="14" width="22" height="3" rx="1"></rect>
-          <rect class="lbl" x="9" y="20" width="15" height="3" rx="1"></rect>
-          <rect class="pins" x="9" y="42" width="4" height="7" rx="1"></rect>
-          <rect class="pins" x="15" y="42" width="4" height="7" rx="1"></rect>
-          <rect class="pins" x="21" y="42" width="4" height="7" rx="1"></rect>
-          <rect class="pins" x="27" y="42" width="4" height="7" rx="1"></rect>
-        </svg>
-        <div>
-          <div class="eyebrow">Inserted card · drive E: · recognized by its serial number</div>
-          <div class="card-title">
-            <h2 id="card-name">A1-1</h2>
-            <span class="chip">CFexpress Type A · 160 GB · exFAT</span>
-          </div>
-          <div class="card-meta">Last imported Oct 12 · <span id="card-imports" class="num">58</span> imports by this app</div>
-        </div>
-        <div class="camera-tag">
-          Shot on
-          <b>ILCE-1</b>
-          <span class="sn">SN 5021734</span>
-        </div>
-      </div>
-
-      <div class="cap" role="img" aria-label="Card space: 96.8 GB new photos, 22.1 GB videos, 16.0 GB already on the NAS, 25.1 GB free">
-        <span class="p" style="width:60.5%"></span>
-        <span class="v" style="width:13.8%"></span>
-        <span class="d" style="width:10%"></span>
-      </div>
-      <div class="legend">
-        <span><i class="p"></i>New photos 96.8 GB</span>
-        <span><i class="v"></i>Videos 22.1 GB</span>
-        <span><i class="d"></i>Already on NAS 16.0 GB</span>
-        <span>Free 25.1 GB</span>
-      </div>
-
-      <div class="stats">
-        <div class="stat"><b>1,284</b><span>new photos (ARW)</span></div>
-        <div class="stat"><b>6</b><span>video clips (MP4)</span></div>
-        <div class="stat"><b>212</b><span>already on NAS, skipped</span></div>
-        <div class="stat"><b>Nov 2–4</b><span>capture dates, 2026</span></div>
-      </div>
-    </div>
-
-    <div class="sec">
-      <h3 class="sec-title">Shoots on this card</h3>
-      <p class="hint">Grouped by capture date. Name each shoot and its folder is created on the NAS.</p>
-      <div class="shoots" id="shoots"></div>
-    </div>
-
-    <div class="sec">
-      <h3 class="sec-title">Options</h3>
-      <div class="options">
-        <label class="opt" for="opt-verify">
-          <input type="checkbox" id="opt-verify" checked>
-          <div><b>Check every file after copying</b><span>Reads each file back from the NAS and compares it with the card (xxHash64), so you know it's safe to format.</span></div>
-        </label>
-        <label class="opt" for="opt-video">
-          <input type="checkbox" id="opt-video" checked>
-          <div><b>Copy videos too</b><span>Clips go into a <code>video</code> folder inside each shoot.</span></div>
-        </label>
-        <label class="opt" for="opt-eject">
-          <input type="checkbox" id="opt-eject">
-          <div><b>Eject the card when done</b><span>Only after every file has been checked.</span></div>
-        </label>
-      </div>
-    </div>
-
-    <div class="sec actions" id="actions">
-      <div>
-        <div class="summary" id="summary"></div>
-        <div class="estimate" id="estimate"></div>
-      </div>
-      <button type="button" class="btn" id="start">Import to NAS</button>
-    </div>
-
-    <div class="sec progress" id="progress" hidden>
-      <p class="stopped" id="stopped" hidden></p>
-      <div class="phase" id="phase">Copying to NAS</div>
-      <div class="prow">
-        <div class="pct" id="pct">0%</div>
-        <button type="button" class="btn-quiet" id="stop">Stop</button>
-      </div>
-      <div class="bar"><i id="bar"></i></div>
-      <div class="pline" id="pline" aria-live="polite"></div>
-      <div class="demo-note">This demo runs 30× faster than a real import.</div>
-    </div>
-
-    <div class="sec done" id="done" hidden></div>
-  </section>
-
-  <!-- Ledger: cards and cameras -->
   <aside class="ledger">
+    <section aria-labelledby="nas-h">
+      <div class="sec-head">
+        <h2 class="sec-title" id="nas-h">NAS folder</h2>
+        <span class="muted" id="nas-source"></span>
+      </div>
+      <div class="list nas-panel">
+        <label for="nas-path">Photo share path</label>
+        <div class="nas-row">
+          <input type="text" id="nas-path" spellcheck="false" autocomplete="off" placeholder="/Volumes/photos or \\NAS\photos">
+          <button type="button" class="btn-quiet" id="nas-check">Check</button>
+          <button type="button" class="btn-small" id="nas-save">Save</button>
+        </div>
+        <p class="nas-note">Check writes a 64 MB test file, reads it back, compares and deletes it. Save keeps the path and checks it.</p>
+        <div id="nas-results"></div>
+      </div>
+    </section>
+
     <section aria-labelledby="cards-h">
       <div class="sec-head">
         <h2 class="sec-title" id="cards-h">Cards</h2>
-        <span class="muted">Most recent first</span>
+        <span class="muted">Seen by this app, newest first</span>
       </div>
       <div class="list" id="cards"></div>
     </section>
@@ -419,38 +362,26 @@ tr.fresh td { background: var(--accent-soft); }
     </section>
   </aside>
 
-  <!-- History -->
   <section class="full" aria-labelledby="hist-h">
     <div class="sec-head">
       <h2 class="sec-title" id="hist-h">Recent imports</h2>
-      <span class="muted">Every import is logged on the NAS</span>
     </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Date</th><th>Card</th><th>Camera</th><th class="r">Photos</th><th class="r">Size</th><th class="r">Speed</th><th>Check</th><th>Folder</th><th>Lightroom catalog</th>
-          </tr>
-        </thead>
-        <tbody id="history"></tbody>
-      </table>
-    </div>
+    <div class="history-empty"><b>No imports yet.</b> Copying to the NAS isn't built yet. Once it is, every import is listed here.</div>
   </section>
 
   <section class="full notes" aria-label="Where the numbers come from">
     <div>
-      <h3>Camera, serial number, shutter count</h3>
-      <p>Read from the newest photo on the card (EXIF, via exiftool). On some Sony bodies the count also includes electronic-shutter frames.</p>
+      <h3>Camera, serial number, firmware</h3>
+      <p>Read from the newest photo's EXIF. The shutter count sits in Sony's encrypted maker notes, so it needs ExifTool.</p>
     </div>
     <div>
-      <h3>CFexpress cards</h3>
-      <p>These are NVMe drives, so they keep their own health log: data read and written, life used, power cycles. Your card reader has to pass that log through. You can check this once with smartctl.</p>
+      <h3>Capture times</h3>
+      <p>Photos use EXIF DateTimeOriginal; Sony clips use the CreationDate in their XML sidecar. File dates are a last resort, because copying a card can change them.</p>
     </div>
     <div>
-      <h3>SD cards</h3>
-      <p>SD cards keep no wear log a reader can see. The app counts what it sees itself: imports, data imported, formats (the card's volume ID changes) and read errors. After an in-camera format, you confirm which card it is.</p>
+      <h3>Card health</h3>
+      <p>Read from the CFexpress card's own NVMe health log with smartctl. On Windows this works through most USB readers and asks for admin rights. macOS can't pass the commands through a USB reader. SD cards keep no health log.</p>
     </div>
-    <p class="foot muted">Example data. This is a mock-up of the import app: nothing on this page reads your cards or your NAS.</p>
   </section>
 </main>
 
@@ -460,60 +391,96 @@ tr.fresh td { background: var(--accent-soft); }
 (function () {
   "use strict";
 
+  var tauri = window.__TAURI__;
+  var invoke = tauri && tauri.core && tauri.core.invoke;
+
+  var COPY_MBS = 700;     // typical CFexpress Type A reader; used only for the estimate and the demo
+  var VERIFY_MBS = 1050;  // reading back from the NAS over 10 GbE
   var SPEEDUP = 30;
-  var COPY_MBS = 700;     // CFexpress Type A reader, the real limit
-  var VERIFY_MBS = 1050;  // read back from the NAS over 10 GbE
-  var ROOT = "\\\\NAS\\photos\\";
-  var LOCAL = "D:\\LrC Catalogs\\";   // catalogs must live on a local disk while you edit
+  var POLL_MS = 2000;
 
-  var shoots = [
-    { date: "2026-11-02", day: "Mon, Nov 2", time: "06:41 – 18:12", photos: 642, gb: 48.1, clips: 2, clipGb: 7.4, name: "Yosemite", on: true, firstNo: 3518 },
-    { date: "2026-11-03", day: "Tue, Nov 3", time: "05:58 – 09:40", photos: 418, gb: 31.6, clips: 4, clipGb: 14.7, name: "Mono-Lake-birds", on: true, firstNo: 4160 },
-    { date: "2026-11-04", day: "Wed, Nov 4", time: "16:20 – 17:05", photos: 224, gb: 17.1, clips: 0, clipGb: 0, name: "Bishop-portraits", on: true, firstNo: 4578 }
-  ];
+  var NICKNAMES = {
+    "ILCE-1": "α1", "ILCE-1M2": "α1 II", "ILCE-9M3": "α9 III",
+    "ILCE-7RM6": "α7R VI", "ILCE-7RM5": "α7R V", "ILCE-7M5": "α7 V", "ILCE-7M4": "α7 IV",
+    "ILCE-7SM3": "α7S III", "ILCE-7CR": "α7CR", "ILCE-7CM2": "α7C II", "ILCE-6700": "α6700"
+  };
 
-  var cards = [
-    { name: "A1-1", kind: "cf", type: "CFexpress Type A", cap: "160 GB", last: "In the reader now", live: true, imports: 58, importedTB: 4.12, written: "4.6 TB", read: "9.3 TB", life: 2, cycles: 386 },
-    { name: "A1-2", kind: "cf", type: "CFexpress Type A", cap: "160 GB", last: "Last import Oct 26", imports: 31, importedTB: 2.21, written: "2.5 TB", read: "5.1 TB", life: 1, cycles: 171 },
-    { name: "SD-03", kind: "sd", type: "SD UHS-II V90", cap: "128 GB", last: "Last import Oct 19", imports: 47, importedTB: 3.86, formats: 44, errors: 0 },
-    { name: "SD-01", kind: "sd", type: "SD UHS-I U3", cap: "64 GB", last: "Last import Sep 28", imports: 112, importedTB: 5.57, formats: 109, errors: 2 }
-  ];
+  var state = {
+    roots: [],
+    current: null,
+    loading: false,
+    error: null,
+    report: null,
+    shoots: [],
+    opts: { verify: true, video: true, eject: false },
+    nas: null,
+    ledger: { cards: [], cameras: [] },
+    run: null,
+    nasEdited: false,      // the user typed in the path box; don't overwrite it
+    nasCheck: null,        // last check result
+    health: {},            // card root -> latest outcome this session
+    healthBusy: false
+  };
 
-  var cameras = [
-    { model: "ILCE-1", nick: "α1", sn: "5021734", fw: "2.01", seen: "On the inserted card", rated: 500000,
-      deltaNote: "since the Oct 26 import",
-      hist: [98400, 103950, 108120, 111870, 117300, 120410, 125990, 131020, 136480, 141760, 146872, 148213] },
-    { model: "ILCE-7M4", nick: "α7 IV", sn: "4387215", fw: "4.01", seen: "Last seen Oct 19", rated: 200000,
-      deltaNote: "in the Oct 19 import",
-      hist: [41230, 43900, 45110, 47820, 50040, 52310, 54980, 56420, 58700, 60120, 61669, 61902] }
-  ];
-
-  var history = [
-    { date: "Oct 26", card: "A1-2", cam: "ILCE-1", photos: 864, size: 61.2, speed: 712, check: "ok", folder: "2026-10-25_Bay-Bridge-night", more: 0, cat: "local" },
-    { date: "Oct 19", card: "SD-03", cam: "ILCE-7M4", photos: 233, size: 14.9, speed: 268, check: "ok", folder: "2026-10-18_Family-park", more: 0, cat: "nas" },
-    { date: "Oct 12", card: "A1-1", cam: "ILCE-1", photos: 1912, size: 141.0, speed: 705, check: "ok", folder: "2026-10-11_Point-Reyes-elk", more: 1, cat: "nas" },
-    { date: "Sep 28", card: "SD-01", cam: "ILCE-7M4", photos: 120, size: 6.1, speed: 84, check: "warn", checkText: "2 files re-read", folder: "2026-09-27_Street", more: 0, cat: "nas" }
-  ];
-
-  var nasFreeTB = 31.2;
-
-  function $(s) { return document.querySelector(s); }
-  function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
-  function gb(n) { return n.toFixed(1) + " GB"; }
+  /* ---------- Helpers ---------- */
+  function $(s, el) { return (el || document).querySelector(s); }
   function esc(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
+  }
+  function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
+  function gbOf(bytes) { return (bytes / 1e9).toFixed(1) + " GB"; }
+  function capLabel(bytes) {
+    if (bytes == null) return null;
+    var gb = bytes / 1e9;
+    return gb >= 1000 ? (gb / 1000).toFixed(1) + " TB" : (gb >= 100 ? Math.round(gb) : gb.toFixed(1)) + " GB";
   }
   function dur(s) {
     s = Math.max(0, Math.round(s));
     var m = Math.floor(s / 60), r = s % 60;
     return m ? m + " min " + (r < 10 ? "0" : "") + r + " s" : r + " s";
   }
-  function cleanName(v) { return v.trim().replace(/[\\\/:*?"<>|]/g, "").replace(/\s+/g, "-"); }
+  function plural(n, one, many) { return fmt(n) + " " + (n === 1 ? one : many); }
+  function bytesLabel(b) {
+    if (b == null) return null;
+    return b >= 1e12 ? (b / 1e12).toFixed(2) + " TB" : (b / 1e9).toFixed(1) + " GB";
+  }
+  function bigCount(n) {
+    if (n == null) return null;
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + " B";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + " M";
+    return fmt(n);
+  }
+  function parseLocal(iso) {
+    // "2026-11-06T17:21:04" (no zone) is the camera's local time.
+    var m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2}))?/.exec(iso || "");
+    if (!m) return null;
+    return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  }
+  function localIso(d) {
+    var p = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  function dayLabel(iso) { var d = parseLocal(iso); return d ? DAYS[d.getDay()] + ", " + MONTHS[d.getMonth()] + " " + d.getDate() : iso; }
+  function timeLabel(iso) { var d = parseLocal(iso); return d ? String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") : ""; }
+  function whenLabel(iso) {
+    var d = parseLocal(iso);
+    if (!d) return "";
+    var now = new Date();
+    if (d.toDateString() === now.toDateString()) return "today " + timeLabel(iso);
+    var date = MONTHS[d.getMonth()] + " " + d.getDate();
+    return d.getFullYear() === now.getFullYear() ? date : date + ", " + d.getFullYear();
+  }
+  function baseName(p) { var parts = String(p).split(/[\\/]/).filter(Boolean); return parts[parts.length - 1] || String(p); }
+
+  function cleanName(v) { return v.replace(/[\\\/:*?"<>|]/g, "").replace(/[\u0000-\u001f]/g, "").trim().split(/\s+/).filter(Boolean).join("-").replace(/^\.+|\.+$/g, ""); }
   function folderName(sh) { var n = cleanName(sh.name); return n ? sh.date + "_" + n : sh.date; }
-  function shootPath(sh) { return ROOT + "2026\\" + folderName(sh) + "\\"; }
-  function catPath(name) { return LOCAL + "2026\\" + name + "\\" + name + ".lrcat"; }
+  function nasRoot() { return state.nas ? state.nas.root : ""; }
+  function sep() { return nasRoot().indexOf("\\") >= 0 ? "\\" : "/"; }
+  function shootPath(sh) { var s = sep(); return nasRoot().replace(/[\\/]+$/, "") + s + sh.date.slice(0, 4) + s + folderName(sh) + s; }
 
   var toastTimer = null;
   function toast(msg) {
@@ -521,348 +488,573 @@ tr.fresh td { background: var(--accent-soft); }
     el.textContent = msg;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.hidden = true; }, 5200);
+    toastTimer = setTimeout(function () { el.hidden = true; }, 4200);
   }
 
-  /* ---------- Shoots ---------- */
-  function renderShoots() {
-    $("#shoots").innerHTML = shoots.map(function (s, i) {
-      var clips = s.clips ? " · " + s.clips + " clip" + (s.clips > 1 ? "s" : "") : "";
-      return '<div class="shoot" id="shoot-' + i + '">' +
-        '<input type="checkbox" id="inc-' + i + '" checked aria-label="Import ' + esc(s.day) + '">' +
-        '<label class="when" for="inc-' + i + '"><span class="day">' + esc(s.day) + '</span><span class="time">' + esc(s.time) + '</span></label>' +
-        '<div class="name">' +
-          '<label for="name-' + i + '">Shoot name</label>' +
-          '<input type="text" id="name-' + i + '" value="' + esc(s.name) + '" placeholder="e.g. Yosemite" autocomplete="off" spellcheck="false">' +
-          '<code class="path" id="path-' + i + '"></code>' +
-        '</div>' +
-        '<div class="counts"><span class="n">' + fmt(s.photos) + '</span> photos<br>' + gb(s.gb) + clips + '</div>' +
-      '</div>';
-    }).join("");
+  function copyText(text, button, label) {
+    var done = function () { button.textContent = "Copied"; setTimeout(function () { button.textContent = label; }, 1500); };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () { toast(text); });
+      else toast(text);
+    } catch (e) { toast(text); }
+  }
 
-    shoots.forEach(function (s, i) {
+  /* ---------- Data ---------- */
+  function poll() {
+    invoke("list_cards").then(function (cards) {
+      var roots = cards.map(function (c) { return c.root; });
+      var changed = roots.join("|") !== state.roots.join("|");
+      state.roots = roots;
+      if (state.current && roots.indexOf(state.current) < 0) {
+        if (state.run && state.run.timer) clearInterval(state.run.timer);
+        state.current = null; state.report = null; state.error = null; state.run = null;
+        renderDesk();
+      }
+      if (!state.current && roots.length) selectCard(roots[0]);
+      else if (changed) renderDesk();
+    }).catch(function (e) { console.error(e); });
+  }
+
+  function selectCard(root) {
+    if (state.run && state.run.timer) clearInterval(state.run.timer);
+    state.current = root; state.report = null; state.error = null; state.loading = true; state.run = null;
+    renderDesk();
+    invoke("read_card", { root: root }).then(function (report) {
+      if (state.current !== root) return;
+      state.report = report;
+      state.shoots = report.groups.map(function (g) {
+        return { date: g.date, first: g.first, last: g.last, photos: g.photos, photoBytes: g.photo_bytes, videos: g.videos, videoBytes: g.video_bytes, name: "", on: true };
+      });
+    }).catch(function (e) {
+      if (state.current === root) state.error = String(e);
+    }).then(function () {
+      if (state.current !== root) return;
+      state.loading = false;
+      renderDesk();
+      refreshLedger();
+    });
+  }
+
+  function refreshLedger() {
+    return invoke("get_ledger").then(function (ledger) { state.ledger = ledger; renderLedger(); renderHealth(); });
+  }
+
+  function refreshNas() {
+    return invoke("nas_status").then(applyNas);
+  }
+
+  function applyNas(nas) {
+    state.nas = nas;
+    renderNas();
+    if (!state.nasEdited) $("#nas-path").value = nas.root;
+    $("#nas-source").textContent = nas.source === "settings" ? "Saved"
+      : nas.source === "environment" ? "Set by CARD_INTAKE_NAS" : "Default, not saved yet";
+    state.shoots.forEach(function (_, i) { updatePath(i); });
+  }
+
+  /* ---------- Top bar ---------- */
+  function renderNas() {
+    var n = state.nas;
+    var html;
+    if (!n.connected) {
+      html = '<span class="dot warn" aria-hidden="true"></span><strong>' + esc(n.root) + '</strong><span>Not connected. Mount the photo share, or set the path under NAS folder.</span>';
+    } else if (n.network === false) {
+      html = '<span class="dot warn" aria-hidden="true"></span><strong>' + esc(n.root) + '</strong><span>On this computer’s own disk, not the NAS</span>';
+    } else {
+      html = '<span class="dot ok" aria-hidden="true"></span><strong>' + esc(n.root) + '</strong><span>Connected' +
+        (n.free_bytes != null ? " · " + esc(capLabel(n.free_bytes)) + " free" : "") + '</span>';
+    }
+    $("#nas").innerHTML = html;
+  }
+
+  /* ---------- NAS folder panel ---------- */
+  var MARKS = { pass: "✓", warn: "!", fail: "✕" };
+
+  function renderNasCheck() {
+    var c = state.nasCheck, box = $("#nas-results");
+    if (!c) { box.innerHTML = ""; return; }
+    var worst = c.items.some(function (i) { return i.status === "fail"; }) ? "fail"
+      : c.items.some(function (i) { return i.status === "warn"; }) ? "warn" : "pass";
+    var verdict = worst === "fail" ? "Don't import here yet: fix the items marked ✕."
+      : worst === "warn" ? "Usable, but read the warnings first." : "Ready: imports can go here.";
+    var saved = state.nas && state.nas.root === c.path;
+    box.innerHTML = '<p class="verdict ' + worst + '">' + esc(verdict) + (saved ? "" : " (not saved yet)") + '</p>' +
+      '<ul class="checks">' + c.items.map(function (i) {
+        return '<li><span class="mark ' + i.status + '" aria-label="' + i.status + '">' + MARKS[i.status] + '</span>' +
+          '<div><b>' + esc(i.title) + '</b><span class="detail">' + esc(i.detail) + '</span></div></li>';
+      }).join("") + '</ul>';
+  }
+
+  function setNasBusy(busy, label) {
+    $("#nas-check").disabled = busy;
+    $("#nas-save").disabled = busy;
+    $("#nas-check").textContent = busy && label === "check" ? "Checking…" : "Check";
+    $("#nas-save").textContent = busy && label === "save" ? "Saving…" : "Save";
+  }
+
+  function checkNas(which) {
+    var path = $("#nas-path").value;
+    setNasBusy(true, which || "check");
+    return invoke("check_nas", { path: path }).then(function (result) {
+      state.nasCheck = result;
+      renderNasCheck();
+    }).catch(function (e) { toast(String(e)); }).then(function () { setNasBusy(false); });
+  }
+
+  function saveNas() {
+    var path = $("#nas-path").value;
+    setNasBusy(true, "save");
+    invoke("save_nas_root", { nasRoot: path }).then(function (nas) {
+      state.nasEdited = false;
+      applyNas(nas);
+      toast(path.trim() ? "Saved. Imports go to " + nas.root : "Cleared. Back to the default path.");
+      return checkNas("save");
+    }).catch(function (e) { toast(String(e)); setNasBusy(false); });
+  }
+
+  /* ---------- Desk ---------- */
+  var GLYPH = '<svg class="glyph" viewBox="0 0 44 54" aria-hidden="true">' +
+    '<path class="body" d="M4 2 H32 L40 10 V52 H4 Z"></path>' +
+    '<rect class="lbl" x="9" y="14" width="22" height="3" rx="1"></rect><rect class="lbl" x="9" y="20" width="15" height="3" rx="1"></rect>' +
+    '<rect class="pins" x="9" y="42" width="4" height="7" rx="1"></rect><rect class="pins" x="15" y="42" width="4" height="7" rx="1"></rect>' +
+    '<rect class="pins" x="21" y="42" width="4" height="7" rx="1"></rect><rect class="pins" x="27" y="42" width="4" height="7" rx="1"></rect></svg>';
+
+  function waiting(title, text, cls) {
+    return '<div class="sec waiting' + (cls ? " " + cls : "") + '">' + GLYPH + '<div><h2>' + esc(title) + '</h2><p>' + esc(text) + '</p></div></div>';
+  }
+
+  function picker() {
+    if (state.roots.length < 2) return "";
+    return '<div class="sec"><div class="picker">' + plural(state.roots.length, "card", "cards") + ' inserted:' +
+      state.roots.map(function (r) {
+        return '<button type="button" data-root="' + esc(r) + '" aria-pressed="' + (r === state.current) + '">' + esc(baseName(r)) + '</button>';
+      }).join("") + '</div></div>';
+  }
+
+  function ledgerCard(id) {
+    return state.ledger.cards.filter(function (c) { return c.id === id; })[0] || null;
+  }
+
+  function renderDesk() {
+    var desk = $("#desk");
+    if (!invoke) {
+      desk.innerHTML = waiting("Open this in the Card Intake app", "This page reads cards through the desktop app. In a browser it has nothing to read.");
+      return;
+    }
+    if (!state.current) {
+      desk.innerHTML = waiting("Insert a camera card", "Card Intake checks for cards every two seconds. Any drive with a DCIM folder counts.");
+      return;
+    }
+    if (state.loading) {
+      desk.innerHTML = picker() + waiting("Reading " + baseName(state.current) + "…", "Listing photos and clips and reading capture times. Nothing is written to the card.", "pulse");
+      bindPicker();
+      return;
+    }
+    if (state.error) {
+      desk.innerHTML = picker() + waiting("Couldn't read this card", state.error, "error");
+      bindPicker();
+      return;
+    }
+    desk.innerHTML = picker() + cardSection() + shootsSection() + optionsSection() + actionsSection() +
+      '<div class="sec progress" id="progress" hidden></div><div class="sec done" id="done" hidden></div>';
+    bindPicker();
+    bindShoots();
+    bindOptions();
+    $("#start").addEventListener("click", startDemo);
+    $("#health-read").addEventListener("click", readHealth);
+    renderHealth();
+    updateSummary();
+  }
+
+  function bindPicker() {
+    document.querySelectorAll(".picker button").forEach(function (b) {
+      b.addEventListener("click", function () { if (b.dataset.root !== state.current) selectCard(b.dataset.root); });
+    });
+  }
+
+  function cardSection() {
+    var r = state.report, v = r.volume;
+    var rec = v.id ? ledgerCard(v.id) : null;
+    var name = (rec && rec.name) || v.name || baseName(r.root);
+    var eyebrow = ["Inserted card", r.root, v.reader ? v.reader + " reader" : null, v.bus].filter(Boolean).join(" · ");
+    var chip = [v.filesystem, capLabel(v.total_bytes)].filter(Boolean).join(" · ");
+    var meta = rec
+      ? "First seen " + whenLabel(rec.first_seen) + " · inserted " + plural(rec.insertions, "time", "times") + " · read in " + fmt(r.scan_ms) + " ms"
+      : "Read in " + fmt(r.scan_ms) + " ms";
+
+    var cam = r.camera;
+    var camTag = cam
+      ? 'Shot on<b>' + esc(cam.model) + '</b>' + (cam.serial ? '<span class="sn">SN ' + esc(cam.serial) + '</span>' : "")
+      : "No camera data found";
+
+    var html = '<div class="sec"><div class="card-head">' + GLYPH +
+      '<div><div class="eyebrow">' + esc(eyebrow) + '</div>' +
+      '<div class="card-title"><h2>' + esc(name) + '</h2>' + (chip ? '<span class="chip">' + esc(chip) + '</span>' : "") + '</div>' +
+      '<div class="card-meta">' + esc(meta) + '</div></div>' +
+      '<div class="camera-tag">' + camTag + '</div></div>';
+
+    if (v.total_bytes) {
+      var used = v.free_bytes != null ? v.total_bytes - v.free_bytes : r.photo_bytes + r.video_bytes;
+      var other = Math.max(0, used - r.photo_bytes - r.video_bytes);
+      var free = v.free_bytes != null ? v.free_bytes : null;
+      var pct = function (b) { return (b / v.total_bytes * 100).toFixed(2) + "%"; };
+      html += '<div class="cap" role="img" aria-label="Card space: ' + esc(gbOf(r.photo_bytes)) + ' photos, ' + esc(gbOf(r.video_bytes)) + ' videos, ' +
+        esc(gbOf(other)) + ' other files' + (free != null ? ", " + esc(gbOf(free)) + " free" : "") + '">' +
+        '<span class="p" style="width:' + pct(r.photo_bytes) + '"></span><span class="v" style="width:' + pct(r.video_bytes) + '"></span>' +
+        '<span class="o" style="width:' + pct(other) + '"></span></div>' +
+        '<div class="legend"><span><i class="p"></i>Photos ' + esc(gbOf(r.photo_bytes)) + '</span><span><i class="v"></i>Videos ' + esc(gbOf(r.video_bytes)) + '</span>' +
+        '<span><i class="o"></i>Other ' + esc(gbOf(other)) + '</span>' + (free != null ? '<span>Free ' + esc(gbOf(free)) + '</span>' : "") + '</div>';
+    }
+
+    var fromCamera = r.times.exif + r.times.sidecar;
+    var total = fromCamera + r.times.file_time;
+    var dates = state.shoots.length
+      ? (state.shoots.length === 1 ? dayLabel(state.shoots[0].date).split(", ")[1]
+        : dayLabel(state.shoots[0].date).split(", ")[1] + " – " + dayLabel(state.shoots[state.shoots.length - 1].date).split(", ")[1])
+      : "—";
+    var year = state.shoots.length ? state.shoots[0].date.slice(0, 4) : "";
+
+    html += '<div class="stats">' +
+      '<div class="stat"><b>' + fmt(r.photos) + '</b><span>photos</span></div>' +
+      '<div class="stat"><b>' + fmt(r.videos) + '</b><span>video clips</span></div>' +
+      '<div class="stat"><b>' + esc(dates) + '</b><span>capture dates' + (year ? ", " + esc(year) : "") + '</span></div>' +
+      '<div class="stat' + (r.times.file_time ? " warn" : "") + '"><b>' + fmt(fromCamera) + ' / ' + fmt(total) + '</b><span>' +
+        (r.times.file_time ? fmt(r.times.file_time) + " dated by file time only" : "capture times from the camera") + '</span></div>' +
+      '</div>' +
+      '<div class="health"><div class="health-head"><h3 id="health-title">Card health</h3>' +
+      '<button type="button" class="btn-quiet" id="health-read">Read card health</button></div>' +
+      '<div id="health-body"></div></div>' +
+      '</div>';
+    return html;
+  }
+
+  /* ---------- Card health ---------- */
+  function healthStatus(h) {
+    if (h.critical_warning > 0 || h.media_errors > 0 || h.passed === false) return '<span class="chip warn">Needs attention</span>';
+    if (h.percentage_used != null && h.percentage_used >= 90) return '<span class="chip warn">Near end of life</span>';
+    return '<span class="chip ok">Healthy</span>';
+  }
+
+  function healthFacts(h) {
+    return fact("Life used", h.percentage_used != null ? h.percentage_used + "%" : null) +
+      fact("Spare left", h.available_spare != null ? h.available_spare + "%" : null) +
+      fact("Data written", bytesLabel(h.data_written_bytes)) +
+      fact("Data read", bytesLabel(h.data_read_bytes)) +
+      fact("Write commands", bigCount(h.host_write_commands)) +
+      fact("Read commands", bigCount(h.host_read_commands)) +
+      fact("Power cycles", h.power_cycles != null ? fmt(h.power_cycles) : null) +
+      fact("Power-on hours", h.power_on_hours != null ? fmt(h.power_on_hours) : null) +
+      fact("Unsafe shutdowns", h.unsafe_shutdowns != null ? fmt(h.unsafe_shutdowns) : null) +
+      fact("Media errors", h.media_errors != null ? fmt(h.media_errors) : null) +
+      fact("Temperature", h.temperature_c != null ? h.temperature_c + " °C" : null) +
+      fact("Card serial", h.serial);
+  }
+
+  function lastHealthReading(cardId) {
+    var rec = cardId ? ledgerCard(cardId) : null;
+    return rec && rec.health && rec.health.length ? rec.health[rec.health.length - 1] : null;
+  }
+
+  function renderHealth() {
+    var body = $("#health-body");
+    if (!body || !state.report) return;
+    var btn = $("#health-read");
+    btn.disabled = state.healthBusy;
+    btn.textContent = state.healthBusy ? "Reading…" : "Read card health";
+
+    var outcome = state.health[state.current];
+    var last = lastHealthReading(state.report.volume.id);
+    var title = "Card health";
+    var html;
+    if (state.healthBusy) {
+      html = '<p class="health-note">Reading the card’s health log. On Windows, choose Yes when asked for admin rights.</p>';
+    } else if (outcome && outcome.kind === "unavailable") {
+      html = '<p class="health-note warn">' + esc(outcome.reason) + '</p>';
+      if (last) html += '<p class="health-note">Last reading, ' + esc(whenLabel(last.at)) + ':</p><dl class="facts">' + healthFacts(last.health) + '</dl>';
+    } else if (outcome && outcome.kind === "read") {
+      title += " " + healthStatus(outcome.health);
+      html = '<dl class="facts">' + healthFacts(outcome.health) + '</dl><p class="health-note">Read just now' +
+        (outcome.health.device_type ? " (smartctl -d " + esc(outcome.health.device_type) + ")" : "") + '.</p>';
+    } else if (last) {
+      title += " " + healthStatus(last.health);
+      html = '<dl class="facts">' + healthFacts(last.health) + '</dl><p class="health-note">Last read ' + esc(whenLabel(last.at)) + '.</p>';
+    } else {
+      html = '<p class="health-note">Not read yet. Reads the card’s own NVMe health log: life used, data and commands written and read, power cycles, errors.</p>';
+    }
+    $("#health-title").innerHTML = title;
+    body.innerHTML = html;
+  }
+
+  function readHealth() {
+    var root = state.current;
+    state.healthBusy = true;
+    renderHealth();
+    invoke("read_card_health", { root: root }).then(function (outcome) {
+      state.health[root] = outcome;
+      return refreshLedger();
+    }).catch(function (e) {
+      state.health[root] = { kind: "unavailable", reason: String(e) };
+    }).then(function () {
+      state.healthBusy = false;
+      if (state.current === root) renderHealth();
+    });
+  }
+
+  function shootsSection() {
+    if (!state.shoots.length) {
+      return '<div class="sec"><h3 class="sec-title">Nothing to import</h3><p class="hint">This card has no photos or clips in DCIM or M4ROOT/CLIP.</p></div>';
+    }
+    return '<div class="sec"><h3 class="sec-title">Shoots on this card</h3>' +
+      '<p class="hint">Grouped by capture date. Name each shoot and its folder is created on the NAS.</p>' +
+      '<div class="shoots">' + state.shoots.map(function (s, i) {
+        var bits = [];
+        if (s.photos) bits.push(plural(s.photos, "photo", "photos"));
+        if (s.videos) bits.push(plural(s.videos, "clip", "clips"));
+        var lead = s.photos ? '<span class="n">' + fmt(s.photos) + '</span> photos' : '<span class="n">' + fmt(s.videos) + '</span> clips';
+        var rest = gbOf(s.photoBytes + s.videoBytes) + (s.photos && s.videos ? " · " + plural(s.videos, "clip", "clips") : "");
+        return '<div class="shoot' + (s.on ? "" : " off") + '" id="shoot-' + i + '">' +
+          '<input type="checkbox" id="inc-' + i + '"' + (s.on ? " checked" : "") + ' aria-label="Import ' + esc(dayLabel(s.date)) + '">' +
+          '<label class="when" for="inc-' + i + '"><span class="day">' + esc(dayLabel(s.date)) + '</span><span class="time">' +
+            esc(timeLabel(s.first)) + " – " + esc(timeLabel(s.last)) + '</span></label>' +
+          '<div class="name"><label for="name-' + i + '">Shoot name</label>' +
+            '<input type="text" id="name-' + i + '" value="' + esc(s.name) + '" placeholder="e.g. Yosemite" autocomplete="off" spellcheck="false">' +
+            '<code class="path" id="path-' + i + '"></code></div>' +
+          '<div class="counts">' + lead + '<br>' + esc(rest) + '</div>' +
+        '</div>';
+      }).join("") + '</div></div>';
+  }
+
+  function optionsSection() {
+    return '<div class="sec"><h3 class="sec-title">Options</h3><div class="options">' +
+      opt("opt-verify", state.opts.verify, "Check every file after copying", "Reads each file back from the NAS and compares it with the card (xxHash64), so you know it's safe to format.") +
+      opt("opt-video", state.opts.video, "Copy videos too", "Clips go into a <code>video</code> folder inside each shoot.", true) +
+      opt("opt-eject", state.opts.eject, "Eject the card when done", "Only after every file has been checked.") +
+      '</div></div>';
+  }
+  function opt(id, on, title, text, rawText) {
+    return '<label class="opt" for="' + id + '"><input type="checkbox" id="' + id + '"' + (on ? " checked" : "") + '>' +
+      '<div><b>' + esc(title) + '</b><span>' + (rawText ? text : esc(text)) + '</span></div></label>';
+  }
+
+  function actionsSection() {
+    return '<div class="sec actions" id="actions"><div><div class="summary" id="summary"></div><div class="estimate" id="estimate"></div></div>' +
+      '<button type="button" class="btn" id="start">Run demo import</button></div>';
+  }
+
+  function bindShoots() {
+    state.shoots.forEach(function (s, i) {
       updatePath(i);
       $("#inc-" + i).addEventListener("change", function (e) {
         s.on = e.target.checked;
         $("#shoot-" + i).classList.toggle("off", !s.on);
         updateSummary();
       });
-      $("#name-" + i).addEventListener("input", function (e) {
-        s.name = e.target.value;
-        updatePath(i);
-      });
+      $("#name-" + i).addEventListener("input", function (e) { s.name = e.target.value; updatePath(i); });
+    });
+  }
+
+  function bindOptions() {
+    [["opt-verify", "verify"], ["opt-video", "video"], ["opt-eject", "eject"]].forEach(function (pair) {
+      $("#" + pair[0]).addEventListener("change", function (e) { state.opts[pair[1]] = e.target.checked; updateSummary(); });
     });
   }
 
   function updatePath(i) {
-    var s = shoots[i];
-    $("#path-" + i).innerHTML = esc(ROOT + "2026\\") + "<b>" + esc(folderName(s)) + "</b>\\";
+    var s = state.shoots[i], el = $("#path-" + i);
+    if (!el) return;
+    if (!state.nas) { el.textContent = "Checking the NAS…"; return; }
+    var full = shootPath(s), folder = folderName(s);
+    var at = full.lastIndexOf(folder);
+    el.innerHTML = esc(full.slice(0, at)) + "<b>" + esc(folder) + "</b>" + esc(full.slice(at + folder.length));
   }
 
   function totals() {
-    var video = $("#opt-video").checked;
-    var t = { photos: 0, pgb: 0, clips: 0, cgb: 0, folders: 0, list: [] };
-    shoots.forEach(function (s) {
+    var t = { photos: 0, videos: 0, bytes: 0, folders: 0, list: [] };
+    state.shoots.forEach(function (s) {
       if (!s.on) return;
-      t.photos += s.photos; t.pgb += s.gb; t.folders += 1; t.list.push(s);
-      if (video) { t.clips += s.clips; t.cgb += s.clipGb; }
+      var photos = s.photos, videos = state.opts.video ? s.videos : 0;
+      if (!photos && !videos) return;
+      t.photos += photos; t.videos += videos;
+      t.bytes += s.photoBytes + (state.opts.video ? s.videoBytes : 0);
+      t.folders += 1; t.list.push(s);
     });
-    t.totalGB = t.pgb + t.cgb;
-    t.files = t.photos + t.clips;
+    t.files = t.photos + t.videos;
     return t;
   }
 
   function updateSummary() {
-    var t = totals();
-    var verify = $("#opt-verify").checked;
-    var btn = $("#start");
+    var t = totals(), btn = $("#start");
+    if (!btn) return;
     if (!t.folders) {
       btn.disabled = true;
-      $("#summary").textContent = "No shoots selected";
+      $("#summary").textContent = "Nothing selected";
       $("#estimate").textContent = "Tick at least one shoot to import it.";
       return;
     }
     btn.disabled = false;
-    $("#summary").textContent = fmt(t.photos) + " photos" + (t.clips ? " + " + t.clips + " clips" : "") +
-      " · " + gb(t.totalGB) + " → " + t.folders + " folder" + (t.folders > 1 ? "s" : "");
-    var mb = t.totalGB * 1000;
-    var copyS = mb / COPY_MBS, verS = verify ? mb / VERIFY_MBS : 0;
-    $("#estimate").textContent = "About " + dur(copyS + verS) + ". The card reader tops out near " + COPY_MBS +
-      " MB/s; your 10 GbE link could carry about 1,100 MB/s." + (verify ? " Checking adds " + dur(verS) + "." : "");
+    var what = [];
+    if (t.photos) what.push(plural(t.photos, "photo", "photos"));
+    if (t.videos) what.push(plural(t.videos, "clip", "clips"));
+    $("#summary").innerHTML = esc(what.join(" + ") + " · " + gbOf(t.bytes) + " → " + plural(t.folders, "folder", "folders")) + '<span class="demo-tag">Demo</span>';
+    var mb = t.bytes / 1e6, copyS = mb / COPY_MBS, verS = state.opts.verify ? mb / VERIFY_MBS : 0;
+    $("#estimate").textContent = "At about " + COPY_MBS + " MB/s (a typical CFexpress Type A reader) a real import would take about " +
+      dur(copyS + verS) + ". Copying isn't built yet: the demo shows the flow and copies nothing.";
   }
 
-  function lockForm(locked) {
-    shoots.forEach(function (s, i) {
-      $("#inc-" + i).disabled = locked;
-      $("#name-" + i).disabled = locked;
-    });
-    ["#opt-verify", "#opt-video", "#opt-eject"].forEach(function (id) { $(id).disabled = locked; });
-  }
-
-  /* ---------- Import simulation ---------- */
-  var run = null;
-
-  function fileAt(idx) {
-    var n = idx;
-    for (var k = 0; k < run.t.list.length; k++) {
-      var s = run.t.list[k];
-      if (n <= s.photos) { var no = s.firstNo + n; return "DSC" + String(no).padStart(5, "0") + ".ARW"; }
-      n -= s.photos;
-    }
-    return "C" + String(Math.max(1, n)).padStart(4, "0") + ".MP4";
-  }
-
-  function startImport() {
-    if (!run || !run.paused) {
-      var t = totals();
-      run = { phase: "copy", done: 0, totalMB: t.totalGB * 1000, t: t, verify: $("#opt-verify").checked, eject: $("#opt-eject").checked, paused: false, speeds: [] };
-    }
-    run.paused = false;
-    lockForm(true);
+  /* ---------- Demo import (copies nothing) ---------- */
+  function startDemo() {
+    var t = totals();
+    state.run = { phase: "copy", done: 0, totalMB: t.bytes / 1e6, t: t, verify: state.opts.verify };
+    document.querySelectorAll("#desk input").forEach(function (el) { el.disabled = true; });
     $("#actions").hidden = true;
-    $("#stopped").hidden = true;
-    $("#progress").hidden = false;
+    var p = $("#progress");
+    p.innerHTML = '<div class="phase" id="phase"></div><div class="prow"><div class="pct" id="pct">0%</div>' +
+      '<button type="button" class="btn-quiet" id="stop">Stop</button></div><div class="bar"><i id="bar"></i></div>' +
+      '<div class="pline" id="pline" aria-live="polite"></div><div class="demo-note">Demo: nothing is being copied. It runs ' + SPEEDUP + '× faster than a real import.</div>';
+    p.hidden = false;
+    $("#stop").addEventListener("click", stopDemo);
     tick(true);
-    run.timer = setInterval(tick, 100);
+    state.run.timer = setInterval(tick, 100);
   }
 
-  function tick(firstPaint) {
+  function tick(first) {
+    var run = state.run;
+    if (!run) return;
     var base = run.phase === "copy" ? COPY_MBS : VERIFY_MBS;
     var speed = base + (Math.random() - 0.5) * base * 0.06;
-    if (!firstPaint) {
-      run.done = Math.min(run.totalMB, run.done + speed * 0.1 * SPEEDUP);
-      if (run.phase === "copy") run.speeds.push(speed);
-    }
-    var frac = run.done / run.totalMB;
+    if (!first) run.done = Math.min(run.totalMB, run.done + speed * 0.1 * SPEEDUP);
+    var frac = run.totalMB ? run.done / run.totalMB : 1;
     var files = run.t.files;
     var idx = Math.min(files, Math.max(1, Math.ceil(frac * files)));
     var remaining = (run.totalMB - run.done) / base + (run.phase === "copy" && run.verify ? run.totalMB / VERIFY_MBS : 0);
-    var steps = run.verify ? 2 : 1;
-    $("#phase").textContent = run.phase === "copy"
-      ? (steps === 2 ? "Step 1 of 2 · " : "") + "Copying to NAS"
-      : "Step 2 of 2 · Checking files on the NAS";
+    $("#phase").textContent = run.phase === "copy" ? (run.verify ? "Step 1 of 2 · " : "") + "Copying to NAS" : "Step 2 of 2 · Checking files on the NAS";
     $("#pct").textContent = Math.floor(frac * 100) + "%";
     $("#bar").style.width = (frac * 100).toFixed(1) + "%";
-    $("#pline").textContent = fileAt(idx) + " · " + fmt(idx) + " of " + fmt(files) + " files · " +
-      fmt(speed) + " MB/s · about " + dur(remaining) + " left";
-
+    $("#pline").textContent = fmt(idx) + " of " + fmt(files) + " files · " + fmt(speed) + " MB/s · about " + dur(remaining) + " left";
     if (run.done >= run.totalMB) {
       if (run.phase === "copy" && run.verify) { run.phase = "verify"; run.done = 0; }
-      else finish();
+      else finishDemo();
     }
   }
 
-  function stopImport() {
-    clearInterval(run.timer);
-    run.paused = true;
-    var files = run.t.files;
-    var idx = Math.min(files, Math.max(0, Math.floor(run.done / run.totalMB * files)));
-    var msg = run.phase === "copy"
-      ? "Stopped after " + fmt(idx) + " of " + fmt(files) + " files. Files already copied stay on the NAS; resuming skips them."
-      : "Stopped while checking. All files are copied, but don't format the card until the check finishes.";
-    $("#stopped").textContent = msg;
-    $("#stopped").hidden = false;
-    $("#actions").hidden = false;
-    $("#start").textContent = "Resume import";
-    $("#progress").querySelector(".prow").hidden = true;
+  function stopDemo() {
+    clearInterval(state.run.timer);
+    state.run = null;
+    renderDesk();
+    toast("Demo stopped.");
   }
 
-  function finish() {
-    clearInterval(run.timer);
-    var t = run.t;
+  function finishDemo() {
+    var t = state.run.t;
+    clearInterval(state.run.timer);
     $("#progress").hidden = true;
-    $("#actions").hidden = true;
-
-    var what = fmt(t.photos) + " photos" + (t.clips ? " and " + t.clips + " clips" : "");
-    var body = run.verify
-      ? "All " + what + " are on the NAS and match the card. You can format this card in the camera."
-      : "All " + what + " are copied. They weren't checked against the card, so keep the card until you've checked them.";
-    if (run.eject) body += " The card has been ejected.";
-
-    var items = t.list.map(function (s, i) {
-      return '<li>' +
-        '<div class="dl-main"><code id="done-path-' + i + '">' + esc(shootPath(s)) + '</code>' +
-        '<span class="dl-cat">Catalog: ' + esc(catPath(folderName(s))) + '</span></div>' +
-        '<div class="dl-btns">' +
-          '<button type="button" class="btn-open" data-open="' + i + '">Open in Lightroom</button>' +
-          '<button type="button" class="btn-quiet" data-copy="' + i + '">Copy path</button>' +
-        '</div></li>';
-    }).join("");
-    var all = t.list.length > 1
-      ? '<div class="done-all"><button type="button" class="btn-quiet" id="open-all">Open all ' + t.list.length +
-        ' shoots in one catalog</button><span>For a trip you want to edit as one job.</span></div>'
-      : "";
-
-    $("#done").innerHTML =
-      '<div class="done-head">' +
-        '<svg viewBox="0 0 30 30" aria-hidden="true"><circle cx="15" cy="15" r="15"></circle><path d="M8.5 15.5 L13 20 L21.5 10.5"></path></svg>' +
-        '<div><h3>Import complete</h3><p>' + esc(body) + '</p></div>' +
-      '</div>' +
-      '<ul class="done-list">' + items + '</ul>' + all +
-      '<p class="next">Each shoot gets its own Lightroom catalog, made from your template catalog, with every photo already added. ' +
-      'It stays on this computer while you edit, because Lightroom Classic cannot open catalogs on a network drive. ' +
-      'When you finish the shoot, it moves into the shoot’s <code>_catalog</code> folder on the NAS.</p>';
-    $("#done").hidden = false;
-
-    $("#done").querySelectorAll("[data-open]").forEach(function (b) {
-      b.addEventListener("click", function () {
-        var s = t.list[+b.getAttribute("data-open")];
-        toast("Demo: created " + folderName(s) + ".lrcat from your template. Lightroom Classic opens it and adds " +
-          fmt(s.photos) + " photos from the NAS.");
-        b.textContent = "Open again";
-      });
+    var d = $("#done");
+    d.innerHTML = '<h3>Demo finished</h3><p>Nothing was copied. Copying to the NAS is the next thing to build. These are the folders a real import would create:</p>' +
+      '<ul class="done-list">' + t.list.map(function (s, i) {
+        return '<li><code id="done-path-' + i + '">' + esc(shootPath(s)) + '</code><button type="button" class="btn-quiet" data-copy="' + i + '">Copy path</button></li>';
+      }).join("") + '</ul><p><button type="button" class="btn-quiet" id="again">Start over</button></p>';
+    d.hidden = false;
+    d.querySelectorAll("[data-copy]").forEach(function (b) {
+      b.addEventListener("click", function () { copyText($("#done-path-" + b.dataset.copy).textContent, b, "Copy path"); });
     });
-    var allBtn = $("#open-all");
-    if (allBtn) allBtn.addEventListener("click", function () {
-      toast("Demo: created " + folderName(t.list[0]) + ".lrcat with all " + t.list.length + " shoots (" +
-        fmt(t.photos) + " photos). Lightroom Classic opens it and adds them.");
-    });
-
-    $("#done").querySelectorAll("[data-copy]").forEach(function (b) {
-      b.addEventListener("click", function () {
-        var code = $("#done-path-" + b.getAttribute("data-copy"));
-        var text = code.textContent;
-        var ok = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy path"; }, 1500); };
-        var fallback = function () {
-          var r = document.createRange(); r.selectNodeContents(code);
-          var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
-          b.textContent = "Selected, press Ctrl+C";
-        };
-        try {
-          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok, fallback);
-          else fallback();
-        } catch (e) { fallback(); }
-      });
-    });
-
-    // Record the import
-    var avg = run.speeds.length ? run.speeds.reduce(function (a, b) { return a + b; }, 0) / run.speeds.length : COPY_MBS;
-    cards[0].imports += 1;
-    cards[0].importedTB += t.totalGB / 1000;
-    cards[0].last = run.eject ? "Ejected just now" : "In the reader now";
-    $("#card-imports").textContent = cards[0].imports;
-    nasFreeTB -= t.totalGB / 1000;
-    $("#nas-free").textContent = nasFreeTB.toFixed(1) + " TB";
-    history.unshift({
-      date: "Today", card: "A1-1", cam: "ILCE-1", photos: t.photos, size: t.totalGB, speed: avg,
-      check: run.verify ? "ok" : "none", folder: folderName(t.list[0]), more: t.list.length - 1, fresh: true, cat: "local"
-    });
-    renderCards();
-    renderHistory();
+    $("#again").addEventListener("click", function () { state.run = null; renderDesk(); });
   }
 
   /* ---------- Ledger ---------- */
-  function renderCards() {
-    $("#cards").innerHTML = cards.map(function (c) {
-      var chips = "";
-      if (c.live) chips += '<span class="chip live">In reader</span>';
-      var facts, src;
-      if (c.kind === "cf") {
-        chips += c.life < 70 ? '<span class="chip ok">Healthy</span>' : '<span class="chip warn">Wearing out</span>';
-        facts = fact("Written", c.written) + fact("Read", c.read) + fact("Life used", c.life + "%") + fact("Power cycles", fmt(c.cycles));
-        src = "From the card's own health log · " + c.imports + " imports, " + c.importedTB.toFixed(1) + " TB imported by this app";
-      } else {
-        chips += c.errors ? '<span class="chip warn">' + c.errors + ' read errors</span>' : '<span class="chip">No wear data</span>';
-        facts = fact("Imports", fmt(c.imports)) + fact("Imported", c.importedTB.toFixed(1) + " TB") +
-          fact("Formats seen", fmt(c.formats)) + fact("Read errors", String(c.errors), c.errors ? "warn" : "");
-        src = "SD cards don't report wear, so these are this app's own counts.";
-      }
-      return '<article class="item">' +
-        '<div class="item-head"><span class="item-name">' + esc(c.name) + '</span><span class="chips">' + chips + '</span></div>' +
-        '<div class="item-sub">' + esc(c.type) + " · " + esc(c.cap) + " · " + esc(c.last) + '</div>' +
-        '<dl class="facts">' + facts + '</dl>' +
-        '<div class="src">' + esc(src) + '</div>' +
-      '</article>';
-    }).join("");
+  function fact(label, value) {
+    return '<div><dt>' + esc(label) + '</dt><dd>' + esc(value == null || value === "" ? "—" : value) + '</dd></div>';
   }
 
-  function fact(label, value, cls) {
-    return '<div><dt>' + esc(label) + '</dt><dd' + (cls ? ' class="' + cls + '"' : "") + '>' + esc(value) + '</dd></div>';
+  function healthChip(health) {
+    if (!health) return "";
+    if (health === "Verified") return '<span class="chip ok">Healthy</span>';
+    if (health === "Not Supported") return '<span class="chip">Health not readable</span>';
+    return '<span class="chip warn">Health: ' + esc(health) + '</span>';
+  }
+
+  function renderLedger() {
+    var current = state.report && state.report.volume;
+    var cards = state.ledger.cards;
+    $("#cards").innerHTML = cards.length ? cards.map(function (c) {
+      var inReader = current && current.id === c.id && state.current;
+      var name = c.name || (inReader ? (current.name || baseName(state.current)) : "Unlabeled card");
+      var last = c.health && c.health.length ? c.health[c.health.length - 1] : null;
+      var chips = (inReader ? '<span class="chip live">In reader</span>' : "") +
+        (last ? healthStatus(last.health) : (inReader ? healthChip(current.health) : ""));
+      var sub = [c.filesystem, capLabel(c.capacity_bytes), c.reader ? c.reader + " reader" : null].filter(Boolean).join(" · ");
+      var facts = last
+        ? fact("Life used", last.health.percentage_used != null ? last.health.percentage_used + "%" : null) +
+          fact("Written", bytesLabel(last.health.data_written_bytes)) +
+          fact("Power cycles", last.health.power_cycles != null ? fmt(last.health.power_cycles) : null) +
+          fact("Insertions", fmt(c.insertions))
+        : fact("First seen", whenLabel(c.first_seen)) + fact("Last seen", whenLabel(c.last_seen)) +
+          fact("Insertions", fmt(c.insertions)) + fact("Card ID", c.id.split("-")[0]);
+      var src = last
+        ? "Health read " + whenLabel(last.at) + (c.hardware_serial ? " · card serial " + c.hardware_serial : "") + "."
+        : "The card ID changes when the card is formatted in the camera.";
+      return '<article class="item"><div class="item-head"><span class="item-name">' + esc(name) + '</span><span class="chips">' + chips + '</span></div>' +
+        '<div class="item-sub">' + esc(sub) + '</div><dl class="facts">' + facts + '</dl><div class="src">' + esc(src) + '</div></article>';
+    }).join("") : '<div class="empty">No cards yet. Insert a card and it shows up here.</div>';
+
+    var cam = state.report && state.report.camera;
+    var cameras = state.ledger.cameras;
+    $("#cameras").innerHTML = cameras.length ? cameras.map(function (c) {
+      var isCurrent = cam && cam.model === c.model && cam.serial === c.serial;
+      var readings = c.shutter_counts || [];
+      var last = readings.length ? readings[readings.length - 1] : null;
+      // The inserted card's own reading wins: it's the newest there is.
+      if (isCurrent && cam.shutter_count != null && (!last || last.count !== cam.shutter_count)) {
+        last = { count: cam.shutter_count, at: localIso(new Date()) };
+      }
+      var nick = NICKNAMES[c.model];
+      var sub = [c.firmware ? "Firmware " + c.firmware : null, isCurrent && cam.lens ? cam.lens : null, isCurrent ? "on the inserted card" : "last seen " + whenLabel(c.last_seen)]
+        .filter(Boolean).join(" · ");
+      var shutter = last
+        ? '<div><span class="lbl">Shutter count</span><b>' + fmt(last.count) + '</b></div><div class="shutter-note">Read ' + esc(whenLabel(last.at)) + '</div>'
+        : '<div><span class="lbl">Shutter count</span><b class="none">—</b></div><div class="shutter-note">' +
+          esc(isCurrent && cam.shutter_note ? cam.shutter_note : "Not read yet.") + '</div>';
+      var chart = readings.length >= 2
+        ? spark(readings.map(function (r) { return r.count; })) +
+          '<div class="spark-labels"><span>' + esc(whenLabel(readings[0].at)) + " · " + fmt(readings[0].count) + '</span><span>' +
+          esc(whenLabel(last.at)) + " · " + fmt(last.count) + '</span></div>'
+        : "";
+      return '<article class="item"><div class="item-head"><span class="item-name">' + esc(c.model) + (nick ? '<small>' + esc(nick) + '</small>' : "") + '</span>' +
+        (c.serial ? '<span class="sn">SN ' + esc(c.serial) + '</span>' : "") + '</div>' +
+        '<div class="item-sub">' + esc(sub) + '</div><div class="shutter">' + shutter + '</div>' + chart + '</article>';
+    }).join("") : '<div class="empty">No cameras yet. They are read from the photos on each card.</div>';
   }
 
   function spark(vals) {
     var W = 300, H = 60, px = 5, py = 6;
-    var min = vals[0], max = vals[vals.length - 1];
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals), span = max - min || 1;
     var xs = vals.map(function (_, i) { return px + i * (W - 2 * px) / (vals.length - 1); });
-    var ys = vals.map(function (v) { return H - py - (v - min) / (max - min) * (H - 2 * py); });
+    var ys = vals.map(function (v) { return H - py - (v - min) / span * (H - 2 * py); });
     var pts = xs.map(function (x, i) { return x.toFixed(1) + "," + ys[i].toFixed(1); });
     var area = "M" + xs[0].toFixed(1) + "," + (H - py) + " L" + pts.join(" L") + " L" + xs[xs.length - 1].toFixed(1) + "," + (H - py) + " Z";
-    return '<svg class="spark" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Shutter count at each import over the past year, from ' + fmt(min) + " to " + fmt(max) + '">' +
+    return '<svg class="spark" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Shutter count readings from ' + fmt(min) + " to " + fmt(max) + '">' +
       '<line class="grid" x1="' + px + '" x2="' + (W - px) + '" y1="' + py + '" y2="' + py + '"></line>' +
       '<line class="grid" x1="' + px + '" x2="' + (W - px) + '" y1="' + (H - py) + '" y2="' + (H - py) + '"></line>' +
-      '<path class="area" d="' + area + '"></path>' +
-      '<polyline class="line" points="' + pts.join(" ") + '"></polyline>' +
-      '<circle class="end" cx="' + xs[xs.length - 1].toFixed(1) + '" cy="' + ys[ys.length - 1].toFixed(1) + '" r="3.5"></circle>' +
-    '</svg>';
+      '<path class="area" d="' + area + '"></path><polyline class="line" points="' + pts.join(" ") + '"></polyline>' +
+      '<circle class="end" cx="' + xs[xs.length - 1].toFixed(1) + '" cy="' + ys[ys.length - 1].toFixed(1) + '" r="3.5"></circle></svg>';
   }
 
-  function renderCameras() {
-    $("#cameras").innerHTML = cameras.map(function (c) {
-      var count = c.hist[c.hist.length - 1];
-      var delta = count - c.hist[c.hist.length - 2];
-      var pct = count / c.rated * 100;
-      return '<article class="item">' +
-        '<div class="item-head"><span class="item-name">' + esc(c.model) + '<small>' + esc(c.nick) + '</small></span><span class="sn">SN ' + esc(c.sn) + '</span></div>' +
-        '<div class="item-sub">Firmware ' + esc(c.fw) + " · " + esc(c.seen) + '</div>' +
-        '<div class="shutter">' +
-          '<div><span class="lbl">Shutter count</span><b>' + fmt(count) + '</b></div>' +
-          '<div class="delta"><strong>+' + fmt(delta) + '</strong> ' + esc(c.deltaNote) + '</div>' +
-        '</div>' +
-        '<div class="life" role="img" aria-label="' + pct.toFixed(1) + '% of rated shutter life"><i style="width:' + pct.toFixed(1) + '%"></i></div>' +
-        '<div class="life-note">' + pct.toFixed(1) + "% of " + fmt(c.rated) + " rated life (set by you)</div>" +
-        spark(c.hist) +
-        '<div class="spark-labels"><span>Nov 2025 · ' + fmt(c.hist[0]) + '</span><span>Now · ' + fmt(count) + '</span></div>' +
-      '</article>';
-    }).join("");
+  /* ---------- Start ---------- */
+  renderDesk();
+  $("#nas-path").addEventListener("input", function () { state.nasEdited = true; });
+  $("#nas-path").addEventListener("keydown", function (e) { if (e.key === "Enter") checkNas(); });
+  $("#nas-check").addEventListener("click", function () { checkNas(); });
+  $("#nas-save").addEventListener("click", saveNas);
+  if (invoke) {
+    refreshNas();
+    refreshLedger();
+    poll();
+    setInterval(poll, POLL_MS);
+    setInterval(refreshNas, 15000);
+  } else {
+    $("#nas").innerHTML = '<span class="dot"></span><span>Not running in the app</span>';
+    ["#nas-path", "#nas-check", "#nas-save"].forEach(function (id) { $(id).disabled = true; });
+    renderLedger();
   }
-
-  /* ---------- History ---------- */
-  function renderHistory() {
-    $("#history").innerHTML = history.map(function (h, i) {
-      var check = h.check === "ok" ? '<span class="chip ok">Verified</span>'
-        : h.check === "warn" ? '<span class="chip warn">' + esc(h.checkText) + '</span>'
-        : '<span class="chip">Not checked</span>';
-      var folder = '<code>' + esc(h.folder) + '</code>' + (h.more ? ' <span class="muted">+' + h.more + ' more</span>' : "");
-      var cat = h.cat === "local"
-        ? '<span class="cat-cell"><span class="chip live">On this PC</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Open</button></span>'
-        : '<span class="cat-cell"><span class="chip">Stored on NAS</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Reopen</button></span>';
-      return '<tr' + (h.fresh ? ' class="fresh"' : "") + '>' +
-        '<td>' + esc(h.date) + '</td>' +
-        '<td>' + esc(h.card) + '</td>' +
-        '<td>' + esc(h.cam) + '</td>' +
-        '<td class="r">' + fmt(h.photos) + '</td>' +
-        '<td class="r">' + gb(h.size) + '</td>' +
-        '<td class="r">' + fmt(h.speed) + ' MB/s</td>' +
-        '<td>' + check + '</td>' +
-        '<td>' + folder + '</td>' +
-        '<td>' + cat + '</td>' +
-      '</tr>';
-    }).join("");
-  }
-
-  $("#history").addEventListener("click", function (e) {
-    var b = e.target.closest("[data-hopen]");
-    if (!b) return;
-    var h = history[+b.getAttribute("data-hopen")];
-    toast(h.cat === "local"
-      ? "Demo: opening " + h.folder + ".lrcat in Lightroom Classic."
-      : "Demo: copying " + h.folder + ".lrcat from the NAS to this PC, then opening it. Previews rebuild as you browse.");
-  });
-
-  /* ---------- Wire up ---------- */
-  renderShoots();
-  renderCards();
-  renderCameras();
-  renderHistory();
-  updateSummary();
-
-  $("#opt-verify").addEventListener("change", updateSummary);
-  $("#opt-video").addEventListener("change", updateSummary);
-  $("#start").addEventListener("click", function () {
-    $("#progress").querySelector(".prow").hidden = false;
-    startImport();
-  });
-  $("#stop").addEventListener("click", stopImport);
 })();
 </script>
 </body>

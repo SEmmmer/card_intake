@@ -1,3 +1,5 @@
 /target
 .DS_Store
+*.swp
 apps/desktop/gen/
+apps/desktop/resources/exiftool/
