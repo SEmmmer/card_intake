@@ -20,7 +20,6 @@ async function app(t, network = true, options = {}) {
     ledger: { cards: [], cameras: [], imports: [] },
     request: null, channel: null, finish: null,
     pending: options.pending || null,
-    lrStatus: null,
     catalogs: options.catalogs || [],
     cameras: options.cameras || { cameras: [], shared: { path: null, synced: false, error: null, folders: 0 } },
     library: null,
@@ -31,11 +30,12 @@ async function app(t, network = true, options = {}) {
     root: 'E:\\', volume: { id: 'CARD-ID', name: 'Camera card', filesystem: 'exFAT', total_bytes: 240e9, free_bytes: 200e9 },
     drive: options.drive || { bus: 'USB', product: 'MRW-G3', card_serial: null },
     health: options.health || null,
+    details: options.details || {},
     card_key: options.cardKey || 'CARD-ID',
     photos: 2, photo_bytes: 200, videos: 1, video_bytes: 100,
-    camera: { model: 'ILCE-7RM6', serial: '03506694', shutter_count: 894 },
+    camera: options.camera || { model: 'ILCE-7RM6', serial: '03506694', shutter_count: 894 },
     scan_ms: 12, times: { exif: 2, sidecar: 1, file_time: 0 },
-    groups: [{ date: '2026-11-06', first: '2026-11-06T17:00:00', last: '2026-11-06T21:00:00', photos: 2, photo_bytes: 200, videos: 1, video_bytes: 100 }],
+    groups: options.groups || [{ date: '2026-11-06', first: '2026-11-06T17:00:00', last: '2026-11-06T21:00:00', photos: 2, photo_bytes: 200, videos: 1, video_bytes: 100 }],
     destinations: options.destinations || []
   };
   window.__TAURI__ = { core: {
@@ -49,13 +49,16 @@ async function app(t, network = true, options = {}) {
         case 'nas_status': return Promise.resolve(fixture.nas);
         case 'cancel_import': return Promise.resolve();
         case 'get_pending_import': return Promise.resolve(fixture.pending);
-        case 'get_lightroom_settings': return Promise.resolve({ settings: { executable: 'C:\\Adobe\\Lightroom.exe', template: 'C:\\Empty.lrcat', catalog_root: 'D:\\LrC Catalogs' }, plugin_path: 'C:\\AppData\\CardIntake.lrplugin' });
-        case 'save_lightroom_settings': return Promise.resolve({ settings: args.settings, plugin_path: 'C:\\AppData\\CardIntake.lrplugin' });
+        case 'get_lightroom_settings': return Promise.resolve({ settings: { executable: 'C:\\Adobe\\Lightroom.exe', template: 'C:\\Empty.lrcat', catalog_root: 'D:\\LrC Catalogs', presets: null }, plugin: PLUGIN, presets_installed: 0 });
+        case 'save_lightroom_settings': return Promise.resolve({ settings: args.settings, plugin: PLUGIN, presets_installed: args.settings.presets ? 98 : 0 });
         case 'lightroom_catalogs': return Promise.resolve(fixture.catalogs);
-        case 'open_in_lightroom': return Promise.resolve({ catalog: 'D:\\LrC Catalogs\\2026\\2026-11-06_Tokyo\\2026-11-06_Tokyo.lrcat', request_id: 'lr-request' });
-        case 'lightroom_status': return Promise.resolve(fixture.lrStatus);
+        case 'open_in_lightroom': return Promise.resolve(fixture.launch || { catalog: 'D:\\LrC Catalogs\\2026\\2026-11-06_Tokyo\\2026-11-06_Tokyo.lrcat', name: '2026-11-06_Tokyo', already_open: false });
+        case 'finish_catalog': return Promise.resolve({ name: '2026-11-06_Tokyo', stored: '\\\\NAS\\photos\\2026\\2026-11-06_Tokyo\\_catalog' });
         case 'get_cameras': return Promise.resolve(fixture.cameras);
         case 'read_card_shutter': return Promise.resolve(fixture.cameras);
+        case 'read_card_health':
+          if (options.ledgerAfterHealth) Object.assign(fixture.ledger, options.ledgerAfterHealth);
+          return Promise.resolve(options.healthAnswer);
         case 'cancel_library_scan': return Promise.resolve();
         case 'scan_library':
           fixture.libraryChannel = args.onProgress;
@@ -75,8 +78,12 @@ async function app(t, network = true, options = {}) {
   await settle();
   const $ = selector => window.document.querySelector(selector);
   const type = (selector, value) => { $(selector).value = value; $(selector).dispatchEvent(new window.Event('input')); };
-  return { window, fixture, calls, timers, $, type };
+  const last = command => plain(calls.filter(c => c.command === command).pop().args);
+  return { window, fixture, calls, timers, $, type, last };
 }
+
+const PLUGIN = 'C:\\Users\\me\\AppData\\Roaming\\Adobe\\Lightroom\\Modules\\CardIntake.lrplugin';
+const cardDay = date => ({ date, first: date + 'T17:00:00', last: date + 'T21:00:00', photos: 2, photo_bytes: 200, videos: 1, video_bytes: 100 });
 
 function result(overrides = {}) {
   return {
@@ -133,7 +140,7 @@ test('imports like the prototype: progress in the desk with the form locked, the
   assert.equal(a.$('#done-path-0').textContent, '\\\\NAS\\photos\\2026\\2026-11-06_Tokyo');
   assert.match(done.textContent, /Catalog: D:\\LrC Catalogs\\2026\\2026-11-06_Tokyo\\2026-11-06_Tokyo\.lrcat/);
   assert.ok(done.querySelector('[data-open="0"]'));
-  assert.equal(a.$('#open-all'), null);
+  assert.equal(a.$('#open-trip'), null);
   assert.equal(a.$('#actions').hidden, true);
   assert.equal(a.$('#nas-save').disabled, false);
   const row = a.$('#history tbody tr');
@@ -179,7 +186,8 @@ test('a date with a folder on the NAS keeps its title; another title skips what 
   }));
   await settle();
   assert.match(a.$('#done').textContent, /3 files were already in 2026-11-06_夜景 and weren't copied again\./);
-  assert.match(a.$('#done-all, .done-all').textContent, /Open all 2 shoots in one catalog/);
+  assert.match(a.$('.done-all').textContent, /Open as a trip.*One catalog for all 2 shoots/);
+  assert.equal(a.$('#trip-name').value, '');
 });
 
 test('stop shows how far it got and Resume import repeats the same selection', async t => {
@@ -287,7 +295,7 @@ test('an NVMe card shows its health on insertion and is listed by serial with th
   assert.match(a.$('#health-title').innerHTML, /Healthy/);
   assert.match(a.$('#health-body').textContent, /Read from the card when it was inserted/);
   assert.equal(a.$('#health-read').textContent, 'Read again');
-  assert.match(a.$('.eyebrow').textContent, /Inserted card · drive E: · recognized by its serial number/);
+  assert.match(a.$('.eyebrow').textContent, /Inserted card · drive E: · NVMe drive · recognized by its serial number/);
   assert.equal(a.$('#card-name').textContent, 'CEA-G240T');
   assert.match(a.$('.card-title .chip').textContent, /CFexpress Type A · 240 GB · exFAT/);
   assert.match(a.$('.card-meta').textContent, /Last imported Oct 12 · 1 import by this app/);
@@ -304,6 +312,174 @@ test('an NVMe card shows its health on insertion and is listed by serial with th
 });
 
 const day = (date, min, max, first, last) => ({ date, min, max, first_shot: date + 'T' + first, last_shot: date + 'T' + last, firmware: '1.01' });
+
+const z9Health = { serial: '602123456789', model: 'CEB-G256T', passed: true, critical_warning: 0, percentage_used: 1, available_spare: 100,
+  data_written_bytes: 1.2e12, data_read_bytes: 3.4e12, power_cycles: 91, media_errors: 0 };
+
+test('a Nikon Z 9 card reads as an NVMe drive: its own model, serial and health', async t => {
+  const a = await app(t, true, {
+    // A CFexpress Type B card from a Z 9, in a reader that shows the card itself.
+    drive: { bus: 'NVMe', product: 'CEB-G256T', card_serial: '602123456789' },
+    health: z9Health, cardKey: 'sn:602123456789',
+    camera: { model: 'NIKON Z 9', serial: '3005326', shutter_count: 48213 },
+    ledger: { cards: [
+      { id: 'sn:602123456789', volume_id: 'CARD-ID', name: null, model: 'CEB-G256T', bus: 'NVMe', formats: 0, capacity_bytes: 240e9, filesystem: 'exFAT',
+        first_seen: '2026-11-07T09:20:00', last_seen: '2026-11-07T09:20:00', insertions: 1, hardware_serial: '602123456789', health: [] }
+    ] }
+  });
+  // The card is named and recognised by its own serial number, not the reader's.
+  assert.equal(a.$('#card-name').textContent, 'CEB-G256T');
+  assert.match(a.$('.eyebrow').textContent, /NVMe drive · recognized by its serial number/);
+  assert.match(a.$('.card-title .chip').textContent, /CFexpress Type B · 240 GB · exFAT/);
+  assert.match(a.$('.camera-tag').textContent, /NIKON Z 9/);
+  assert.match(a.$('.camera-tag').textContent, /SN 3005326/);
+  // Its health log is read on insertion, like any card the reader shows as NVMe.
+  assert.match(a.$('#health-title').innerHTML, /Healthy/);
+  assert.match(a.$('#health-body').textContent, /Read from the card when it was inserted/);
+  const [card] = a.window.document.querySelectorAll('#cards .item');
+  assert.match(card.textContent, /CEB-G256T/);
+  assert.match(card.textContent, /CFexpress Type B/);
+  assert.match(card.querySelector('.chips').textContent, /In reader/);
+});
+
+const bridgedHealth = { serial: 'P640GA20223532F1100', model: 'CHIPFANCIER CFE Platinum', firmware: 'ELFM20.2', passed: true,
+  critical_warning: 0, percentage_used: 0, available_spare: 100, data_written_bytes: 7.35e12, data_read_bytes: 5.88e12,
+  power_cycles: 1250, media_errors: 0, bridge: 'JMicron JMS583', device_type: null };
+
+test('a Type B card behind a JMicron USB bridge is read after asking for admin rights, then known by its serial', async t => {
+  const card = (id, overrides) => ({ id, volume_id: 'CARD-ID', name: null, model: null, bus: 'USB', formats: 0, capacity_bytes: 650e9,
+    filesystem: 'exFAT', first_seen: '2026-11-07T09:20:00', last_seen: '2026-11-07T09:20:00', insertions: 1, hardware_serial: null, health: [], ...overrides });
+  const known = { model: 'CHIPFANCIER CFE Platinum', hardware_serial: 'P640GA20223532F1100', first_seen: '2026-10-01T10:00:00' };
+  const a = await app(t, true, {
+    // Without admin rights the bridge can't say which card it is.
+    drive: { bus: 'USB', product: 'CHIPFANCIER', card_serial: null, usb_id: '152D:0583', bridge: 'JMicron JMS583' },
+    camera: { model: 'NIKON Z 9', serial: '3005326', shutter_count: 48213 },
+    ledger: { cards: [
+      // The card as inserted, new since it was formatted in the camera...
+      card('CARD-ID'),
+      // ...and the same card, read before.
+      card('sn:P640GA20223532F1100', { ...known, volume_id: 'OLD-ID', last_seen: '2026-10-01T10:00:00',
+        health: [{ at: '2026-10-01T10:00:00', health: bridgedHealth }] })
+    ] },
+    // The reading folds the inserted card into the card's own record.
+    healthAnswer: { kind: 'read', health: bridgedHealth, card_key: 'sn:P640GA20223532F1100' },
+    ledgerAfterHealth: { cards: [card('sn:P640GA20223532F1100', { ...known, formats: 1, insertions: 2,
+      health: [{ at: '2026-10-01T10:00:00', health: bridgedHealth }, { at: '2026-11-07T09:21:00', health: bridgedHealth }] })] }
+  });
+  assert.match(a.$('.eyebrow').textContent,
+    /Inserted card · drive E: · USB reader with a JMicron JMS583 bridge · recognized by its volume ID, which formatting changes/);
+  // The bridge is USB-to-NVMe, so the card is a CFexpress card; the reader's name isn't the card's model.
+  assert.match(a.$('.card-title .chip').textContent, /^CFexpress · 240 GB · exFAT/);
+  assert.equal(a.$('#health-read').textContent, 'Read card health');
+
+  a.$('#health-read').click();
+  assert.match(a.$('#health-body').textContent, /choose Yes when asked for admin rights/);
+  await settle();
+  assert.equal(a.last('read_card_health').root, 'E:\\');
+  assert.match(a.$('#health-title').innerHTML, /Healthy/);
+  assert.match(a.$('#health-body').textContent, /Read just now through the reader’s JMicron JMS583 bridge\./);
+  assert.match(a.$('#health-body').textContent, /Card serialP640GA20223532F1100/);
+  assert.match(a.$('#health-body').textContent, /Card modelCHIPFANCIER CFE Platinum/);
+  assert.match(a.$('#health-body').textContent, /FirmwareELFM20\.2/);
+  // One card, in the reader, typed by its health log.
+  const items = a.window.document.querySelectorAll('#cards .item');
+  assert.equal(items.length, 1);
+  assert.match(items[0].textContent, /CHIPFANCIER CFE Platinum/);
+  assert.match(items[0].textContent, /SN P640GA20223532F1100/);
+  assert.match(items[0].querySelector('.item-sub').textContent, /^CFexpress · 650 GB · exFAT/);
+  assert.match(items[0].querySelector('.chips').textContent, /In reader/);
+});
+
+// The DJI Osmo Pocket 3's 256 GB card in a two-slot Genesys Logic USB reader.
+const sdDetails = {
+  reader: { name: 'USB Storage', usb_id: '05E3:0764', usb_version: '3.20', protocol: 'BOT', link: 'USB 5 Gbps', link_capable: 'USB 5 Gbps' },
+  slot: 2, slots: 2, removable: true, write_protected: false, capacity_bytes: 255869321216, sector_bytes: 512, sd_class: 'SDXC',
+  partition_table: 'MBR', disk_signature: '00000000', partition_offset_bytes: 32768, partition_type: '07',
+  file_system: { name: 'exFAT', cluster_bytes: 131072, revision: '1.00', dirty: false, media_failure: false, percent_in_use: 81, data_offset_bytes: 7995392 }
+};
+
+test('an SD card in a USB reader shows what it reveals, and no health button', async t => {
+  const a = await app(t, true, {
+    drive: { bus: 'USB', product: 'MassStorageClass', card_serial: null, usb_id: '05E3:0764', bridge: null },
+    details: sdDetails,
+    camera: { model: 'PP-101', serial: '5WCQNBL6BB1A22', shutter_count: null },
+    ledger: { cards: [
+      { id: 'CARD-ID', volume_id: 'CARD-ID', name: null, model: null, bus: 'USB', sd_class: 'SDXC', formats: 0, capacity_bytes: 256e9, filesystem: 'exFAT',
+        first_seen: '2026-11-07T04:52:00', last_seen: '2026-11-07T04:52:00', insertions: 1, hardware_serial: null, health: [] }
+    ] }
+  });
+  assert.match(a.$('.card-title .chip').textContent, /^SDXC · 240 GB · exFAT/);
+  // No health log to read, and no admin prompt to go with it.
+  assert.equal(a.$('#health-read').hidden, true);
+  assert.match(a.$('#health-body').textContent, /SD cards keep no health log of their own/);
+  const details = a.$('#card-details').textContent;
+  assert.match(details, /ReaderUSB Storage \(05E3:0764\)/);
+  assert.match(details, /ConnectionUSB 5 Gbps · bulk-only/);
+  assert.match(details, /Slot2 of 2/);
+  assert.match(details, /Exact size255,869,321,216 bytes/);
+  assert.match(details, /SD classSDXC \(32 GB–2 TB\)/);
+  assert.match(details, /Lock switchOff/);
+  assert.match(details, /PartitionMBR at 32 KiB, type 07h/);
+  assert.match(details, /File systemexFAT 1\.00, 128 KiB clusters/);
+  assert.match(details, /Closed cleanlyYes/);
+  assert.match(details, /Bad sectors flaggedNo/);
+  assert.match(details, /known by its volume ID, which formatting changes/);
+  assert.equal(a.window.document.querySelectorAll('#card-details .health-note.warn').length, 0);
+  // The card list names it by its class too.
+  assert.match(a.$('#cards .item .item-sub').textContent, /^SDXC · 256 GB · exFAT/);
+});
+
+test('card details warn about an unclean file system, a locked card and a slow port', async t => {
+  const a = await app(t, true, {
+    details: { ...sdDetails, write_protected: true,
+      reader: { ...sdDetails.reader, link: 'USB 2.0 (480 Mbps)' },
+      file_system: { ...sdDetails.file_system, dirty: true, media_failure: true } }
+  });
+  const details = a.$('#card-details').textContent;
+  assert.match(details, /Lock switchOn \(read-only\)/);
+  assert.match(details, /Closed cleanlyNo/);
+  assert.match(details, /wasn’t closed cleanly/);
+  assert.match(details, /sectors it couldn’t read or write/);
+  assert.match(details, /The lock switch is on/);
+  assert.match(details, /can run at USB 5 Gbps but is connected at USB 2\.0 \(480 Mbps\)/);
+});
+
+test('a Z 9 counts its electronic shutter, and the desk says so', async t => {
+  const a = await app(t, true, {
+    drive: { bus: 'NVMe', product: 'CEB-G256T', card_serial: '602123456789' },
+    health: z9Health, cardKey: 'sn:602123456789',
+    camera: { model: 'NIKON Z 9', serial: '3005326', shutter_count: 48213 },
+    cameras: { shared: { path: '\\\\NAS\\photos\\.card-intake\\shutter-counts.json', synced: true, error: null, folders: 1 },
+      cameras: [
+        // ShutterCount from a Z 9 NEF: the electronic count, with MechanicalShutterCount 0.
+        { model: 'NIKON Z 9', name: 'Z 9', serial: '3005326', firmware: '05.30', rated_shutter: null, rating_source: null,
+          has_mechanical_shutter: false, shutter_reference: null, count: 48213, electronic_count: null,
+          last_shot: '2026-11-07T09:15:22', days: [day('2026-11-07', 48100, 48213, '08:40:00', '09:15:22')] }
+      ] }
+  });
+  await settle();
+  const [item] = a.window.document.querySelectorAll('#cameras .item');
+  assert.match(item.textContent, /Electronic shutter count48,213/);
+  assert.match(item.textContent, /NIKON Z 9/);
+  assert.match(item.textContent, /Firmware 05\.30/);
+  // Nothing claims a mechanical count or a mechanical life for a body with neither.
+  assert.doesNotMatch(item.textContent, /Mechanical|rated life/);
+});
+
+test('a card whose shutter count could not be read explains it beside other cameras', async t => {
+  const a = await app(t, true, {
+    camera: { model: 'ILCE-1', serial: '5021734', shutter_count: null,
+      shutter_note: 'Needs ExifTool for Windows. Put exiftool.exe on PATH or set CARD_INTAKE_EXIFTOOL, then restart the app.' },
+    cameras: { shared: { path: '\\\\NAS\\photos\\.card-intake\\shutter-counts.json', synced: true, error: null, folders: 1 },
+      cameras: [
+        { model: 'ILCE-7RM6', name: 'α7R VI', serial: '03506694', firmware: '1.01', rated_shutter: null, rating_source: null, shutter_reference: 500000, count: 894, electronic_count: null,
+          last_shot: '2026-11-06T20:51:07', days: [day('2026-11-06', 699, 894, '17:21:17', '20:51:07')] }
+      ] }
+  });
+  await settle();
+  assert.match(a.$('#cameras').textContent, /ILCE-7RM6/);
+  assert.match(a.$('#cameras').textContent, /Needs ExifTool for Windows/);
+});
 
 test('cameras show the shutter count graph like the prototype', async t => {
   const a = await app(t, true, { cameras: {
@@ -350,38 +526,111 @@ test('without a connected share the shutter history stays on this computer', asy
   assert.equal(a.$('#lib-scan').disabled, true);
 });
 
-test('Lightroom: open a shoot or all shoots from the done panel, and Open or Reopen from the history', async t => {
+test('Lightroom: open a shoot or a trip from the done panel; Open, Reopen and Finish from the history', async t => {
   const a = await app(t, true, {
-    catalogs: [{ import_id: '2026-10-12T10:00:00', state: 'local', catalog: 'D:\\x.lrcat' }, { import_id: '2026-10-01T10:00:00', state: 'nas', catalog: 'D:\\y.lrcat' }],
+    catalogs: [
+      { import_id: '2026-10-12T10:00:00', shoots: [0], name: '2026-11-06_Tokyo', trip: false, state: 'local' },
+      { import_id: '2026-10-01T10:00:00', shoots: [0, 1], name: '2026-10-01_Fall', trip: true, state: 'nas' },
+      { import_id: '2026-09-20T10:00:00', shoots: [0], name: '2026-09-20_A', trip: false, state: 'open' }
+    ],
     ledger: { imports: [
       result({ started_at: '2026-10-12T10:00:00', finished_at: '2026-10-12T10:05:00' }),
-      result({ started_at: '2026-10-01T10:00:00', finished_at: '2026-10-01T10:05:00', shoots: ['2026\\2026-10-01_A', '2026\\2026-10-01_B'] }),
+      result({ started_at: '2026-10-01T10:00:00', finished_at: '2026-10-01T10:05:00', shoots: ['2026\\2026-10-01_A', '2026\\2026-10-02_B'] }),
+      result({ started_at: '2026-09-20T10:00:00', finished_at: '2026-09-20T10:05:00', shoots: ['2026\\2026-09-20_A'] }),
       result({ started_at: '2026-09-01T10:00:00', status: 'cancelled' })
     ] }
   });
   await settle();
   const rows = a.window.document.querySelectorAll('#history tbody tr');
-  assert.match(rows[0].textContent, /On this PCOpen/);
-  assert.match(rows[1].textContent, /2026-10-01_A \+1 more/);
-  assert.match(rows[1].textContent, /Stored on NASReopen/);
-  assert.match(rows[2].lastElementChild.textContent, /—/);
+  const catalog = row => row.lastElementChild.textContent;
+  assert.equal(catalog(rows[0]), 'On this PCOpenFinish');
+  assert.equal(catalog(rows[1]), 'Trip 2026-10-01_FallFinished · on NASReopen');
+  assert.equal(catalog(rows[2]), 'Open in Lightroom');
+  assert.equal(catalog(rows[3]), '—');
   rows[1].querySelector('[data-hopen]').click();
   await settle();
-  assert.deepEqual(plain(a.calls.filter(c => c.command === 'open_in_lightroom').pop().args), { importId: '2026-10-01T10:00:00', shoot: null });
-
-  a.$('#start').click();
-  a.fixture.finish(result({ shoots: ['2026\\2026-11-06_Tokyo', '2026\\2026-11-07_Kyoto'] }));
+  assert.deepEqual(a.last('open_in_lightroom'), { importId: '2026-10-01T10:00:00', shoot: 0, trip: null });
+  a.window.document.querySelector('#history [data-hfinish]').click();
   await settle();
+  assert.deepEqual(a.last('finish_catalog'), { importId: '2026-10-12T10:00:00', shoot: 0 });
+  assert.match(a.$('#toast').textContent, /2026-11-06_Tokyo is stored on the NAS in .*_catalog\. The copy on this computer was removed/);
+
+  // The done panel: each shoot opens its own catalog, or all of them open as a trip.
+  a.$('#start').click();
+  a.fixture.finish(result({ shoots: ['2026\\2026-11-06_Tokyo', '2026\\2026-11-07_Tokyo'] }));
+  await settle();
+  assert.match(a.$('#done').textContent, /Catalog: D:\\LrC Catalogs\\2026\\2026-11-07_Tokyo\\2026-11-07_Tokyo\.lrcat/);
   a.$('[data-open="1"]').click();
   await settle();
-  assert.deepEqual(plain(a.calls.filter(c => c.command === 'open_in_lightroom').pop().args), { importId: '2026-11-06T22:00:00', shoot: 1 });
-  assert.equal(a.$('[data-open="1"]').textContent, 'Open again');
-  assert.match(a.$('#toast').textContent, /Opened 2026-11-06_Tokyo\.lrcat in Lightroom Classic/);
-  a.$('#open-all').click();
+  assert.deepEqual(a.last('open_in_lightroom'), { importId: '2026-11-06T22:00:00', shoot: 1, trip: null });
+  assert.match(a.$('#toast').textContent, /Opening 2026-11-06_Tokyo in Lightroom Classic\. The Card Intake plug-in adds new photos/);
+  assert.equal(a.$('#trip-name').value, 'Tokyo');
+  a.type('#trip-name', '');
+  a.$('#open-trip').click();
+  assert.equal(a.$('#toast').textContent, 'Name the trip first.');
+  a.type('#trip-name', 'Japan');
+  a.$('#open-trip').click();
   await settle();
-  assert.equal(a.calls.filter(c => c.command === 'open_in_lightroom').pop().args.shoot, null);
-  a.fixture.lrStatus = { status: 'complete', added: 1284, skipped: 0, failed: 0, detail: '' };
-  a.timers.get(1500)();
+  assert.deepEqual(a.last('open_in_lightroom'), { importId: '2026-11-06T22:00:00', shoot: null, trip: 'Japan' });
+  // Once the trip exists, the done panel says so.
+  a.fixture.catalogs = [{ import_id: '2026-11-06T22:00:00', shoots: [0, 1], name: '2026-11-06_Japan', trip: true, state: 'open' }];
+  a.fixture.launch = { catalog: 'x', name: '2026-11-06_Japan', already_open: true };
+  a.$('[data-open="0"]').click();
   await settle();
-  assert.match(a.$('#toast').textContent, /Lightroom added 1,284 photos to 2026-11-06_Tokyo\.lrcat/);
+  assert.match(a.$('#toast').textContent, /^2026-11-06_Japan is already open in Lightroom\. To add new files, choose Library → Plug-in Extras → Add new files from NAS\.$/);
+  assert.match(a.$('#done').textContent, /Trip catalog: 2026-11-06_Japan/);
+  assert.equal(a.$('#trip-name').value, 'Japan');
+});
+
+test('Open in Lightroom can be pressed during the import and opens when the import is verified', async t => {
+  const a = await app(t);
+  a.type('#name-0', 'Tokyo');
+  a.$('#start').click();
+  assert.equal(a.$('#arm-what'), null);
+  a.$('#arm').click();
+  assert.equal(a.$('#lr-arm').textContent, 'Lightroom opens 2026-11-06_Tokyo when the import is verified.Don’t open');
+  assert.equal(a.calls.filter(c => c.command === 'open_in_lightroom').length, 0);
+  a.fixture.finish(result());
+  await settle();
+  assert.deepEqual(a.last('open_in_lightroom'), { importId: '2026-11-06T22:00:00', shoot: 0, trip: null });
+
+  // Several shoots: open the first, or all of them as a trip. A stopped import opens nothing.
+  const b = await app(t, true, { groups: [cardDay('2026-11-06'), cardDay('2026-11-07')] });
+  b.$('#start').click();
+  assert.equal(b.$('#arm-what').textContent, '2026-11-06All as a trip');
+  b.$('#arm-what').value = 'trip';
+  b.$('#arm-what').dispatchEvent(new b.window.Event('change'));
+  assert.equal(b.$('#arm-trip').hidden, false);
+  b.$('#arm').click();
+  assert.equal(b.$('#toast').textContent, 'Name the trip first.');
+  b.type('#arm-trip', 'Japan');
+  b.$('#arm').click();
+  assert.match(b.$('#lr-arm').textContent, /^Lightroom opens the trip Japan when the import is verified\./);
+  b.fixture.finish(result({ status: 'cancelled', shoots: [] }));
+  await settle();
+  assert.equal(b.calls.filter(c => c.command === 'open_in_lightroom').length, 0);
+  assert.equal(b.$('#toast').textContent, "Lightroom wasn't opened: the import didn't finish.");
+  b.$('#start').click();
+  assert.equal(b.$('#arm').textContent, 'Open in Lightroom when done');
+  b.$('#arm-what').value = 'trip';
+  b.$('#arm-what').dispatchEvent(new b.window.Event('change'));
+  b.type('#arm-trip', 'Japan');
+  b.$('#arm').click();
+  b.fixture.finish(result({ shoots: ['2026\\2026-11-06', '2026\\2026-11-07'] }));
+  await settle();
+  assert.deepEqual(b.last('open_in_lightroom'), { importId: '2026-11-06T22:00:00', shoot: null, trip: 'Japan' });
+});
+
+test('Lightroom setup installs the plug-in and a presets folder for every catalog', async t => {
+  const a = await app(t);
+  assert.match(a.$('#lr-plugin').textContent, /^The Card Intake plug-in is installed in Lightroom\. Restart Lightroom once/);
+  assert.equal(a.$('#lr-note').textContent, 'Ready');
+  a.$('#lr-presets').value = 'C:\\Profiles';
+  a.$('#lr-save').click();
+  await settle();
+  assert.deepEqual(a.last('save_lightroom_settings').settings, {
+    executable: 'C:\\Adobe\\Lightroom.exe', template: 'C:\\Empty.lrcat', catalog_root: 'D:\\LrC Catalogs', presets: 'C:\\Profiles'
+  });
+  assert.match(a.$('#lr-plugin').textContent, /98 presets and profiles are installed for every catalog\.$/);
+  assert.equal(a.$('#lr-status').textContent, 'Saved.');
 });

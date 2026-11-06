@@ -11,6 +11,7 @@ serde_json = { workspace = true }
 walkdir = { workspace = true }
 tempfile = "3"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -19,4 +20,16 @@ libc = "0.2"
 plist = "1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+    "Win32_Devices_Usb",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_IscsiDisc",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+] }

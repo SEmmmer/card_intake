@@ -1,4 +1,8 @@
 //! Lists the photos and videos on a camera card.
+//!
+//! Sony cards are read from `DCIM` and `M4ROOT/CLIP`; other makers, including Nikon
+//! (whose Z 9 cards keep photos and videos in a folder such as `DCIM/100NCZ_9`), are
+//! read from the whole `DCIM` tree. Nikon raws are `.NEF` (`.NRW` on older bodies).
 
 use crate::exif;
 use chrono::{DateTime, Local, NaiveDateTime};
@@ -37,8 +41,9 @@ pub struct MediaFile {
     pub kind: MediaKind,
 }
 
-const PHOTO_EXTENSIONS: &[&str] = &["arw", "dng", "jpg", "jpeg", "hif", "heic"];
-const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mts"];
+const PHOTO_EXTENSIONS: &[&str] = &["arw", "nef", "nrw", "dng", "jpg", "jpeg", "hif", "heic"];
+// "nev" is Nikon's N-RAW video, which a Z 9 writes instead of, or beside, an MP4.
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mts", "nev"];
 
 /// Photo, video, or `None` for anything else (XML sidecars, thumbnails, databases).
 pub fn kind_of(path: &Path) -> Option<MediaKind> {
@@ -249,6 +254,62 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_nikon_z_9_card() {
+        let card = tempfile::tempdir().unwrap();
+        let root = card.path();
+        let nef = crate::exif::tests::nikon_sample();
+        // Nikon keeps photos and clips in its own folder name inside DCIM ("NCZ_9"
+        // by default on a Z 9), not in Sony's DSC- or clip folders.
+        write(&root.join("DCIM/100NCZ_9/DSC_0001.NEF"), &nef, 5);
+        write(&root.join("DCIM/100NCZ_9/DSC_0001.JPG"), &[0; 7], 5);
+        write(&root.join("DCIM/100NCZ_9/DSC_0001.xmp"), b"edits", 5);
+        write(&root.join("DCIM/100NCZ_9/DSC_0100.MOV"), &[0; 11], 3);
+
+        let files = scan_card(root).unwrap();
+        let mut found: Vec<_> = files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.file_name().unwrap().to_string_lossy().into_owned(),
+                    f.kind,
+                    f.time_source,
+                    f.size,
+                )
+            })
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            found,
+            [
+                (
+                    "DSC_0001.JPG".to_string(),
+                    MediaKind::Photo,
+                    TimeSource::FileTime,
+                    7
+                ),
+                (
+                    "DSC_0001.NEF".to_string(),
+                    MediaKind::Photo,
+                    TimeSource::Exif,
+                    nef.len() as u64
+                ),
+                (
+                    "DSC_0100.MOV".to_string(),
+                    MediaKind::Video,
+                    TimeSource::FileTime,
+                    11
+                ),
+            ]
+        );
+        // The NEF's own capture time, so the shoot lands on the right day.
+        let raw = files
+            .iter()
+            .find(|f| f.path.extension().unwrap().eq_ignore_ascii_case("NEF"))
+            .unwrap();
+        assert_eq!(raw.captured.to_string(), "2026-11-07 09:15:22");
+    }
+
+    #[test]
     fn empty_card_has_no_files() {
         let card = tempfile::tempdir().unwrap();
         assert!(scan_card(card.path()).unwrap().is_empty());
@@ -263,7 +324,10 @@ mod tests {
     #[test]
     fn kind_ignores_case() {
         assert_eq!(kind_of(Path::new("a/DSC00001.ARW")), Some(MediaKind::Photo));
+        assert_eq!(kind_of(Path::new("a/DSC_0001.NEF")), Some(MediaKind::Photo));
+        assert_eq!(kind_of(Path::new("a/SLOW.NRW")), Some(MediaKind::Photo));
         assert_eq!(kind_of(Path::new("a/c0001.mp4")), Some(MediaKind::Video));
+        assert_eq!(kind_of(Path::new("a/DSC_0001.NEV")), Some(MediaKind::Video));
         assert_eq!(kind_of(Path::new("a/AVIN0001.BNP")), None);
     }
 

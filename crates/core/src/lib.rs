@@ -1,6 +1,7 @@
 //! Shared logic for Card Intake, used by the desktop app and the NAS service.
 
 pub mod cameras;
+pub mod card_details;
 pub mod destinations;
 pub mod eject;
 pub mod exif;

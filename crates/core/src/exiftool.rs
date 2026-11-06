@@ -1,6 +1,8 @@
-//! Runs ExifTool for what only it can decode, such as Sony's shutter count,
-//! which sits in an enciphered maker-note block.
+//! Runs ExifTool for what only it can decode, such as Sony's shutter count, which sits
+//! in an enciphered maker-note block, and Nikon's, which its raws and JPEGs carry in a
+//! maker note the camera writes.
 
+use crate::cameras;
 use chrono::NaiveDateTime;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -69,27 +71,48 @@ fn details(obj: &Map<String, Value>) -> CameraDetails {
         obj.get(key)
             .and_then(|v| v.as_u64().or_else(|| v.as_str()?.trim().parse().ok()))
     };
+    let model = text("Model");
+    // The count a body keeps in ShutterCount: its mechanical actuations alone on bodies
+    // that have a mechanical shutter to count, its whole (electronic) count on a body
+    // that doesn't. ImageCount and ShutterCount2/3 are not independent counters.
+    let total = number("ShutterCount")
+        .or_else(|| number("ShutterCount3"))
+        .or_else(|| number("ShutterCount2"));
+    let mechanical = number("MechanicalShutterCount");
+    // A body without a mechanical shutter (the Nikon Z 9) writes 0 in
+    // MechanicalShutterCount on every photo, while ShutterCount carries the real count:
+    // there the 0 is not a reading and the total is. On a body with a mechanical shutter,
+    // 0 actuations there is a valid reading, so it comes first.
+    let (shutter_count, electronic_count) = match &model {
+        Some(model) if !cameras::has_mechanical_shutter(model) => (total, None),
+        _ => (mechanical.or(total), number("ElectronicShutterCount")),
+    };
 
     CameraDetails {
         make: text("Make"),
-        model: text("Model"),
+        model,
         serial: text("SerialNumber"),
         internal_serial: text("InternalSerialNumber"),
         firmware: text("Software"),
         lens: text("LensModel"),
-        shutter_count: number("MechanicalShutterCount")
-            .or_else(|| number("ShutterCount"))
-            .or_else(|| number("ShutterCount3"))
-            .or_else(|| number("ShutterCount2")),
-        // ImageCount and ShutterCount2/3 are not independent electronic counters.
-        electronic_count: number("ElectronicShutterCount"),
+        shutter_count,
+        electronic_count,
     }
 }
 
-/// "ILCE-7RM6 v1.01" becomes "1.01".
+/// "ILCE-7RM6 v1.01" and Nikon's "Ver.05.30" both become "1.01" and "05.30".
 pub fn firmware_version(software: &str) -> String {
     let last = software.split_whitespace().last().unwrap_or(software);
-    last.trim_start_matches(['v', 'V']).to_string()
+    // Nikon writes the version as "Ver.05.30", Sony as "ILCE-7RM6 v1.01".
+    let version = if last
+        .get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case("ver."))
+    {
+        &last[4..]
+    } else {
+        last
+    };
+    version.trim_start_matches(['v', 'V']).to_string()
 }
 
 /// One photo's shutter count and when it was taken.
@@ -147,7 +170,7 @@ pub fn shutter_samples(exiftool: &Path, photos: &[PathBuf]) -> io::Result<Vec<Sh
 /// The photos worth reading in a folder: one per shot, preferring the raw file when
 /// the camera also saved a JPEG or HEIF.
 pub fn one_per_shot(photos: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
-    const RANK: &[&str] = &["arw", "hif", "heic", "jpg", "jpeg"];
+    const RANK: &[&str] = &["arw", "nef", "nrw", "hif", "heic", "jpg", "jpeg"];
     let rank = |p: &Path| {
         let ext = p.extension()?.to_str()?.to_ascii_lowercase();
         RANK.iter().position(|r| *r == ext)
@@ -270,20 +293,60 @@ mod tests {
                 "a/DSC2.jpg",
                 "a/DSC3.JPG",
                 "a/DSC4.dng",
+                "a/DSC_0005.JPG",
+                "a/DSC_0005.NEF",
                 "a/x.xmp",
             ]
             .map(PathBuf::from),
         );
         assert_eq!(
             picked,
-            ["a/DSC1.ARW", "a/DSC2.HIF", "a/DSC3.JPG"].map(PathBuf::from)
+            ["a/DSC1.ARW", "a/DSC2.HIF", "a/DSC3.JPG", "a/DSC_0005.NEF"].map(PathBuf::from)
         );
+    }
+
+    #[test]
+    fn a_nikon_z_9_count_is_shutter_count_not_its_zero_mechanical_one() {
+        // Cut from a real Z 9 NEF (ExifTool 13.59): the body has no mechanical shutter,
+        // so MechanicalShutterCount stays 0 and ShutterCount carries the count.
+        let json = br#"[{"SourceFile":"DSC_0020.NEF","Make":"NIKON CORPORATION",
+            "Model":"NIKON Z 9","SerialNumber":3005326,"Software":"Ver.01.00",
+            "LensModel":"NIKKOR Z 14-30mm f/4 S","ShutterCount":25,
+            "MechanicalShutterCount":0,"DateTimeOriginal":"2022:02:05 13:48:11"}]"#;
+        let z9 = parse_json(json).unwrap();
+        assert_eq!(z9.model.as_deref(), Some("NIKON Z 9"));
+        assert_eq!(z9.serial.as_deref(), Some("3005326"));
+        assert_eq!(z9.shutter_count, Some(25));
+        assert_eq!(z9.electronic_count, None);
+
+        let samples = parse_shutter_json(json).unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].model, "NIKON Z 9");
+        assert_eq!(samples[0].count, 25);
+        assert_eq!(samples[0].firmware.as_deref(), Some("01.00"));
+        assert_eq!(samples[0].taken.to_string(), "2022-02-05 13:48:11");
+
+        // Only a 0 mechanical count and no total: nothing was measured.
+        let nothing = parse_json(br#"[{"Model":"NIKON Z 9","MechanicalShutterCount":0}]"#).unwrap();
+        assert_eq!(nothing.shutter_count, None);
+
+        // For a body that has a mechanical shutter, its own count comes first and 0 is a
+        // valid reading; so does Sony's single count.
+        let z8 =
+            parse_json(br#"[{"Model":"NIKON Z 8","ShutterCount":900,"MechanicalShutterCount":0}]"#)
+                .unwrap();
+        assert_eq!(z8.shutter_count, Some(0));
+        let sony = parse_json(br#"[{"Model":"ILCE-7RM6","ShutterCount":0}]"#).unwrap();
+        assert_eq!(sony.shutter_count, Some(0));
     }
 
     #[test]
     fn firmware_version_drops_the_model_name() {
         assert_eq!(firmware_version("ILCE-7RM6 v1.01"), "1.01");
         assert_eq!(firmware_version("2.00"), "2.00");
+        // Nikon writes "Ver.05.30" where Sony writes "v1.01".
+        assert_eq!(firmware_version("Ver.05.30"), "05.30");
+        assert_eq!(firmware_version("NIKON Z 9 Ver.05.30"), "05.30");
     }
 
     #[test]

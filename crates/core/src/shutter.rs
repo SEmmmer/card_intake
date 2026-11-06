@@ -1,10 +1,14 @@
 //! Shutter count history, kept per camera as one reading range per shooting day.
 //!
-//! The same database lives in two places: a copy in this computer's app data, and the
-//! shared one in the photo share (`.card-intake/shutter-counts.json`), which every
+//! The history is stored in SQLite (see [`store`]): a copy in this computer's app data,
+//! and the shared one in the photo share (`.card-intake/shutter.sqlite`), which every
 //! computer running Card Intake reads and adds to. Merging is idempotent (per day it
 //! keeps the lowest and highest count), so two computers can add the same photos
-//! without counting them twice, and any copy can be merged into any other.
+//! without counting them twice. [`ShutterDb`] holds readings in memory before they're
+//! stored, and the rows a sync moves between databases.
+
+mod store;
+pub use store::{SHARED_DB, Store, shared_path, sync_shared};
 
 use crate::cameras;
 use crate::exiftool::{self, ShutterSample};
@@ -14,12 +18,13 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 /// Folder in the photo share for Card Intake's shared files.
 pub const SHARED_DIR: &str = ".card-intake";
+/// The JSON file older Card Intake builds kept the history in.
 pub const SHARED_FILE: &str = "shutter-counts.json";
-/// Format version this build writes. A newer file on the NAS is never overwritten.
+/// The JSON format version older builds wrote.
 pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -189,8 +194,13 @@ impl ShutterDb {
         }
     }
 
-    /// Loads a database, or an empty one when the file doesn't exist.
-    pub fn load(path: &Path) -> io::Result<Self> {
+    pub fn is_empty(&self) -> bool {
+        self.cameras.is_empty() && self.folders.is_empty()
+    }
+
+    /// Reads a JSON database written by an older Card Intake, or an empty one when the
+    /// file doesn't exist.
+    pub fn load_json(path: &Path) -> io::Result<Self> {
         match std::fs::read(path) {
             Ok(bytes) => {
                 let loaded: ShutterDb = serde_json::from_slice(&bytes).map_err(|e| {
@@ -216,22 +226,6 @@ impl ShutterDb {
         }
     }
 
-    /// Writes a temporary file next to the database and renames it into place, so
-    /// readers on other computers never see half a file.
-    pub fn save(&self, path: &Path) -> io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let mut copy = self.clone();
-        copy.version = copy.version.max(VERSION);
-        let text = serde_json::to_vec_pretty(&copy).map_err(io::Error::other)?;
-        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, path).inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        })
-    }
-
     /// Cameras for display, the most recently used first.
     pub fn views(&self) -> Vec<CameraView> {
         let mut views: Vec<_> = self
@@ -247,6 +241,9 @@ impl ShutterDb {
                     firmware: c.days.iter().rev().find_map(|d| d.firmware.clone()),
                     rated_shutter: info.and_then(|i| i.rated_shutter),
                     rating_source: info.and_then(|i| i.rating_source),
+                    // A body without a mechanical shutter (the Nikon Z 9) counts its
+                    // electronic shutter only, so its count is that one.
+                    has_mechanical_shutter: cameras::has_mechanical_shutter(&c.model),
                     shutter_reference: info.and_then(|i| i.shutter_reference),
                     count: last.max,
                     electronic_count: c.days.iter().filter_map(|d| d.electronic_max).max(),
@@ -270,6 +267,9 @@ pub struct CameraView {
     /// The maker's official shutter rating, when it published one.
     pub rated_shutter: Option<u64>,
     pub rating_source: Option<&'static str>,
+    /// Whether the count above is a mechanical one. False for a body with no mechanical
+    /// shutter (the Nikon Z 9), whose count is its electronic shutter's.
+    pub has_mechanical_shutter: bool,
     /// The highest shutter count seen.
     pub count: u64,
     pub electronic_count: Option<u64>,
@@ -277,77 +277,6 @@ pub struct CameraView {
     pub shutter_reference: Option<u64>,
     pub last_shot: NaiveDateTime,
     pub days: Vec<DayCounts>,
-}
-
-/// The shared database's path in the photo share.
-pub fn shared_path(nas_root: &Path) -> PathBuf {
-    nas_root.join(SHARED_DIR).join(SHARED_FILE)
-}
-
-/// Merges `local` into the shared database and returns the merged result. Writes only
-/// when `local` adds something, under a lock file so two computers don't overwrite
-/// each other's additions.
-pub fn sync_shared(nas_root: &Path, local: &ShutterDb) -> io::Result<ShutterDb> {
-    let path = shared_path(nas_root);
-    let current = ShutterDb::load(&path)?;
-    let mut merged = current.clone();
-    merged.merge(local);
-    if merged == current {
-        return Ok(merged);
-    }
-    if current.version > VERSION {
-        return Err(io::Error::other(
-            "The shutter count database on the NAS was written by a newer Card Intake. Update this app to add to it.",
-        ));
-    }
-    let _lock = Lock::acquire(&path.with_extension("lock"))?;
-    // Read again under the lock: another computer may have just added to it.
-    let mut merged = ShutterDb::load(&path)?;
-    merged.merge(local);
-    merged.save(&path)?;
-    Ok(merged)
-}
-
-/// A lock file; removed when dropped. A lock older than a minute is from a computer
-/// that crashed or lost the share, and is taken over.
-struct Lock(PathBuf);
-
-impl Lock {
-    fn acquire(path: &Path) -> io::Result<Lock> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            match std::fs::File::create_new(path) {
-                Ok(_) => return Ok(Lock(path.to_path_buf())),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    let stale = std::fs::metadata(path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| SystemTime::now().duration_since(t).ok())
-                        .is_some_and(|age| age > Duration::from_secs(60));
-                    if stale {
-                        let _ = std::fs::remove_file(path);
-                        continue;
-                    }
-                    if std::time::Instant::now() > deadline {
-                        return Err(io::Error::other(
-                            "Another computer is updating the shutter count database on the NAS. Try again in a minute.",
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(200));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
 }
 
 /// A folder of photos in the share, and what's in it.
@@ -557,8 +486,8 @@ mod tests {
             electronic_count: Some(1200),
             ..sample(0, "2026-11-07 09:00")
         });
-        db.save(&path).unwrap();
-        let loaded = ShutterDb::load(&path).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&db).unwrap()).unwrap();
+        let loaded = ShutterDb::load_json(&path).unwrap();
         assert_eq!(loaded.views()[0].electronic_count, Some(1234));
         assert_eq!(loaded.views()[0].count, 1);
         let mut old = serde_json::to_value(&loaded).unwrap();
@@ -570,7 +499,7 @@ mod tests {
         old["folders"] =
             serde_json::json!({ "2026/shoot": { "photos": 1, "bytes": 100, "modified": 200 } });
         std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
-        let migrated = ShutterDb::load(&path).unwrap();
+        let migrated = ShutterDb::load_json(&path).unwrap();
         assert_eq!(migrated.views()[0].count, 1);
         assert_eq!(migrated.views()[0].electronic_count, None);
         assert!(migrated.folders.is_empty());
@@ -649,76 +578,6 @@ mod tests {
             ..sample(5, "2026-10-30 10:00")
         });
         assert_eq!(a.cameras.len(), 2);
-    }
-
-    #[test]
-    fn syncs_with_the_shared_file_and_writes_only_when_something_is_new() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pc = ShutterDb::default();
-        pc.add(&sample(700, "2026-11-06 19:00"));
-        let shared = sync_shared(dir.path(), &pc).unwrap();
-        assert_eq!(shared.cameras[0].days[0].max, 700);
-        let path = shared_path(dir.path());
-        assert_eq!(ShutterDb::load(&path).unwrap().version, VERSION);
-
-        // A Mac adds another day; the PC's next sync brings it in.
-        let mut mac = ShutterDb::default();
-        mac.add(&sample(894, "2026-11-07 10:00"));
-        sync_shared(dir.path(), &mac).unwrap();
-        let both = sync_shared(dir.path(), &pc).unwrap();
-        assert_eq!(both.cameras[0].days.len(), 2);
-
-        // Nothing new: the file isn't rewritten.
-        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
-        std::thread::sleep(Duration::from_millis(20));
-        sync_shared(dir.path(), &both).unwrap();
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().modified().unwrap(),
-            before
-        );
-        assert!(!path.with_extension("lock").exists());
-    }
-
-    #[test]
-    fn refuses_a_damaged_or_newer_shared_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = shared_path(dir.path());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"{not json").unwrap();
-        let mut pc = ShutterDb::default();
-        pc.add(&sample(700, "2026-11-06 19:00"));
-        assert!(
-            sync_shared(dir.path(), &pc)
-                .unwrap_err()
-                .to_string()
-                .contains("damaged")
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), b"{not json");
-
-        std::fs::write(&path, br#"{"version": 99, "cameras": []}"#).unwrap();
-        assert!(
-            sync_shared(dir.path(), &pc)
-                .unwrap_err()
-                .to_string()
-                .contains("newer")
-        );
-    }
-
-    #[test]
-    fn a_stale_lock_is_taken_over() {
-        let dir = tempfile::tempdir().unwrap();
-        let lock = dir.path().join("x.lock");
-        std::fs::write(&lock, b"").unwrap();
-        let old = SystemTime::now() - Duration::from_secs(120);
-        std::fs::File::options()
-            .write(true)
-            .open(&lock)
-            .unwrap()
-            .set_modified(old)
-            .unwrap();
-        let held = Lock::acquire(&lock).unwrap();
-        drop(held);
-        assert!(!lock.exists());
     }
 
     #[test]

@@ -32,6 +32,9 @@ pub struct CardRecord {
     /// How the card was connected the last time: "NVMe", "USB", "SD"...
     #[serde(default)]
     pub bus: Option<String>,
+    /// "SDHC", "SDXC"... for an SD card, from its size.
+    #[serde(default)]
+    pub sd_class: Option<String>,
     /// Formats noticed: the same card (by serial number) came back with a new volume ID.
     #[serde(default)]
     pub formats: u32,
@@ -91,6 +94,7 @@ pub struct CardSighting {
     pub hardware_serial: Option<String>,
     pub model: Option<String>,
     pub bus: Option<String>,
+    pub sd_class: Option<String>,
     pub capacity_bytes: Option<u64>,
     pub filesystem: Option<String>,
     pub reader: Option<String>,
@@ -168,6 +172,7 @@ impl Ledger {
                 card.hardware_serial = seen.hardware_serial.or(card.hardware_serial.take());
                 card.model = seen.model.or(card.model.take());
                 card.bus = seen.bus.or(card.bus.take());
+                card.sd_class = seen.sd_class.or(card.sd_class.take());
                 card.capacity_bytes = seen.capacity_bytes.or(card.capacity_bytes);
                 card.filesystem = seen.filesystem.or(card.filesystem.take());
                 card.reader = seen.reader.or(card.reader.take());
@@ -185,6 +190,7 @@ impl Ledger {
                     name: None,
                     model: seen.model,
                     bus: seen.bus,
+                    sd_class: seen.sd_class,
                     formats: 0,
                     capacity_bytes: seen.capacity_bytes,
                     filesystem: seen.filesystem,
@@ -233,6 +239,78 @@ impl Ledger {
             card.health.remove(0);
         }
         true
+    }
+
+    /// Adds a health reading to the card that has `volume_id` now, which learns the
+    /// card's own serial number and model from it. Behind a USB bridge the serial isn't
+    /// known on insertion, so a card formatted since it was last read comes in as a new
+    /// record; when the ledger already knows its serial, that record folds into the
+    /// card's own, and the format is counted. Returns the card's key, or `None` when the
+    /// card isn't known.
+    pub fn record_reading(
+        &mut self,
+        volume_id: Option<&str>,
+        health: CardHealth,
+        now: NaiveDateTime,
+    ) -> Option<String> {
+        let serial = health.serial.clone();
+        let by_serial = serial.as_ref().and_then(|s| {
+            self.cards
+                .iter()
+                .position(|c| c.hardware_serial.as_ref() == Some(s))
+        });
+        let by_volume = volume_id.and_then(|volume| {
+            self.cards.iter().position(|c| {
+                c.current_volume_id() == volume
+                    && (c.hardware_serial.is_none() || c.hardware_serial == serial)
+            })
+        });
+        let index = match (by_serial, by_volume) {
+            (Some(card), Some(sighting)) if card != sighting => self.fold_into(sighting, card),
+            (Some(i), _) | (None, Some(i)) => i,
+            (None, None) => return None,
+        };
+        let card = &mut self.cards[index];
+        card.model = health.model.clone().or(card.model.take());
+        let key = card.id.clone();
+        self.record_health(&key, health, now);
+        self.cards.sort_by_key(|c| std::cmp::Reverse(c.last_seen));
+        Some(key)
+    }
+
+    /// Folds the record at `from` (the card as inserted, known by its volume ID) into the
+    /// record at `into` (the same card, known by its serial number). Returns the new
+    /// index of `into`.
+    fn fold_into(&mut self, from: usize, into: usize) -> usize {
+        let seen = self.cards.remove(from);
+        let into = if from < into { into - 1 } else { into };
+        let card = &mut self.cards[into];
+        if card.current_volume_id() != seen.current_volume_id() {
+            card.formats += 1;
+        }
+        card.volume_id = Some(seen.current_volume_id().to_string());
+        card.insertions += seen.insertions;
+        card.first_seen = card.first_seen.min(seen.first_seen);
+        card.last_seen = card.last_seen.max(seen.last_seen);
+        card.name = card.name.take().or(seen.name);
+        // The newer sighting's connection and file system win.
+        card.bus = seen.bus.or(card.bus.take());
+        card.sd_class = seen.sd_class.or(card.sd_class.take());
+        card.capacity_bytes = seen.capacity_bytes.or(card.capacity_bytes);
+        card.filesystem = seen.filesystem.or(card.filesystem.take());
+        card.reader = seen.reader.or(card.reader.take());
+        card.health.extend(seen.health);
+        card.health.sort_by_key(|r| r.at);
+        let excess = card.health.len().saturating_sub(MAX_HEALTH_READINGS);
+        card.health.drain(..excess);
+        // Imports from the card as inserted belong to the card.
+        let key = card.id.clone();
+        for import in &mut self.imports {
+            if import.card_key.as_deref() == Some(seen.id.as_str()) {
+                import.card_key = Some(key.clone());
+            }
+        }
+        into
     }
 
     pub fn record_camera(&mut self, seen: CameraSighting, now: NaiveDateTime) {
@@ -409,6 +487,132 @@ mod tests {
         assert!(ledger.record_health("A", health, at("2026-11-01 10:05")));
         assert_eq!(ledger.cards[0].hardware_serial.as_deref(), Some("ABC123"));
         assert_eq!(ledger.cards[0].health.len(), 1);
+    }
+
+    /// A card behind a USB bridge: only its volume ID is known on insertion.
+    fn bridged(volume: &str) -> CardSighting {
+        CardSighting {
+            bus: Some("USB".into()),
+            reader: None,
+            ..card(volume)
+        }
+    }
+
+    fn reading(serial: &str, used: u64) -> CardHealth {
+        CardHealth {
+            serial: Some(serial.into()),
+            model: Some("CHIPFANCIER CFE Platinum".into()),
+            percentage_used: Some(used),
+            bridge: Some("JMicron JMS583".into()),
+            ..CardHealth::default()
+        }
+    }
+
+    fn import_from(card_key: &str) -> crate::import::ImportResult {
+        serde_json::from_value(serde_json::json!({
+            "started_at": "2026-11-01T10:00:00", "finished_at": "2026-11-01T10:10:00",
+            "root": "E:\\", "nas_root": "\\\\NAS\\photos", "card_id": card_key,
+            "card_key": card_key, "status": "complete", "total_files": 1, "total_bytes": 1,
+            "copied_files": 1, "skipped_files": 0, "verified_files": 1, "completed_bytes": 1,
+            "shoots": [], "error": null, "warnings": [], "ejected": false
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_reading_through_a_bridge_learns_the_cards_serial_and_model() {
+        let mut ledger = Ledger::default();
+        let key = ledger
+            .record_card(bridged("1111-AAAA"), at("2026-11-01 10:00"))
+            .unwrap();
+        assert_eq!(
+            ledger.record_reading(
+                Some("1111-AAAA"),
+                reading("P640", 0),
+                at("2026-11-01 10:01")
+            ),
+            Some(key.clone())
+        );
+        let card = &ledger.cards[0];
+        assert_eq!(card.hardware_serial.as_deref(), Some("P640"));
+        assert_eq!(card.model.as_deref(), Some("CHIPFANCIER CFE Platinum"));
+        assert_eq!(card.health.len(), 1);
+        // An unknown card gets no reading.
+        assert_eq!(
+            ledger.record_reading(
+                Some("2222-BBBB"),
+                reading("OTHER", 0),
+                at("2026-11-01 10:02")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_formatted_card_read_through_a_bridge_folds_back_into_its_own_record() {
+        let mut ledger = Ledger::default();
+        let key = ledger
+            .record_card(bridged("1111-AAAA"), at("2026-11-01 10:00"))
+            .unwrap();
+        ledger.record_reading(
+            Some("1111-AAAA"),
+            reading("P640", 0),
+            at("2026-11-01 10:01"),
+        );
+        // Formatted in the camera: the bridge can't say whose card it is on insertion.
+        let as_inserted = ledger
+            .record_card(bridged("3333-CCCC"), at("2026-11-05 09:00"))
+            .unwrap();
+        assert_ne!(as_inserted, key);
+        ledger.record_import(import_from(&as_inserted));
+        assert_eq!(ledger.cards.len(), 2);
+
+        // Reading its health finds the card's own record by serial.
+        assert_eq!(
+            ledger.record_reading(
+                Some("3333-CCCC"),
+                reading("P640", 1),
+                at("2026-11-05 09:02")
+            ),
+            Some(key.clone())
+        );
+        assert_eq!(ledger.cards.len(), 1);
+        let card = &ledger.cards[0];
+        assert_eq!(card.formats, 1);
+        assert_eq!(card.insertions, 2);
+        assert_eq!(card.volume_id.as_deref(), Some("3333-CCCC"));
+        assert_eq!(card.first_seen, at("2026-11-01 10:00"));
+        assert_eq!(card.last_seen, at("2026-11-05 09:00"));
+        let used: Vec<_> = card
+            .health
+            .iter()
+            .map(|r| r.health.percentage_used)
+            .collect();
+        assert_eq!(used, [Some(0), Some(1)]);
+        assert_eq!(ledger.imports[0].card_key.as_deref(), Some(key.as_str()));
+        assert_eq!(
+            ledger.card_key_for_volume("3333-CCCC").as_deref(),
+            Some(key.as_str())
+        );
+    }
+
+    #[test]
+    fn remembers_an_sd_cards_class_and_old_ledgers_load_without_one() {
+        let mut ledger = Ledger::default();
+        let sd = CardSighting {
+            sd_class: Some("SDXC".into()),
+            ..card("0B35-ECD9")
+        };
+        ledger.record_card(sd, at("2026-11-07 05:00"));
+        // A later sighting that couldn't tell keeps what was known.
+        ledger.record_card(card("0B35-ECD9"), at("2026-11-07 06:00"));
+        assert_eq!(ledger.cards[0].sd_class.as_deref(), Some("SDXC"));
+
+        let old = r#"{"cards":[{"id":"A","name":null,"capacity_bytes":1,"filesystem":null,
+            "reader":null,"first_seen":"2026-11-06T22:49:40","last_seen":"2026-11-06T22:49:40",
+            "insertions":1}],"cameras":[]}"#;
+        let ledger: Ledger = serde_json::from_str(old).unwrap();
+        assert_eq!(ledger.cards[0].sd_class, None);
     }
 
     #[test]

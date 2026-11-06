@@ -1,19 +1,22 @@
 --[[
-Card Intake plugin for Lightroom Classic.
+Card Intake plug-in for Lightroom Classic.
 
-When Card Intake opens a new per-shoot catalog, it leaves a request file named
-<catalog-name>.card-intake-request.txt next to the catalog. This plugin adds photos
-in place (Import > Add), skips catalogued photos, and reports the result to the app.
-
-Install once per computer: File > Plug-in Manager > Add, and pick this folder.
+Card Intake installs this in Lightroom's Modules folder, so Lightroom loads it by
+itself. When a catalog Card Intake made opens, the plug-in adds new raw photos and
+DxO PureRAW DNGs from the catalog's shoot folders on the NAS, in place. Choose the
+presets it applies in File > Plug-in Manager > Card Intake.
 ]]
 
 return {
-  LrSdkVersion = 12.0,
-  LrSdkMinimumVersion = 10.0,
+  LrSdkVersion = 13.0,
+  -- addPhoto applies presets from Lightroom Classic 12.5.
+  LrSdkMinimumVersion = 12.5,
   LrToolkitIdentifier = "io.github.semmmer.cardintake",
   LrPluginName = "Card Intake",
   LrInitPlugin = "Init.lua",
-  LrShutdownPlugin = "Shutdown.lua",
-  VERSION = { major = 0, minor = 2, revision = 0 },
+  LrPluginInfoProvider = "PluginInfo.lua",
+  LrLibraryMenuItems = {
+    { title = "Add new files from NAS", file = "AddNewFiles.lua" },
+  },
+  VERSION = { major = 0, minor = 3, revision = 0 },
 }

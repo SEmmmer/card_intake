@@ -4,3 +4,5 @@
 apps/desktop/gen/
 apps/desktop/resources/exiftool/
 node_modules/
+# Paid Lightroom presets and profiles; Card Intake installs them from here but they are not ours to publish
+/Profiles/

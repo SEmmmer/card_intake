@@ -85,8 +85,8 @@ pub async fn scan_library(
             .shutter
             .lock()
             .map_err(|e| e.to_string())?
-            .folders
-            .clone();
+            .folders()
+            .map_err(|e| format!("Couldn't read the shutter counts: {e}"))?;
         send("listing", None);
         let folders = match shutter::list_library(&root, cancel) {
             Ok(folders) => folders,
