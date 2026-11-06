@@ -1,15 +1,22 @@
 // Hide the console window in Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod imports;
+mod library;
+mod lightroom;
 mod settings;
 
 use card_intake_core::{
-    exif, exiftool,
+    destinations::{self, DateDestination},
+    exif,
+    exiftool::{self, ShutterSample},
     grouping::{self, ShootGroup},
-    health::{self, HealthOutcome},
+    health::{self, CardHealth, HealthOutcome},
     ledger::{CameraSighting, CardSighting, Ledger},
     nas::{self, Location, NasCheck},
     scan::{self, MediaFile, MediaKind, TimeSource},
+    shutter::{self, CameraView, ShutterDb},
+    storage::{self, DriveIdentity},
     volume_info::{self, VolumeInfo},
     volumes::{self, CardVolume},
 };
@@ -17,9 +24,9 @@ use chrono::Local;
 use serde::Serialize;
 use settings::Settings;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 struct AppState {
     ledger: Mutex<Ledger>,
@@ -28,6 +35,13 @@ struct AppState {
     settings_path: PathBuf,
     exiftool: Option<PathBuf>,
     smartctl: Option<PathBuf>,
+    imports: Arc<imports::ImportControl>,
+    pending_path: PathBuf,
+    local_data: PathBuf,
+    /// This computer's copy of the shutter count database.
+    shutter: Mutex<ShutterDb>,
+    shutter_path: PathBuf,
+    library: library::LibraryControl,
 }
 
 impl AppState {
@@ -36,18 +50,93 @@ impl AppState {
             .save(&self.ledger_path)
             .map_err(|e| format!("Couldn't save the list of cards and cameras: {e}"))
     }
+
+    /// The photo share, when it's connected and confirmed to be a network share.
+    fn shared_root(&self) -> Option<PathBuf> {
+        let settings = self.settings.lock().ok()?.clone();
+        let status = nas_status_for(&settings);
+        (status.connected && status.network == Some(true)).then(|| PathBuf::from(status.root))
+    }
+
+    /// Adds readings to this computer's copy, then merges it with the shared
+    /// database in the photo share (when connected) and keeps the merged result.
+    fn sync_shutter(&self, add: &ShutterDb) -> Result<CamerasResponse, String> {
+        let local = {
+            let mut db = self.shutter.lock().map_err(|e| e.to_string())?;
+            db.merge(add);
+            db.save(&self.shutter_path)
+                .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
+            db.clone()
+        };
+        let mut shared = SharedStatus::default();
+        let merged = match self.shared_root() {
+            None => local,
+            Some(root) => {
+                shared.path = Some(shutter::shared_path(&root).display().to_string());
+                match shutter::sync_shared(&root, &local) {
+                    Ok(remote) => {
+                        shared.synced = true;
+                        let mut db = self.shutter.lock().map_err(|e| e.to_string())?;
+                        db.merge(&remote);
+                        if *db != local {
+                            db.save(&self.shutter_path)
+                                .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
+                        }
+                        db.clone()
+                    }
+                    Err(e) => {
+                        shared.error = Some(e.to_string());
+                        local
+                    }
+                }
+            }
+        };
+        shared.folders = merged.folders.len();
+        Ok(CamerasResponse {
+            cameras: merged.views(),
+            shared,
+        })
+    }
+}
+
+#[derive(Serialize, Default)]
+struct CamerasResponse {
+    cameras: Vec<CameraView>,
+    shared: SharedStatus,
+}
+
+/// The shared shutter count database in the photo share.
+#[derive(Serialize, Default)]
+struct SharedStatus {
+    /// Where it is, when the share is connected.
+    path: Option<String>,
+    /// Read (and, if this computer had anything new, written) just now.
+    synced: bool,
+    error: Option<String>,
+    /// Photo-share folders whose shutter counts have been read.
+    folders: usize,
 }
 
 #[derive(Serialize)]
 struct CardReport {
     root: PathBuf,
     volume: VolumeInfo,
+    /// How the card is connected and, when the reader shows the card itself, its own
+    /// serial number.
+    drive: DriveIdentity,
+    /// The card's health log, when it could be read without asking (NVMe cards).
+    health: Option<CardHealth>,
+    /// The card's record in the ledger.
+    card_key: Option<String>,
     photos: usize,
     photo_bytes: u64,
     videos: usize,
     video_bytes: u64,
     times: TimeCounts,
     groups: Vec<ShootGroup>,
+    /// Per capture date: the shoot folders already on the NAS and the card's files
+    /// in them. Empty when the photo share isn't connected.
+    destinations: Vec<DateDestination>,
     camera: Option<CameraSummary>,
     scan_ms: u128,
 }
@@ -67,6 +156,7 @@ struct CameraSummary {
     firmware: Option<String>,
     lens: Option<String>,
     shutter_count: Option<u64>,
+    electronic_count: Option<u64>,
     /// Why there's no shutter count, when there isn't one.
     shutter_note: Option<String>,
 }
@@ -84,8 +174,10 @@ struct NasStatus {
 
 /// Camera cards that are mounted right now. The UI polls this to spot a new card.
 #[tauri::command]
-fn list_cards() -> Vec<CardVolume> {
-    volumes::find_camera_cards()
+async fn list_cards() -> Result<Vec<CardVolume>, String> {
+    tauri::async_runtime::spawn_blocking(volumes::find_camera_cards)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Reads a card (never writes to it), then remembers the card and camera.
@@ -93,23 +185,18 @@ fn list_cards() -> Vec<CardVolume> {
 async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardReport, String> {
     let exiftool = state.exiftool.clone();
     let root = PathBuf::from(root);
-    let report =
-        tauri::async_runtime::spawn_blocking(move || build_report(&root, exiftool.as_deref()))
-            .await
-            .map_err(|e| e.to_string())??;
+    let nas = state.shared_root();
+    let mut report = tauri::async_runtime::spawn_blocking(move || {
+        build_report(&root, exiftool.as_deref(), nas.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     let now = Local::now().naive_local();
     let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
-    if let Some(id) = &report.volume.id {
-        ledger.record_card(
-            CardSighting {
-                id: id.clone(),
-                capacity_bytes: report.volume.total_bytes,
-                filesystem: report.volume.filesystem.clone(),
-                reader: report.volume.reader.clone(),
-            },
-            now,
-        );
+    report.card_key = ledger.record_card(sighting(&report.volume, &report.drive), now);
+    if let (Some(key), Some(health)) = (&report.card_key, &report.health) {
+        ledger.record_health(key, health.clone(), now);
     }
     if let Some(camera) = &report.camera {
         ledger.record_camera(
@@ -134,20 +221,118 @@ async fn read_card_health(
 ) -> Result<HealthOutcome, String> {
     let smartctl = state.smartctl.clone();
     let (volume, outcome) = tauri::async_runtime::spawn_blocking(move || {
-        let volume = volume_info::volume_info(Path::new(&root));
-        let outcome = health::read_health(&volume, smartctl.as_deref());
+        let root = Path::new(&root);
+        let volume = volume_info::volume_info(root);
+        let outcome = health::read_health(root, &volume, smartctl.as_deref());
         (volume, outcome)
     })
     .await
     .map_err(|e| e.to_string())?;
 
-    if let (HealthOutcome::Read { health }, Some(id)) = (&outcome, &volume.id) {
+    if let HealthOutcome::Read { health } = &outcome {
         let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
-        if ledger.record_health(id, (**health).clone(), Local::now().naive_local()) {
+        let seen = CardSighting {
+            volume_id: volume.id.clone(),
+            hardware_serial: health.serial.clone(),
+            ..CardSighting::default()
+        };
+        if let Some(key) = ledger.card_key(&seen)
+            && ledger.record_health(&key, (**health).clone(), Local::now().naive_local())
+        {
             state.save_ledger(&ledger)?;
         }
     }
     Ok(outcome)
+}
+
+/// What the ledger needs to recognise a card.
+fn sighting(volume: &VolumeInfo, drive: &DriveIdentity) -> CardSighting {
+    CardSighting {
+        volume_id: volume.id.clone(),
+        hardware_serial: drive.card_serial.clone(),
+        // With the card itself on the bus, the product name is the card's model.
+        model: drive.card_serial.as_ref().and(drive.product.clone()),
+        bus: drive.bus.clone(),
+        capacity_bytes: volume.total_bytes,
+        filesystem: volume.filesystem.clone(),
+        reader: volume.reader.clone(),
+    }
+}
+
+/// Reads the shutter count of every photo on the card, adds them to the shutter
+/// count database and returns every camera's history.
+#[tauri::command]
+async fn read_card_shutter(
+    root: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CamerasResponse, String> {
+    let Some(exiftool) = state.exiftool.clone() else {
+        return Err(exiftool_note());
+    };
+    let samples = tauri::async_runtime::spawn_blocking(move || {
+        let files = scan::scan_card(Path::new(&root))
+            .map_err(|e| format!("Couldn't read the card: {e}"))?;
+        let photos = exiftool::one_per_shot(
+            files
+                .into_iter()
+                .filter(|f| f.kind == MediaKind::Photo)
+                .map(|f| f.path),
+        );
+        shutter_samples_parallel(&exiftool, &photos)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let mut add = ShutterDb::default();
+    for sample in &samples {
+        add.add(sample);
+    }
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().sync_shutter(&add))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Every camera's shutter count history, merged with the shared database when the
+/// photo share is connected.
+#[tauri::command]
+async fn get_cameras(app: AppHandle) -> Result<CamerasResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>().sync_shutter(&ShutterDb::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Splits the photos across a few ExifTool runs at once; one run reads a card's
+/// photos about four times slower.
+fn shutter_samples_parallel(
+    exiftool: &Path,
+    photos: &[PathBuf],
+) -> Result<Vec<ShutterSample>, String> {
+    let per_run = photos.len().div_ceil(4).max(50);
+    std::thread::scope(|scope| {
+        let runs: Vec<_> = photos
+            .chunks(per_run)
+            .map(|chunk| scope.spawn(move || exiftool::shutter_samples(exiftool, chunk)))
+            .collect();
+        let mut samples = Vec::new();
+        for run in runs {
+            samples.extend(
+                run.join()
+                    .map_err(|_| "ExifTool stopped unexpectedly.".to_string())?
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        Ok(samples)
+    })
+}
+
+fn exiftool_note() -> String {
+    if cfg!(windows) {
+        "Needs ExifTool for Windows. Put exiftool.exe on PATH or set CARD_INTAKE_EXIFTOOL, then restart the app.".into()
+    } else {
+        "Needs ExifTool. Run scripts/fetch-exiftool.sh, then restart the app.".into()
+    }
 }
 
 #[tauri::command]
@@ -170,14 +355,21 @@ fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 
 /// Saves the NAS path. An empty path goes back to the default.
 #[tauri::command]
-fn save_nas_root(nas_root: String, state: State<'_, AppState>) -> Result<NasStatus, String> {
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let trimmed = nas_root.trim();
-    settings.nas_root = (!trimmed.is_empty()).then(|| trimmed.to_string());
-    settings
-        .save(&state.settings_path)
-        .map_err(|e| format!("Couldn't save the settings: {e}"))?;
-    Ok(nas_status_for(&settings))
+async fn save_nas_root(nas_root: String, state: State<'_, AppState>) -> Result<NasStatus, String> {
+    let saved = {
+        let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+        let trimmed = nas_root.trim();
+        let mut updated = settings.clone();
+        updated.nas_root = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        updated
+            .save(&state.settings_path)
+            .map_err(|e| format!("Couldn't save the settings: {e}"))?;
+        *settings = updated.clone();
+        updated
+    };
+    tauri::async_runtime::spawn_blocking(move || nas_status_for(&saved))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Checks a NAS path without saving it: exists, network share, test file round trip,
@@ -190,9 +382,11 @@ async fn check_nas(path: String) -> Result<NasCheck, String> {
 }
 
 #[tauri::command]
-fn nas_status(state: State<'_, AppState>) -> Result<NasStatus, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    Ok(nas_status_for(&settings))
+async fn nas_status(state: State<'_, AppState>) -> Result<NasStatus, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?.clone();
+    tauri::async_runtime::spawn_blocking(move || nas_status_for(&settings))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn nas_status_for(settings: &Settings) -> NasStatus {
@@ -229,7 +423,13 @@ fn nas_root(settings: &Settings) -> (String, &'static str) {
     (default.to_string(), "default")
 }
 
-fn build_report(root: &Path, exiftool: Option<&Path>) -> Result<CardReport, String> {
+/// Everything the app reads from a card. With the photo share, it also finds each
+/// date's existing folders and the files already in them.
+fn build_report(
+    root: &Path,
+    exiftool: Option<&Path>,
+    nas: Option<&Path>,
+) -> Result<CardReport, String> {
     let started = Instant::now();
     let files = scan::scan_card(root).map_err(|e| format!("Couldn't read the card: {e}"))?;
 
@@ -237,9 +437,16 @@ fn build_report(root: &Path, exiftool: Option<&Path>) -> Result<CardReport, Stri
     let videos = files.iter().filter(|f| f.kind == MediaKind::Video);
     let count = |source| files.iter().filter(|f| f.time_source == source).count();
 
+    let drive = storage::identify(root);
+    let health = (drive.bus.as_deref() == Some("NVMe"))
+        .then(|| storage::read_nvme_health(root).ok())
+        .flatten();
     Ok(CardReport {
         root: root.to_path_buf(),
         volume: volume_info::volume_info(root),
+        drive,
+        health,
+        card_key: None,
         photos: photos.clone().count(),
         photo_bytes: photos.map(|f| f.size).sum(),
         videos: videos.clone().count(),
@@ -250,6 +457,9 @@ fn build_report(root: &Path, exiftool: Option<&Path>) -> Result<CardReport, Stri
             file_time: count(TimeSource::FileTime),
         },
         groups: grouping::group_by_date(&files),
+        destinations: nas
+            .map(|n| destinations::find(n, &files))
+            .unwrap_or_default(),
         camera: camera_summary(&files, exiftool),
         scan_ms: started.elapsed().as_millis(),
     })
@@ -273,20 +483,21 @@ fn camera_summary(files: &[MediaFile], exiftool: Option<&Path>) -> Option<Camera
         .clone()
         .or_else(|| clip.and_then(|c| scan::sidecar_serial(&c.path)));
 
+    let mut electronic_count = None;
     let (shutter_count, shutter_note) = match (newest_photo, exiftool) {
         (None, _) => (None, Some("No photos on this card to read it from.".into())),
-        (Some(_), None) => (
-            None,
-            Some("Needs ExifTool. Run scripts/fetch-exiftool.sh, then restart the app.".into()),
-        ),
+        (Some(_), None) => (None, Some(exiftool_note())),
         (Some(photo), Some(tool)) => match exiftool::camera_details(tool, &photo.path) {
-            Ok(details) => match details.shutter_count {
-                Some(count) => (Some(count), None),
-                None => (
-                    None,
-                    Some("ExifTool can't read the shutter count for this model yet.".into()),
-                ),
-            },
+            Ok(details) => {
+                electronic_count = details.electronic_count;
+                match details.shutter_count {
+                    Some(count) => (Some(count), None),
+                    None => (
+                        None,
+                        Some("ExifTool can't read the shutter count for this model yet.".into()),
+                    ),
+                }
+            }
             Err(e) => (None, Some(e.to_string())),
         },
     };
@@ -295,17 +506,12 @@ fn camera_summary(files: &[MediaFile], exiftool: Option<&Path>) -> Option<Camera
         make: basic.make,
         model,
         serial,
-        firmware: basic.software.as_deref().map(firmware_version),
+        firmware: basic.software.as_deref().map(exiftool::firmware_version),
         lens: basic.lens,
         shutter_count,
+        electronic_count,
         shutter_note,
     })
-}
-
-/// "ILCE-7RM6 v1.01" becomes "1.01".
-fn firmware_version(software: &str) -> String {
-    let last = software.split_whitespace().last().unwrap_or(software);
-    last.trim_start_matches(['v', 'V']).to_string()
 }
 
 /// A helper program shipped with the app (`resources/<folder>/`), installed in a usual
@@ -374,12 +580,13 @@ fn find_smartctl(resource_dir: Option<&Path>) -> Option<PathBuf> {
 ///     card_intake_desktop --report <card>      what the app reads from a card
 ///     card_intake_desktop --health <card>      the card's health log
 ///     card_intake_desktop --check-nas <path>   the NAS folder check
+///     card_intake_desktop --shutter <folder>   shutter counts of every photo in a folder
 fn run_cli(args: &[String]) -> Option<i32> {
     let (flag, arg) = (args.get(1)?.as_str(), args.get(2));
     let print = |value: serde_json::Result<String>| println!("{}", value.unwrap_or_default());
     match (flag, arg) {
         ("--report", Some(root)) => {
-            match build_report(Path::new(root), find_exiftool(None).as_deref()) {
+            match build_report(Path::new(root), find_exiftool(None).as_deref(), None) {
                 Ok(report) => print(serde_json::to_string_pretty(&report)),
                 Err(e) => {
                     eprintln!("{e}");
@@ -388,14 +595,50 @@ fn run_cli(args: &[String]) -> Option<i32> {
             }
         }
         ("--health", Some(root)) => {
-            let volume = volume_info::volume_info(Path::new(root));
-            print(serde_json::to_string_pretty(&health::read_health(
-                &volume,
-                find_smartctl(None).as_deref(),
-            )));
+            let root = Path::new(root);
+            let volume = volume_info::volume_info(root);
+            print(serde_json::to_string_pretty(&serde_json::json!({
+                "drive": storage::identify(root),
+                "health": health::read_health(root, &volume, find_smartctl(None).as_deref()),
+            })));
+        }
+        ("--shutter", Some(folder)) => {
+            let Some(exiftool) = find_exiftool(None) else {
+                eprintln!("{}", exiftool_note());
+                return Some(1);
+            };
+            let photos = exiftool::one_per_shot(
+                walkdir::WalkDir::new(folder)
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|e| {
+                        e.file_type().is_file() && scan::kind_of(e.path()) == Some(MediaKind::Photo)
+                    })
+                    .map(|e| e.into_path()),
+            );
+            let started = Instant::now();
+            match shutter_samples_parallel(&exiftool, &photos) {
+                Ok(samples) => {
+                    let mut db = ShutterDb::default();
+                    for sample in &samples {
+                        db.add(sample);
+                    }
+                    eprintln!(
+                        "{} photos, {} with a shutter count, read in {} ms",
+                        photos.len(),
+                        samples.len(),
+                        started.elapsed().as_millis()
+                    );
+                    print(serde_json::to_string_pretty(&db.views()));
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    return Some(1);
+                }
+            }
         }
         ("--check-nas", Some(path)) => print(serde_json::to_string_pretty(&nas::check_nas(path))),
-        ("--report" | "--health" | "--check-nas", None) => {
+        ("--report" | "--health" | "--check-nas" | "--shutter", None) => {
             eprintln!("usage: card_intake_desktop {flag} <path>");
             return Some(2);
         }
@@ -412,7 +655,9 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
-            let ledger_path = app.path().app_data_dir()?.join("ledger.json");
+            let data_dir = app.path().app_data_dir()?;
+            let ledger_path = data_dir.join("ledger.json");
+            let shutter_path = data_dir.join(shutter::SHARED_FILE);
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             let resource_dir = app.path().resource_dir().ok();
             app.manage(AppState {
@@ -422,8 +667,26 @@ fn main() {
                 settings_path,
                 exiftool: find_exiftool(resource_dir.as_deref()),
                 smartctl: find_smartctl(resource_dir.as_deref()),
+                imports: Arc::new(imports::ImportControl::default()),
+                pending_path: data_dir.join("pending-import.json"),
+                local_data: app.path().app_local_data_dir()?,
+                shutter: Mutex::new(ShutterDb::load(&shutter_path).unwrap_or_default()),
+                shutter_path,
+                library: library::LibraryControl::default(),
             });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<AppState>();
+                state.library.cancel();
+                if state.imports.is_active() {
+                    // Let the worker remove its partial file and save history.
+                    // The completed/stopped screen remains visible; a second close exits.
+                    let _ = state.imports.cancel();
+                    api.prevent_close();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             list_cards,
@@ -433,7 +696,19 @@ fn main() {
             get_settings,
             save_nas_root,
             check_nas,
-            nas_status
+            nas_status,
+            read_card_shutter,
+            get_cameras,
+            library::scan_library,
+            library::cancel_library_scan,
+            imports::start_import,
+            imports::get_pending_import,
+            lightroom::get_lightroom_settings,
+            lightroom::save_lightroom_settings,
+            lightroom::open_in_lightroom,
+            lightroom::lightroom_status,
+            lightroom::lightroom_catalogs,
+            imports::cancel_import
         ])
         .run(tauri::generate_context!())
         .expect("Card Intake failed to start");
@@ -443,10 +718,45 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn write(path: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
     #[test]
-    fn firmware_version_drops_the_model_name() {
-        assert_eq!(firmware_version("ILCE-7RM6 v1.01"), "1.01");
-        assert_eq!(firmware_version("2.00"), "2.00");
+    fn a_cards_report_lists_the_folders_its_dates_already_have_on_the_nas() {
+        let dir = tempfile::tempdir().unwrap();
+        let (card, nas) = (dir.path().join("card"), dir.path().join("nas"));
+        let sidecar = br#"<NonRealTimeMeta><CreationDate value="2026-11-06T18:00:00+09:00"/></NonRealTimeMeta>"#;
+        for clip in ["C0001", "C0002"] {
+            write(
+                &card.join(format!("M4ROOT/CLIP/{clip}.MP4")),
+                format!("{clip} bytes").as_bytes(),
+            );
+            write(&card.join(format!("M4ROOT/CLIP/{clip}M01.XML")), sidecar);
+        }
+        // An earlier import of the same day already holds the first clip.
+        write(
+            &nas.join("2026/2026-11-06_夜景/video/C0001.MP4"),
+            b"C0001 bytes",
+        );
+
+        let report = build_report(&card, None, Some(&nas)).unwrap();
+        assert_eq!(report.videos, 2);
+        assert_eq!(report.destinations.len(), 1);
+        let day = &report.destinations[0];
+        assert_eq!(day.date.to_string(), "2026-11-06");
+        assert_eq!(day.suggested_title.as_deref(), Some("夜景"));
+        assert_eq!((day.videos_on_nas, day.video_bytes_on_nas), (1, 11));
+        assert_eq!(day.folders[0].name, "2026-11-06_夜景");
+
+        // Without a connected share there is nothing to look up.
+        assert!(
+            build_report(&card, None, None)
+                .unwrap()
+                .destinations
+                .is_empty()
+        );
     }
 
     #[test]
@@ -457,6 +767,7 @@ mod tests {
         assert_eq!(nas_root(&Settings::default()).1, "default");
         let settings = Settings {
             nas_root: Some("/Volumes/photos2".into()),
+            ..Default::default()
         };
         assert_eq!(
             nas_root(&settings),

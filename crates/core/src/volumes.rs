@@ -1,4 +1,4 @@
-//! Finds mounted camera cards: any volume with a `DCIM` folder.
+//! Finds mounted camera cards with DCIM or Sony M4ROOT/CLIP folders.
 //!
 //! Polling the mount points every second or two works the same on Windows,
 //! macOS and Linux, with no drivers or system hooks.
@@ -15,12 +15,14 @@ pub struct CardVolume {
 }
 
 pub fn camera_card(root: &Path) -> Option<CardVolume> {
-    if !root.join("DCIM").is_dir() {
+    let has_sony_video =
+        root.join("M4ROOT/CLIP").is_dir() || root.join("PRIVATE/M4ROOT/CLIP").is_dir();
+    if !root.join("DCIM").is_dir() && !has_sony_video {
         return None;
     }
     Some(CardVolume {
         root: root.to_path_buf(),
-        has_sony_video: root.join("PRIVATE").join("M4ROOT").is_dir(),
+        has_sony_video,
     })
 }
 
@@ -34,10 +36,19 @@ pub fn find_camera_cards() -> Vec<CardVolume> {
 
 #[cfg(windows)]
 fn mount_points() -> Vec<PathBuf> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    // SAFETY: GetLogicalDrives has no arguments.
+    let drives = unsafe { GetLogicalDrives() };
     // Skip A: and B:, which can stall on legacy floppy drivers.
     (b'C'..=b'Z')
+        .filter(|letter| drives & (1 << (letter - b'A')) != 0)
         .map(|letter| PathBuf::from(format!("{}:\\", letter as char)))
-        .filter(|p| p.exists())
+        .filter(|p| {
+            let root: Vec<u16> = p.to_string_lossy().encode_utf16().chain(Some(0)).collect();
+            // SAFETY: root is a NUL-terminated drive root.
+            // CFexpress readers may report fixed drives (3), SD readers removable (2).
+            matches!(unsafe { GetDriveTypeW(root.as_ptr()) }, 2 | 3)
+        })
         .collect()
 }
 
@@ -86,6 +97,13 @@ mod tests {
         assert!(!found.has_sony_video);
 
         std::fs::create_dir_all(card.path().join("PRIVATE/M4ROOT/CLIP")).unwrap();
+        assert!(camera_card(card.path()).unwrap().has_sony_video);
+    }
+
+    #[test]
+    fn detects_video_only_sony_cards() {
+        let card = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(card.path().join("M4ROOT/CLIP")).unwrap();
         assert!(camera_card(card.path()).unwrap().has_sony_video);
     }
 }

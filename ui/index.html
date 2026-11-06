@@ -215,7 +215,6 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .btn:focus-visible, .btn-quiet:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .btn-quiet { font: 500 13px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
 .btn-quiet:hover { border-color: var(--muted); }
-.demo-tag { display: inline-block; font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--warn); border: 1px dashed var(--warn); border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: 2px; }
 
 /* Progress */
 .progress .phase { font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
@@ -224,15 +223,43 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .bar { height: 8px; border-radius: 4px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; margin-top: 12px; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.1s linear; }
 .pline { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); margin-top: 10px; overflow-wrap: anywhere; }
-.demo-note { font-size: 12px; color: var(--warn); margin-top: 6px; }
 
 /* Done */
-.done { background: var(--sunken); }
-.done h3 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1.2; }
-.done p { margin: 4px 0 0; max-width: 64ch; }
+.stopped { margin: 0 0 12px; font-size: 14px; color: var(--warn); }
+.done { background: var(--ok-soft); }
+.done-head { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; align-items: start; }
+.done-head svg { width: 30px; height: 30px; }
+.done-head svg circle { fill: var(--ok); }
+.done-head svg path { fill: none; stroke: var(--surface); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.done h3 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1.2; color: var(--ok); }
+.done p { margin: 4px 0 0; max-width: 62ch; }
 .done-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
 .done-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px 14px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
-.done-list code { font-size: 12.5px; overflow-wrap: anywhere; min-width: 0; flex: 1 1 260px; }
+.dl-main { min-width: 0; flex: 1 1 260px; }
+.done-list code { display: block; font-size: 12.5px; overflow-wrap: anywhere; }
+.dl-cat { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.dl-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-open { font: 600 13px var(--font-body); color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; white-space: nowrap; }
+.btn-open:hover { filter: brightness(1.08); }
+.btn-open:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn-open:disabled { opacity: 0.5; cursor: wait; }
+.done-all { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 12px; }
+.done-all span { font-size: 13px; color: var(--muted); }
+.done .next { font-size: 13px; color: var(--muted); margin-top: 12px; max-width: 70ch; }
+.path-note { display: block; margin-top: 3px; font-size: 12.5px; color: var(--muted); }
+.warn-text { color: var(--warn); margin-top: 10px; }
+.cap .d { background: repeating-linear-gradient(135deg, var(--stripe) 0 4px, transparent 4px 8px); }
+.legend .d { background: repeating-linear-gradient(135deg, var(--stripe) 0 3px, transparent 3px 6px); border: 1px solid var(--stripe); }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 980px; }
+th { text-align: left; font: 500 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); padding: 10px 14px; background: var(--sunken); border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
+td code { font-size: 12.5px; }
+tr.fresh td { background: var(--accent-soft); }
+.cat-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
 /* Ledger */
 .ledger { display: grid; gap: 28px; }
@@ -248,7 +275,6 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 10px; margin: 12px 0 0; }
 .facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); line-height: 1.3; }
 .facts dd { margin: 2px 0 0; font-family: var(--font-mono); font-size: 13.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.src { font-size: 12px; color: var(--muted); margin-top: 10px; }
 @media (max-width: 460px) { .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .sn { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); background: var(--sunken); border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
@@ -262,6 +288,15 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .spark .area { fill: var(--accent-soft); }
 .spark .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
 .spark .end { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.delta { font-size: 13px; color: var(--muted); text-align: right; }
+.delta strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.life { height: 6px; border-radius: 3px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; margin-top: 10px; }
+.life i { display: block; height: 100%; background: var(--ink); opacity: 0.75; }
+.life-note { font-size: 12.5px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.head-tools { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; justify-content: flex-end; }
+.lib .lib-text { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; min-width: 0; flex: 1 1 200px; }
+.lib .bar { margin-top: 8px; }
+.list .empty + .empty, .list .item + .empty, .list .empty + .item { border-top: 1px solid var(--line); }
 .spark-labels { display: flex; justify-content: space-between; gap: 12px; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 
 /* NAS folder panel */
@@ -314,6 +349,14 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
   .pulse { animation: none; }
 }
 </style>
+<style>
+.shutter .electronic { display: inline-block; margin-left: 12px; font: 12px var(--font-mono); color: var(--muted); }
+.shutter .electronic span { display: block; font: 10px sans-serif; margin-bottom: 3px; }
+.lr-setup summary { cursor: pointer; font-weight: 600; }
+.lr-setup label { margin-top: 12px; }
+.lr-setup input { width: 100%; box-sizing: border-box; }
+.lr-setup code, #lr-status { overflow-wrap: anywhere; }
+</style>
 </head>
 <body>
 
@@ -345,6 +388,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
       </div>
     </section>
 
+
     <section aria-labelledby="cards-h">
       <div class="sec-head">
         <h2 class="sec-title" id="cards-h">Cards</h2>
@@ -356,9 +400,28 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     <section aria-labelledby="cams-h">
       <div class="sec-head">
         <h2 class="sec-title" id="cams-h">Cameras</h2>
-        <span class="muted">From photo EXIF</span>
+        <span class="head-tools"><span class="muted" id="cams-note">From photo EXIF</span>
+          <button type="button" class="btn-quiet" id="lib-scan" disabled title="Reads the shutter count of every photo already on the NAS. Folders read before are skipped.">Read NAS photos</button></span>
       </div>
       <div class="list" id="cameras"></div>
+    </section>
+
+    <section aria-labelledby="lr-h">
+      <div class="sec-head">
+        <h2 class="sec-title" id="lr-h">Lightroom</h2>
+        <span class="muted" id="lr-note"></span>
+      </div>
+    <details class="list nas-panel lr-setup" id="lr-setup">
+      <summary>Catalog template, folder and Lightroom</summary>
+      <p class="nas-note">Create an empty catalog in your current Lightroom Classic version, then close it and choose it here as the template. Each shoot gets a local working catalog; photos stay on the NAS.</p>
+      <label for="lr-template">Empty .lrcat template</label><div class="nas-row"><input id="lr-template" type="text" spellcheck="false" placeholder="C:\Catalogs\Empty.lrcat"></div>
+      <label for="lr-root">Local working catalog folder</label><div class="nas-row"><input id="lr-root" type="text" spellcheck="false"></div>
+      <label for="lr-exe">Lightroom Classic executable</label><div class="nas-row"><input id="lr-exe" type="text" spellcheck="false"></div>
+      <p><button type="button" class="btn-small" id="lr-save">Save Lightroom setup</button></p>
+      <p class="nas-note">Enable the plug-in once: Lightroom → File → Plug-in Manager → Add. Choose:</p><code id="lr-plugin"></code>
+      <p><button type="button" class="btn-quiet" id="lr-copy-plugin">Copy plug-in path</button></p>
+      <p class="nas-note" id="lr-status" role="status"></p>
+    </details>
     </section>
   </aside>
 
@@ -366,13 +429,13 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     <div class="sec-head">
       <h2 class="sec-title" id="hist-h">Recent imports</h2>
     </div>
-    <div class="history-empty"><b>No imports yet.</b> Copying to the NAS isn't built yet. Once it is, every import is listed here.</div>
+    <div id="history" class="history-empty"><b>No imports yet.</b> Completed, stopped and failed imports appear here.</div>
   </section>
 
   <section class="full notes" aria-label="Where the numbers come from">
     <div>
-      <h3>Camera, serial number, firmware</h3>
-      <p>Read from the newest photo's EXIF. The shutter count sits in Sony's encrypted maker notes, so it needs ExifTool.</p>
+      <h3>Camera and shutter count</h3>
+      <p>Read from every photo's EXIF with ExifTool (Sony keeps the count in encrypted maker notes). The history is saved in the NAS photo folder, in <code>.card-intake/shutter-counts.json</code>, so every computer running Card Intake shows the same graph. Rated life appears only for models Sony published a rating for.</p>
     </div>
     <div>
       <h3>Capture times</h3>
@@ -380,7 +443,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     </div>
     <div>
       <h3>Card health</h3>
-      <p>Read from the CFexpress card's own NVMe health log with smartctl. On Windows this works through most USB readers and asks for admin rights. macOS can't pass the commands through a USB reader. SD cards keep no health log.</p>
+      <p>CFexpress cards are NVMe drives with their own health log and serial number. When the reader shows the card as an NVMe drive (Thunderbolt or USB4, e.g. an MRW-G3 on a USB4 port), Windows reads both on insertion without admin rights. Behind a USB bridge it takes smartctl and admin rights; macOS can't read it there. SD cards keep no health log.</p>
     </div>
   </section>
 </main>
@@ -394,18 +457,14 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
   var tauri = window.__TAURI__;
   var invoke = tauri && tauri.core && tauri.core.invoke;
 
-  var COPY_MBS = 700;     // typical CFexpress Type A reader; used only for the estimate and the demo
-  var VERIFY_MBS = 1050;  // reading back from the NAS over 10 GbE
-  var SPEEDUP = 30;
   var POLL_MS = 2000;
 
-  var NICKNAMES = {
-    "ILCE-1": "α1", "ILCE-1M2": "α1 II", "ILCE-9M3": "α9 III",
-    "ILCE-7RM6": "α7R VI", "ILCE-7RM5": "α7R V", "ILCE-7M5": "α7 V", "ILCE-7M4": "α7 IV",
-    "ILCE-7SM3": "α7S III", "ILCE-7CR": "α7CR", "ILCE-7CM2": "α7C II", "ILCE-6700": "α6700"
-  };
-
   var state = {
+    cameras: [],           // shutter count history per camera, from the shared database
+    shared: null,          // where that database lives and whether it synced
+    shutterBusy: false,    // reading the inserted card's photos
+    shutterNote: null,
+    library: null,         // reading every photo on the NAS
     roots: [],
     current: null,
     loading: false,
@@ -414,12 +473,21 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     shoots: [],
     opts: { verify: true, video: true, eject: false },
     nas: null,
-    ledger: { cards: [], cameras: [] },
+    ledger: { cards: [], cameras: [], imports: [] },
     run: null,
+    pending: null,         // the last import that didn't finish (saved by the app)
+    resumable: null,       // ...when it was from the inserted card
+    resumeFilled: null,
+    lastImportId: null,    // highlighted in the history
+    lr: null,              // Lightroom setup
+    catalogs: {},          // import start time -> where its catalog is
+    lrLaunch: null,
     nasEdited: false,      // the user typed in the path box; don't overwrite it
     nasCheck: null,        // last check result
     health: {},            // card root -> latest outcome this session
-    healthBusy: false
+    healthBusy: false,
+    polling: false,
+    nasBusy: false
   };
 
   /* ---------- Helpers ---------- */
@@ -457,10 +525,6 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     var m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2}))?/.exec(iso || "");
     if (!m) return null;
     return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
-  }
-  function localIso(d) {
-    var p = function (n) { return String(n).padStart(2, "0"); };
-    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
   }
   var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -501,29 +565,40 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 
   /* ---------- Data ---------- */
   function poll() {
+    if (state.polling || (state.run && state.run.active)) return;
+    state.polling = true;
     invoke("list_cards").then(function (cards) {
       var roots = cards.map(function (c) { return c.root; });
       var changed = roots.join("|") !== state.roots.join("|");
       state.roots = roots;
+      // Keep the result visible when a card is removed or automatically ejected.
+      if (state.run) return;
       if (state.current && roots.indexOf(state.current) < 0) {
-        if (state.run && state.run.timer) clearInterval(state.run.timer);
         state.current = null; state.report = null; state.error = null; state.run = null;
         renderDesk();
       }
       if (!state.current && roots.length) selectCard(roots[0]);
       else if (changed) renderDesk();
-    }).catch(function (e) { console.error(e); });
+    }).catch(function (e) { console.error(e); }).finally(function () { state.polling = false; });
   }
 
   function selectCard(root) {
-    if (state.run && state.run.timer) clearInterval(state.run.timer);
+    if (state.run && state.run.active) return;
     state.current = root; state.report = null; state.error = null; state.loading = true; state.run = null;
     renderDesk();
     invoke("read_card", { root: root }).then(function (report) {
       if (state.current !== root) return;
       state.report = report;
+      // NVMe cards answer straight away; others need "Read card health".
+      if (report.health) state.health[root] = { kind: "read", health: report.health, inserted: true };
+      var dests = {};
+      (report.destinations || []).forEach(function (d) { dests[d.date] = d; });
       state.shoots = report.groups.map(function (g) {
-        return { date: g.date, first: g.first, last: g.last, photos: g.photos, photoBytes: g.photo_bytes, videos: g.videos, videoBytes: g.video_bytes, name: "", on: true };
+        var d = dests[g.date] || null;
+        // A date that already has a folder on the NAS keeps its title, so another
+        // card from that day goes into the same folder.
+        var name = d && d.suggested_title != null ? d.suggested_title : "";
+        return { date: g.date, first: g.first, last: g.last, photos: g.photos, photoBytes: g.photo_bytes, videos: g.videos, videoBytes: g.video_bytes, name: name, on: true, dest: d };
       });
     }).catch(function (e) {
       if (state.current === root) state.error = String(e);
@@ -531,12 +606,69 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
       if (state.current !== root) return;
       state.loading = false;
       renderDesk();
-      refreshLedger();
+      refreshLedger().then(matchPending).catch(function (e) { console.error(e); });
+      if (state.report && state.report.photos) readCardShutter(root);
     });
   }
 
   function refreshLedger() {
-    return invoke("get_ledger").then(function (ledger) { state.ledger = ledger; renderLedger(); renderHealth(); });
+    return invoke("get_ledger").then(function (ledger) { state.ledger = ledger; renderLedger(); renderHealth(); renderHistory(); });
+  }
+
+  /* ---------- Shutter counts ---------- */
+  function applyCameras(res) {
+    state.cameras = res.cameras;
+    state.shared = res.shared;
+    renderCameras();
+  }
+
+  function refreshCameras() {
+    return invoke("get_cameras").then(applyCameras);
+  }
+
+  // Every photo on the card adds to each camera's shutter count history.
+  function readCardShutter(root) {
+    state.shutterBusy = true;
+    state.shutterNote = null;
+    renderCameras();
+    invoke("read_card_shutter", { root: root }).then(applyCameras).catch(function (e) {
+      state.shutterNote = String(e);
+    }).then(function () {
+      state.shutterBusy = false;
+      renderCameras();
+    });
+  }
+
+  function scanLibrary() {
+    if (state.library && state.library.active) return;
+    var scan = state.library = { active: true, progress: null, phase: "listing", stopping: false };
+    var channel = new tauri.core.Channel();
+    channel.onmessage = function (p) {
+      if (state.library !== scan) return;
+      scan.phase = p.phase;
+      scan.progress = p.progress;
+      renderCameras();
+    };
+    renderCameras();
+    invoke("scan_library", { onProgress: channel }).then(function (r) {
+      applyCameras(r.cameras);
+      var msg = r.cancelled ? "Stopped. " : "";
+      msg += r.folders_read ? "Read " + plural(r.photos_read, "photo", "photos") + " in " + plural(r.folders_read, "folder", "folders") + "."
+        : "No new photos on the NAS.";
+      if (r.folders_unchanged) msg += " " + plural(r.folders_unchanged, "folder was", "folders were") + " already read.";
+      if (r.failed_count) msg += " " + plural(r.failed_count, "folder", "folders") + " couldn’t be read: " + r.failed[0];
+      toast(msg);
+    }).catch(function (e) { toast(String(e)); }).then(function () {
+      state.library = null;
+      renderCameras();
+    });
+  }
+
+  function stopLibrary() {
+    if (!state.library || state.library.stopping) return;
+    state.library.stopping = true;
+    renderCameras();
+    invoke("cancel_library_scan").catch(function (e) { toast(String(e)); });
   }
 
   function refreshNas() {
@@ -544,12 +676,16 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
   }
 
   function applyNas(nas) {
+    var before = state.nas;
+    var changed = before && (before.root !== nas.root || before.connected !== nas.connected || before.network !== nas.network);
     state.nas = nas;
+    if (changed && state.report && !state.run && !state.loading) { selectCard(state.current); return; }
     renderNas();
     if (!state.nasEdited) $("#nas-path").value = nas.root;
     $("#nas-source").textContent = nas.source === "settings" ? "Saved"
       : nas.source === "environment" ? "Set by CARD_INTAKE_NAS" : "Default, not saved yet";
     state.shoots.forEach(function (_, i) { updatePath(i); });
+    updateSummary();
   }
 
   /* ---------- Top bar ---------- */
@@ -575,7 +711,9 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     if (!c) { box.innerHTML = ""; return; }
     var worst = c.items.some(function (i) { return i.status === "fail"; }) ? "fail"
       : c.items.some(function (i) { return i.status === "warn"; }) ? "warn" : "pass";
-    var verdict = worst === "fail" ? "Don't import here yet: fix the items marked ✕."
+    var local = c.items.some(function (i) { return i.title === "On this computer's own disk"; });
+    var verdict = local ? "Imports need a network share. Choose a NAS folder."
+      : worst === "fail" ? "Don't import here yet: fix the items marked ✕."
       : worst === "warn" ? "Usable, but read the warnings first." : "Ready: imports can go here.";
     var saved = state.nas && state.nas.root === c.path;
     box.innerHTML = '<p class="verdict ' + worst + '">' + esc(verdict) + (saved ? "" : " (not saved yet)") + '</p>' +
@@ -586,10 +724,14 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
   }
 
   function setNasBusy(busy, label) {
-    $("#nas-check").disabled = busy;
-    $("#nas-save").disabled = busy;
+    state.nasBusy = busy;
+    var disabled = busy || !!(state.run && state.run.active);
+    $("#nas-check").disabled = disabled;
+    $("#nas-save").disabled = disabled;
+    $("#nas-path").disabled = disabled;
     $("#nas-check").textContent = busy && label === "check" ? "Checking…" : "Check";
     $("#nas-save").textContent = busy && label === "save" ? "Saving…" : "Save";
+    updateSummary();
   }
 
   function checkNas(which) {
@@ -607,6 +749,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     invoke("save_nas_root", { nasRoot: path }).then(function (nas) {
       state.nasEdited = false;
       applyNas(nas);
+      refreshCameras().catch(function (e) { console.error(e); });
       toast(path.trim() ? "Saved. Imports go to " + nas.root : "Cleared. Back to the default path.");
       return checkNas("save");
     }).catch(function (e) { toast(String(e)); setNasBusy(false); });
@@ -619,12 +762,14 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     '<rect class="pins" x="9" y="42" width="4" height="7" rx="1"></rect><rect class="pins" x="15" y="42" width="4" height="7" rx="1"></rect>' +
     '<rect class="pins" x="21" y="42" width="4" height="7" rx="1"></rect><rect class="pins" x="27" y="42" width="4" height="7" rx="1"></rect></svg>';
 
+  var CHECK = '<svg viewBox="0 0 30 30" aria-hidden="true"><circle cx="15" cy="15" r="15"></circle><path d="M8.5 15.5 L13 20 L21.5 10.5"></path></svg>';
+
   function waiting(title, text, cls) {
     return '<div class="sec waiting' + (cls ? " " + cls : "") + '">' + GLYPH + '<div><h2>' + esc(title) + '</h2><p>' + esc(text) + '</p></div></div>';
   }
 
   function picker() {
-    if (state.roots.length < 2) return "";
+    if (state.roots.length < 2 || state.run) return "";
     return '<div class="sec"><div class="picker">' + plural(state.roots.length, "card", "cards") + ' inserted:' +
       state.roots.map(function (r) {
         return '<button type="button" data-root="' + esc(r) + '" aria-pressed="' + (r === state.current) + '">' + esc(baseName(r)) + '</button>';
@@ -635,23 +780,22 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     return state.ledger.cards.filter(function (c) { return c.id === id; })[0] || null;
   }
 
+  // The card stays on screen during and after an import, with the form locked, like
+  // the prototype: progress and the result appear at the bottom of the desk.
   function renderDesk() {
     var desk = $("#desk");
     if (!invoke) {
       desk.innerHTML = waiting("Open this in the Card Intake app", "This page reads cards through the desktop app. In a browser it has nothing to read.");
       return;
     }
-    if (!state.current) {
-      desk.innerHTML = waiting("Insert a camera card", "Card Intake checks for cards every two seconds. Any drive with a DCIM folder counts.");
-      return;
-    }
-    if (state.loading) {
-      desk.innerHTML = picker() + waiting("Reading " + baseName(state.current) + "…", "Listing photos and clips and reading capture times. Nothing is written to the card.", "pulse");
-      bindPicker();
-      return;
-    }
-    if (state.error) {
-      desk.innerHTML = picker() + waiting("Couldn't read this card", state.error, "error");
+    if (!state.report || (!state.run && (state.loading || state.error))) {
+      if (!state.current) {
+        desk.innerHTML = waiting("Insert a camera card", "Card Intake checks for cards every two seconds, looking for DCIM or Sony M4ROOT/CLIP folders.");
+      } else if (state.error) {
+        desk.innerHTML = picker() + waiting("Couldn't read this card", state.error, "error");
+      } else {
+        desk.innerHTML = picker() + waiting("Reading " + baseName(state.current) + "…", "Listing photos and clips and reading capture times. Nothing is written to the card.", "pulse");
+      }
       bindPicker();
       return;
     }
@@ -660,10 +804,10 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     bindPicker();
     bindShoots();
     bindOptions();
-    $("#start").addEventListener("click", startDemo);
+    $("#start").addEventListener("click", startImport);
     $("#health-read").addEventListener("click", readHealth);
     renderHealth();
-    updateSummary();
+    renderRun();
   }
 
   function bindPicker() {
@@ -672,15 +816,51 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     });
   }
 
+  function driveLabel(root) {
+    var m = /^([A-Za-z]:)[\\/]?$/.exec(root || "");
+    return m ? "drive " + m[1].toUpperCase() : root;
+  }
+
+  function cardTypeLabel(bus, model) {
+    var m = String(model || "").toUpperCase();
+    if (bus === "NVMe") return m.indexOf("CEA") === 0 ? "CFexpress Type A" : m.indexOf("CEB") === 0 ? "CFexpress Type B" : "CFexpress";
+    if (bus === "SD" || bus === "MMC") return "SD";
+    return null;
+  }
+
+  // Completed imports from a card. Older history has no card key, only the volume ID.
+  function cardImports(c) {
+    var volume = c.volume_id || c.id;
+    return (state.ledger.imports || []).filter(function (r) {
+      return r.status === "complete" && (r.card_key ? r.card_key === c.id : r.card_id === volume);
+    });
+  }
+
+  // Files on the card that are already in the date's folders on the NAS.
+  function onNas() {
+    var t = { photos: 0, videos: 0, photoBytes: 0, videoBytes: 0, known: false };
+    var r = state.report;
+    if (!r) return t;
+    t.known = !!(r.destinations && r.destinations.length);
+    (r.destinations || []).forEach(function (d) {
+      t.photos += d.photos_on_nas; t.videos += d.videos_on_nas;
+      t.photoBytes += d.photo_bytes_on_nas; t.videoBytes += d.video_bytes_on_nas;
+    });
+    return t;
+  }
+
   function cardSection() {
-    var r = state.report, v = r.volume;
-    var rec = v.id ? ledgerCard(v.id) : null;
-    var name = (rec && rec.name) || v.name || baseName(r.root);
-    var eyebrow = ["Inserted card", r.root, v.reader ? v.reader + " reader" : null, v.bus].filter(Boolean).join(" · ");
-    var chip = [v.filesystem, capLabel(v.total_bytes)].filter(Boolean).join(" · ");
-    var meta = rec
-      ? "First seen " + whenLabel(rec.first_seen) + " · inserted " + plural(rec.insertions, "time", "times") + " · read in " + fmt(r.scan_ms) + " ms"
-      : "Read in " + fmt(r.scan_ms) + " ms";
+    var r = state.report, v = r.volume, drive = r.drive || {};
+    var rec = r.card_key ? ledgerCard(r.card_key) : null;
+    var name = (rec && rec.name) || (drive.card_serial && drive.product) || v.name || baseName(r.root);
+    var eyebrow = ["Inserted card", driveLabel(r.root), v.reader ? v.reader + " reader" : null,
+      drive.card_serial ? "recognized by its serial number" : (v.id ? "recognized by its volume ID, which formatting changes" : null)]
+      .filter(Boolean).join(" · ");
+    var chip = [cardTypeLabel(drive.bus, drive.product), capLabel(v.total_bytes), v.filesystem].filter(Boolean).join(" · ");
+    var imports = rec ? cardImports(rec) : [];
+    var meta = imports.length
+      ? "Last imported " + whenLabel(imports[0].finished_at) + " · " + plural(imports.length, "import", "imports") + " by this app"
+      : rec ? "First seen " + whenLabel(rec.first_seen) + " · not imported by this app yet" : "";
 
     var cam = r.camera;
     var camTag = cam
@@ -689,38 +869,40 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 
     var html = '<div class="sec"><div class="card-head">' + GLYPH +
       '<div><div class="eyebrow">' + esc(eyebrow) + '</div>' +
-      '<div class="card-title"><h2>' + esc(name) + '</h2>' + (chip ? '<span class="chip">' + esc(chip) + '</span>' : "") + '</div>' +
-      '<div class="card-meta">' + esc(meta) + '</div></div>' +
+      '<div class="card-title"><h2 id="card-name">' + esc(name) + '</h2>' + (chip ? '<span class="chip">' + esc(chip) + '</span>' : "") + '</div>' +
+      (meta ? '<div class="card-meta">' + esc(meta) + '</div>' : "") + '</div>' +
       '<div class="camera-tag">' + camTag + '</div></div>';
 
+    var nas = onNas();
+    var newPhotos = r.photo_bytes - nas.photoBytes, newVideos = r.video_bytes - nas.videoBytes, there = nas.photoBytes + nas.videoBytes;
     if (v.total_bytes) {
       var used = v.free_bytes != null ? v.total_bytes - v.free_bytes : r.photo_bytes + r.video_bytes;
       var other = Math.max(0, used - r.photo_bytes - r.video_bytes);
-      var free = v.free_bytes != null ? v.free_bytes : null;
+      var showOther = other >= 0.05e9;
       var pct = function (b) { return (b / v.total_bytes * 100).toFixed(2) + "%"; };
-      html += '<div class="cap" role="img" aria-label="Card space: ' + esc(gbOf(r.photo_bytes)) + ' photos, ' + esc(gbOf(r.video_bytes)) + ' videos, ' +
-        esc(gbOf(other)) + ' other files' + (free != null ? ", " + esc(gbOf(free)) + " free" : "") + '">' +
-        '<span class="p" style="width:' + pct(r.photo_bytes) + '"></span><span class="v" style="width:' + pct(r.video_bytes) + '"></span>' +
-        '<span class="o" style="width:' + pct(other) + '"></span></div>' +
-        '<div class="legend"><span><i class="p"></i>Photos ' + esc(gbOf(r.photo_bytes)) + '</span><span><i class="v"></i>Videos ' + esc(gbOf(r.video_bytes)) + '</span>' +
-        '<span><i class="o"></i>Other ' + esc(gbOf(other)) + '</span>' + (free != null ? '<span>Free ' + esc(gbOf(free)) + '</span>' : "") + '</div>';
+      html += '<div class="cap" role="img" aria-label="Card space: ' + esc(gbOf(newPhotos)) + ' new photos, ' + esc(gbOf(newVideos)) + ' videos, ' +
+        esc(gbOf(there)) + ' already on the NAS' + (v.free_bytes != null ? ", " + esc(gbOf(v.free_bytes)) + " free" : "") + '">' +
+        '<span class="p" style="width:' + pct(newPhotos) + '"></span><span class="v" style="width:' + pct(newVideos) + '"></span>' +
+        '<span class="d" style="width:' + pct(there) + '"></span>' + (showOther ? '<span class="o" style="width:' + pct(other) + '"></span>' : "") + '</div>' +
+        '<div class="legend"><span><i class="p"></i>New photos ' + esc(gbOf(newPhotos)) + '</span><span><i class="v"></i>Videos ' + esc(gbOf(newVideos)) + '</span>' +
+        '<span><i class="d"></i>Already on NAS ' + (nas.known ? esc(gbOf(there)) : "—") + '</span>' +
+        (showOther ? '<span><i class="o"></i>Other ' + esc(gbOf(other)) + '</span>' : "") +
+        (v.free_bytes != null ? '<span>Free ' + esc(gbOf(v.free_bytes)) + '</span>' : "") + '</div>';
     }
 
-    var fromCamera = r.times.exif + r.times.sidecar;
-    var total = fromCamera + r.times.file_time;
     var dates = state.shoots.length
       ? (state.shoots.length === 1 ? dayLabel(state.shoots[0].date).split(", ")[1]
         : dayLabel(state.shoots[0].date).split(", ")[1] + " – " + dayLabel(state.shoots[state.shoots.length - 1].date).split(", ")[1])
       : "—";
     var year = state.shoots.length ? state.shoots[0].date.slice(0, 4) : "";
-
     html += '<div class="stats">' +
-      '<div class="stat"><b>' + fmt(r.photos) + '</b><span>photos</span></div>' +
-      '<div class="stat"><b>' + fmt(r.videos) + '</b><span>video clips</span></div>' +
+      '<div class="stat"><b>' + fmt(r.photos - nas.photos) + '</b><span>new photos</span></div>' +
+      '<div class="stat"><b>' + fmt(r.videos - nas.videos) + '</b><span>' + (nas.videos ? "new video clips" : "video clips") + '</span></div>' +
+      '<div class="stat"><b>' + (nas.known ? fmt(nas.photos + nas.videos) : "—") + '</b><span>' +
+        (nas.known ? "already on NAS, skipped" : "already on NAS (connect the NAS to check)") + '</span></div>' +
       '<div class="stat"><b>' + esc(dates) + '</b><span>capture dates' + (year ? ", " + esc(year) : "") + '</span></div>' +
-      '<div class="stat' + (r.times.file_time ? " warn" : "") + '"><b>' + fmt(fromCamera) + ' / ' + fmt(total) + '</b><span>' +
-        (r.times.file_time ? fmt(r.times.file_time) + " dated by file time only" : "capture times from the camera") + '</span></div>' +
       '</div>' +
+      (r.times.file_time ? '<p class="hint warn-text">' + esc(plural(r.times.file_time, "file is", "files are") + " dated by file time only, so its shoot date may be off.") + '</p>' : "") +
       '<div class="health"><div class="health-head"><h3 id="health-title">Card health</h3>' +
       '<button type="button" class="btn-quiet" id="health-read">Read card health</button></div>' +
       '<div id="health-body"></div></div>' +
@@ -750,30 +932,32 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
       fact("Card serial", h.serial);
   }
 
-  function lastHealthReading(cardId) {
-    var rec = cardId ? ledgerCard(cardId) : null;
+  function lastHealthReading(cardKey) {
+    var rec = cardKey ? ledgerCard(cardKey) : null;
     return rec && rec.health && rec.health.length ? rec.health[rec.health.length - 1] : null;
   }
 
   function renderHealth() {
     var body = $("#health-body");
     if (!body || !state.report) return;
+    var direct = state.report.drive && state.report.drive.bus === "NVMe";
     var btn = $("#health-read");
-    btn.disabled = state.healthBusy;
-    btn.textContent = state.healthBusy ? "Reading…" : "Read card health";
+    btn.disabled = state.healthBusy || !!(state.run && state.run.active);
+    btn.textContent = state.healthBusy ? "Reading…" : direct ? "Read again" : "Read card health";
 
     var outcome = state.health[state.current];
-    var last = lastHealthReading(state.report.volume.id);
+    var last = lastHealthReading(state.report.card_key);
     var title = "Card health";
     var html;
     if (state.healthBusy) {
-      html = '<p class="health-note">Reading the card’s health log. On Windows, choose Yes when asked for admin rights.</p>';
+      html = '<p class="health-note">Reading the card’s health log.' + (direct ? "" : " On Windows, choose Yes when asked for admin rights.") + '</p>';
     } else if (outcome && outcome.kind === "unavailable") {
       html = '<p class="health-note warn">' + esc(outcome.reason) + '</p>';
       if (last) html += '<p class="health-note">Last reading, ' + esc(whenLabel(last.at)) + ':</p><dl class="facts">' + healthFacts(last.health) + '</dl>';
     } else if (outcome && outcome.kind === "read") {
       title += " " + healthStatus(outcome.health);
-      html = '<dl class="facts">' + healthFacts(outcome.health) + '</dl><p class="health-note">Read just now' +
+      html = '<dl class="facts">' + healthFacts(outcome.health) + '</dl><p class="health-note">' +
+        (outcome.inserted ? "Read from the card when it was inserted" : "Read just now") +
         (outcome.health.device_type ? " (smartctl -d " + esc(outcome.health.device_type) + ")" : "") + '.</p>';
     } else if (last) {
       title += " " + healthStatus(last.health);
@@ -788,6 +972,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
   function readHealth() {
     var root = state.current;
     state.healthBusy = true;
+    updateSummary();
     renderHealth();
     invoke("read_card_health", { root: root }).then(function (outcome) {
       state.health[root] = outcome;
@@ -796,20 +981,19 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
       state.health[root] = { kind: "unavailable", reason: String(e) };
     }).then(function () {
       state.healthBusy = false;
+      updateSummary();
       if (state.current === root) renderHealth();
     });
   }
 
+  /* ---------- Shoots ---------- */
   function shootsSection() {
     if (!state.shoots.length) {
       return '<div class="sec"><h3 class="sec-title">Nothing to import</h3><p class="hint">This card has no photos or clips in DCIM or M4ROOT/CLIP.</p></div>';
     }
     return '<div class="sec"><h3 class="sec-title">Shoots on this card</h3>' +
-      '<p class="hint">Grouped by capture date. Name each shoot and its folder is created on the NAS.</p>' +
+      '<p class="hint">Grouped by capture date. Name each shoot and its folder is created on the NAS. A date that already has a folder there keeps its name.</p>' +
       '<div class="shoots">' + state.shoots.map(function (s, i) {
-        var bits = [];
-        if (s.photos) bits.push(plural(s.photos, "photo", "photos"));
-        if (s.videos) bits.push(plural(s.videos, "clip", "clips"));
         var lead = s.photos ? '<span class="n">' + fmt(s.photos) + '</span> photos' : '<span class="n">' + fmt(s.videos) + '</span> clips';
         var rest = gbOf(s.photoBytes + s.videoBytes) + (s.photos && s.videos ? " · " + plural(s.videos, "clip", "clips") : "");
         return '<div class="shoot' + (s.on ? "" : " off") + '" id="shoot-' + i + '">' +
@@ -818,7 +1002,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
             esc(timeLabel(s.first)) + " – " + esc(timeLabel(s.last)) + '</span></label>' +
           '<div class="name"><label for="name-' + i + '">Shoot name</label>' +
             '<input type="text" id="name-' + i + '" value="' + esc(s.name) + '" placeholder="e.g. Yosemite" autocomplete="off" spellcheck="false">' +
-            '<code class="path" id="path-' + i + '"></code></div>' +
+            '<code class="path" id="path-' + i + '"></code><span class="path-note" id="note-' + i + '"></span></div>' +
           '<div class="counts">' + lead + '<br>' + esc(rest) + '</div>' +
         '</div>';
       }).join("") + '</div></div>';
@@ -838,7 +1022,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 
   function actionsSection() {
     return '<div class="sec actions" id="actions"><div><div class="summary" id="summary"></div><div class="estimate" id="estimate"></div></div>' +
-      '<button type="button" class="btn" id="start">Run demo import</button></div>';
+      '<button type="button" class="btn" id="start">Import to NAS</button></div>';
   }
 
   function bindShoots() {
@@ -849,14 +1033,36 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
         $("#shoot-" + i).classList.toggle("off", !s.on);
         updateSummary();
       });
-      $("#name-" + i).addEventListener("input", function (e) { s.name = e.target.value; updatePath(i); });
+      $("#name-" + i).addEventListener("input", function (e) { s.name = e.target.value; updatePath(i); updateSummary(); });
     });
   }
 
   function bindOptions() {
     [["opt-verify", "verify"], ["opt-video", "video"], ["opt-eject", "eject"]].forEach(function (pair) {
-      $("#" + pair[0]).addEventListener("change", function (e) { state.opts[pair[1]] = e.target.checked; updateSummary(); });
+      $("#" + pair[0]).addEventListener("change", function (e) {
+        state.opts[pair[1]] = e.target.checked;
+        if (!state.opts.verify) { state.opts.eject = false; $("#opt-eject").checked = false; }
+        $("#opt-eject").disabled = !state.opts.verify;
+        updateSummary();
+      });
     });
+    $("#opt-eject").disabled = !state.opts.verify;
+  }
+
+  // What the date already has on the NAS, and what this name does with it.
+  function shootNote(s) {
+    var d = s.dest;
+    if (!d || !d.folders.length) return "";
+    var folder = folderName(s).toLowerCase();
+    var same = d.folders.filter(function (f) { return f.name.toLowerCase() === folder; })[0];
+    var total = s.photos + (state.opts.video ? s.videos : 0);
+    if (same) {
+      var there = same.photos + (state.opts.video ? same.videos : 0);
+      return "Existing folder · " + (there ? fmt(there) + " of " + fmt(total) + " already there, checked and skipped" : "new files are added to it");
+    }
+    var elsewhere = d.photos_on_nas + (state.opts.video ? d.videos_on_nas : 0);
+    var names = d.folders.map(function (f) { return f.name; }).join(", ");
+    return "New folder · " + (elsewhere ? fmt(elsewhere) + " already in " + names + " are checked and skipped, not copied again" : names + " also exists for this date");
   }
 
   function updatePath(i) {
@@ -866,98 +1072,415 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
     var full = shootPath(s), folder = folderName(s);
     var at = full.lastIndexOf(folder);
     el.innerHTML = esc(full.slice(0, at)) + "<b>" + esc(folder) + "</b>" + esc(full.slice(at + folder.length));
+    $("#note-" + i).textContent = shootNote(s);
   }
 
+  // The selected shoots: what's new to copy and what's already on the NAS.
   function totals() {
-    var t = { photos: 0, videos: 0, bytes: 0, folders: 0, list: [] };
+    var t = { photos: 0, videos: 0, bytes: 0, skipped: 0, folders: 0, list: [] };
     state.shoots.forEach(function (s) {
       if (!s.on) return;
-      var photos = s.photos, videos = state.opts.video ? s.videos : 0;
-      if (!photos && !videos) return;
-      t.photos += photos; t.videos += videos;
-      t.bytes += s.photoBytes + (state.opts.video ? s.videoBytes : 0);
+      var video = state.opts.video, d = s.dest || {};
+      if (!s.photos && !(video && s.videos)) return;
+      t.photos += s.photos - (d.photos_on_nas || 0);
+      t.bytes += s.photoBytes - (d.photo_bytes_on_nas || 0);
+      t.skipped += d.photos_on_nas || 0;
+      if (video) {
+        t.videos += s.videos - (d.videos_on_nas || 0);
+        t.bytes += s.videoBytes - (d.video_bytes_on_nas || 0);
+        t.skipped += d.videos_on_nas || 0;
+      }
       t.folders += 1; t.list.push(s);
     });
-    t.files = t.photos + t.videos;
     return t;
+  }
+
+  // The speed of the last finished import, for the time estimate.
+  function lastSpeed() {
+    var done = (state.ledger.imports || []).filter(function (r) { return r.status === "complete" && r.average_bytes_per_sec; });
+    return done.length ? done[0].average_bytes_per_sec : null;
   }
 
   function updateSummary() {
     var t = totals(), btn = $("#start");
     if (!btn) return;
+    var resuming = !!(state.run && !state.run.active) || !!state.resumable;
+    btn.textContent = resuming ? "Resume import" : "Import to NAS";
     if (!t.folders) {
       btn.disabled = true;
-      $("#summary").textContent = "Nothing selected";
+      $("#summary").textContent = "No shoots selected";
       $("#estimate").textContent = "Tick at least one shoot to import it.";
       return;
     }
-    btn.disabled = false;
+    btn.disabled = !state.nas || !state.nas.connected || state.nas.network !== true || state.healthBusy || state.nasBusy || state.nasEdited;
     var what = [];
     if (t.photos) what.push(plural(t.photos, "photo", "photos"));
     if (t.videos) what.push(plural(t.videos, "clip", "clips"));
-    $("#summary").innerHTML = esc(what.join(" + ") + " · " + gbOf(t.bytes) + " → " + plural(t.folders, "folder", "folders")) + '<span class="demo-tag">Demo</span>';
-    var mb = t.bytes / 1e6, copyS = mb / COPY_MBS, verS = state.opts.verify ? mb / VERIFY_MBS : 0;
-    $("#estimate").textContent = "At about " + COPY_MBS + " MB/s (a typical CFexpress Type A reader) a real import would take about " +
-      dur(copyS + verS) + ". Copying isn't built yet: the demo shows the flow and copies nothing.";
+    $("#summary").textContent = what.length
+      ? what.join(" + ") + " · " + gbOf(t.bytes) + " → " + plural(t.folders, "folder", "folders")
+      : "Everything selected is already on the NAS";
+    var speed = lastSpeed();
+    var estimate = speed && t.bytes ? "About " + dur(t.bytes / speed) + " at " + fmt(speed / 1e6) + " MB/s, the speed of your last import." : "";
+    if (t.skipped) estimate += (estimate ? " " : "") + plural(t.skipped, "file is", "files are") + " already on the NAS: compared with the card, then skipped.";
+    if (!state.opts.verify) estimate += (estimate ? " " : "") + "New copies won't be read back: check them before formatting the card.";
+    $("#estimate").textContent = state.nasEdited ? "Save the NAS path before importing."
+      : state.nasBusy ? "Waiting for the NAS check to finish…"
+      : state.healthBusy ? "Waiting for the card health reading…"
+      : btn.disabled ? "Connect and save a network photo share before importing."
+      : estimate || "Matching XMP and clip XML sidecars are included.";
   }
 
-  /* ---------- Demo import (copies nothing) ---------- */
-  function startDemo() {
-    var t = totals();
-    state.run = { phase: "copy", done: 0, totalMB: t.bytes / 1e6, t: t, verify: state.opts.verify };
-    document.querySelectorAll("#desk input").forEach(function (el) { el.disabled = true; });
-    $("#actions").hidden = true;
-    var p = $("#progress");
-    p.innerHTML = '<div class="phase" id="phase"></div><div class="prow"><div class="pct" id="pct">0%</div>' +
-      '<button type="button" class="btn-quiet" id="stop">Stop</button></div><div class="bar"><i id="bar"></i></div>' +
-      '<div class="pline" id="pline" aria-live="polite"></div><div class="demo-note">Demo: nothing is being copied. It runs ' + SPEEDUP + '× faster than a real import.</div>';
-    p.hidden = false;
-    $("#stop").addEventListener("click", stopDemo);
-    tick(true);
-    state.run.timer = setInterval(tick, 100);
+  /* ---------- Import ---------- */
+  function importRequest() {
+    var cam = state.report.camera;
+    return {
+      root: state.current, expected_card_id: state.report.volume.id,
+      shoots: totals().list.map(function (s) { return { date: s.date, name: s.name }; }),
+      include_videos: state.opts.video, verify: state.opts.verify, eject: state.opts.eject,
+      camera: cam ? cam.model : null
+    };
   }
 
-  function tick(first) {
-    var run = state.run;
-    if (!run) return;
-    var base = run.phase === "copy" ? COPY_MBS : VERIFY_MBS;
-    var speed = base + (Math.random() - 0.5) * base * 0.06;
-    if (!first) run.done = Math.min(run.totalMB, run.done + speed * 0.1 * SPEEDUP);
-    var frac = run.totalMB ? run.done / run.totalMB : 1;
-    var files = run.t.files;
-    var idx = Math.min(files, Math.max(1, Math.ceil(frac * files)));
-    var remaining = (run.totalMB - run.done) / base + (run.phase === "copy" && run.verify ? run.totalMB / VERIFY_MBS : 0);
-    $("#phase").textContent = run.phase === "copy" ? (run.verify ? "Step 1 of 2 · " : "") + "Copying to NAS" : "Step 2 of 2 · Checking files on the NAS";
-    $("#pct").textContent = Math.floor(frac * 100) + "%";
-    $("#bar").style.width = (frac * 100).toFixed(1) + "%";
-    $("#pline").textContent = fmt(idx) + " of " + fmt(files) + " files · " + fmt(speed) + " MB/s · about " + dur(remaining) + " left";
-    if (run.done >= run.totalMB) {
-      if (run.phase === "copy" && run.verify) { run.phase = "verify"; run.done = 0; }
-      else finishDemo();
+  function refreshPending() {
+    return invoke("get_pending_import").then(function (pending) { state.pending = pending; matchPending(); });
+  }
+
+  // An unfinished import from this card (e.g. stopped, then the app was closed):
+  // its names and options come back, and the button resumes it.
+  function matchPending() {
+    var p = state.pending, r = state.report;
+    var mine = !!(p && r && !state.run && p.request.expected_card_id && p.request.expected_card_id === r.volume.id);
+    state.resumable = mine ? p : null;
+    if (mine && state.resumeFilled !== p) {
+      state.resumeFilled = p;
+      state.shoots.forEach(function (s) {
+        var saved = p.request.shoots.filter(function (x) { return x.date === s.date; })[0];
+        s.on = !!saved;
+        if (saved) s.name = saved.name;
+      });
+      state.opts = { verify: p.request.verify, video: p.request.include_videos, eject: p.eject };
+      renderDesk();
+    } else {
+      renderRun();
     }
   }
 
-  function stopDemo() {
-    clearInterval(state.run.timer);
-    state.run = null;
-    renderDesk();
-    toast("Demo stopped.");
+  // The card's last import that didn't finish, for "Stopped after N of M files".
+  function unfinished() {
+    var r = state.report, rec = r && r.card_key ? ledgerCard(r.card_key) : null;
+    var volume = r && r.volume.id;
+    return (state.ledger.imports || []).filter(function (x) {
+      return x.status !== "complete" && (rec && x.card_key ? x.card_key === rec.id : x.card_id === volume);
+    })[0] || null;
   }
 
-  function finishDemo() {
-    var t = state.run.t;
-    clearInterval(state.run.timer);
-    $("#progress").hidden = true;
-    var d = $("#done");
-    d.innerHTML = '<h3>Demo finished</h3><p>Nothing was copied. Copying to the NAS is the next thing to build. These are the folders a real import would create:</p>' +
-      '<ul class="done-list">' + t.list.map(function (s, i) {
-        return '<li><code id="done-path-' + i + '">' + esc(shootPath(s)) + '</code><button type="button" class="btn-quiet" data-copy="' + i + '">Copy path</button></li>';
-      }).join("") + '</ul><p><button type="button" class="btn-quiet" id="again">Start over</button></p>';
+  function stoppedText(result) {
+    var done = result ? result.copied_files + result.skipped_files : null;
+    var head = result && result.status === "failed" ? "Stopped by an error" : "Stopped";
+    return (result && result.total_files ? head + " after " + fmt(done) + " of " + fmt(result.total_files) + " files." : head + ".") +
+      " Files already copied stay on the NAS; resuming checks and skips them.";
+  }
+
+  function lockForm(locked) {
+    state.shoots.forEach(function (_, i) {
+      if ($("#inc-" + i)) { $("#inc-" + i).disabled = locked; $("#name-" + i).disabled = locked; }
+    });
+    ["#opt-verify", "#opt-video", "#opt-eject"].forEach(function (id) { if ($(id)) $(id).disabled = locked || (id === "#opt-eject" && !state.opts.verify); });
+  }
+
+  function renderRun() {
+    var run = state.run, actions = $("#actions"), progress = $("#progress"), done = $("#done");
+    if (!actions) return;
+    lockForm(!!run);
+    done.hidden = true;
+    if (!run) {
+      actions.hidden = false;
+      progress.hidden = !state.resumable;
+      progress.innerHTML = state.resumable ? '<p class="stopped">' + esc(stoppedText(unfinished())) + '</p>' : "";
+      updateSummary();
+      return;
+    }
+    if (run.active) {
+      actions.hidden = true;
+      progress.hidden = false;
+      progress.innerHTML = '<p class="stopped" id="stopped" hidden></p><div class="phase" id="phase">Checking card and destination</div>' +
+        '<div class="prow"><div class="pct" id="pct">0%</div><button type="button" class="btn-quiet" id="stop">Stop</button></div>' +
+        '<div class="bar" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="bar"></i></div>' +
+        '<div class="pline" id="pline" aria-live="polite"></div>';
+      $("#stop").addEventListener("click", stopImport);
+      updateProgress();
+      return;
+    }
+    var r = run.result;
+    if (r && r.status === "complete") {
+      actions.hidden = true;
+      progress.hidden = true;
+      renderDone();
+      return;
+    }
+    // Stopped or failed: say how far it got, and offer to resume the same selection.
+    actions.hidden = false;
+    progress.hidden = false;
+    progress.innerHTML = '<p class="stopped">' + esc(stoppedText(r)) + '</p>' +
+      (r && r.error && r.status === "failed" ? '<p class="health-note warn">' + esc(r.error) + '</p>' : "") +
+      (run.error ? '<p class="health-note warn">' + esc(run.error) + '</p>' : "") +
+      (r ? r.warnings.map(function (w) { return '<p class="health-note warn">' + esc(w) + '</p>'; }).join("") : "");
+    updateSummary();
+  }
+
+  function startImport() {
+    if ($("#start").disabled || (state.run && state.run.active)) return;
+    // Resuming after a stop repeats the same request; files already copied are checked and skipped.
+    var request = state.run && state.run.request ? state.run.request : importRequest();
+    var run = state.run = { active: true, request: request, progress: null, result: null, error: null, stopping: false, phase: null };
+    state.resumable = null;
+    var channel = new tauri.core.Channel();
+    channel.onmessage = function (progress) {
+      if (state.run !== run || !run.active) return;
+      run.progress = progress;
+      updateProgress();
+    };
+    renderDesk();
+    setNasBusy(false);
+    invoke("start_import", { request: request, onProgress: channel }).then(function (result) { run.result = result; })
+      .catch(function (e) { run.error = String(e); })
+      .finally(function () {
+        run.active = false;
+        if (run.result) state.lastImportId = run.result.started_at;
+        renderDesk();
+        setNasBusy(false);
+        refreshLedger().then(refreshCatalogs).catch(function (e) { toast("Couldn't refresh import history: " + e); });
+        refreshNas().catch(function (e) { console.error(e); });
+        invoke("get_pending_import").then(function (p) { state.pending = p; }).catch(function () {});
+      });
+  }
+
+  var PHASES = {
+    preparing: "Checking card and destination",
+    copying: "Copying to NAS",
+    verifying: "Checking files on the NAS",
+    checking_existing: "Comparing with copies already on the NAS"
+  };
+
+  function updateProgress() {
+    var run = state.run, p = run && run.progress;
+    if (!run || !run.active || !$("#phase")) return;
+    // "file_complete" marks a finished file; keep showing what the import is doing.
+    if (p && PHASES[p.phase]) run.phase = p.phase;
+    $("#phase").textContent = PHASES[run.phase || "preparing"];
+    $("#stop").disabled = run.stopping;
+    $("#stop").textContent = run.stopping ? "Stopping…" : "Stop";
+    $("#stopped").hidden = !run.stopping;
+    $("#stopped").textContent = run.stopping ? "Stopping after the files being copied now…" : "";
+    if (!p) return;
+    var frac = p.total_bytes ? p.processed_bytes / p.total_bytes : (p.total_files ? p.completed_files / p.total_files : 0);
+    var percent = Math.min(100, Math.floor(frac * 100));
+    $("#pct").textContent = percent + "%";
+    $("#bar").style.width = percent + "%";
+    $("#bar").parentElement.setAttribute("aria-valuenow", percent);
+    var line = [];
+    if (p.total_files) {
+      if (p.current_file) line.push(baseName(p.current_file));
+      line.push(fmt(p.completed_files) + " of " + fmt(p.total_files) + " files");
+      if (p.bytes_per_sec != null) line.push(fmt(p.bytes_per_sec / 1e6) + " MB/s");
+      if (p.eta_secs != null) line.push("about " + dur(p.eta_secs) + " left");
+      if (p.skipped_files) line.push(fmt(p.skipped_files) + " already on NAS");
+    }
+    $("#pline").textContent = line.length ? line.join(" · ") : "Scanning selected shoots…";
+  }
+
+  function stopImport() {
+    var run = state.run;
+    if (!run || !run.active || run.stopping) return;
+    run.stopping = true;
+    updateProgress();
+    invoke("cancel_import").catch(function (e) { run.stopping = false; updateProgress(); toast(String(e)); });
+  }
+
+  function importedPath(root, relative) {
+    var s = root.indexOf("\\") >= 0 ? "\\" : "/";
+    return root.replace(/[\\/]+$/, "") + s + relative.replace(/[\\/]/g, s);
+  }
+
+  // Same rule as the app: <catalog folder>/<year>/<shoot>/<shoot>.lrcat.
+  function catalogPath(relative) {
+    var root = state.lr && state.lr.settings.catalog_root;
+    if (!root) return null;
+    var parts = relative.split(/[\\/]/), name = parts[parts.length - 1], year = parts.length > 1 ? parts[parts.length - 2] : "";
+    var s = root.indexOf("\\") >= 0 ? "\\" : "/";
+    return [root.replace(/[\\/]+$/, ""), year, name, name + ".lrcat"].filter(Boolean).join(s);
+  }
+
+  function andList(items) {
+    return items.length < 2 ? items.join("") : items.slice(0, -1).join(", ") + " and " + items[items.length - 1];
+  }
+
+  function renderDone() {
+    var r = state.run.result, d = $("#done");
+    var what = [];
+    if (r.photos) what.push(plural(r.photos, "photo", "photos"));
+    if (r.videos) what.push(plural(r.videos, "clip", "clips"));
+    what = what.length ? andList(what) : plural(r.total_files, "file", "files");
+    var checked = r.verified_files === r.total_files;
+    var body = checked
+      ? "All " + what + " are on the NAS and match the card. You can format this card in the camera."
+      : "All " + what + " are copied. They weren't checked against the card, so keep the card until you've checked them.";
+    if (r.skipped_elsewhere) {
+      body += " " + plural(r.skipped_elsewhere, "file was", "files were") + " already in " + andList(r.found_in.map(baseName)) + " and weren't copied again.";
+    } else if (r.skipped_files) {
+      body += " " + plural(r.skipped_files, "file was", "files were") + " already on the NAS.";
+    }
+    if (r.ejected) body += " The card has been ejected.";
+    var items = r.shoots.map(function (s, i) {
+      var cat = catalogPath(s);
+      return '<li><div class="dl-main"><code id="done-path-' + i + '">' + esc(importedPath(r.nas_root, s)) + '</code>' +
+        (cat ? '<span class="dl-cat">Catalog: ' + esc(cat) + '</span>' : "") + '</div>' +
+        '<div class="dl-btns"><button type="button" class="btn-open" data-open="' + i + '">Open in Lightroom</button>' +
+        '<button type="button" class="btn-quiet" data-copy="' + i + '">Copy path</button></div></li>';
+    }).join("");
+    d.innerHTML = '<div class="done-head">' + CHECK + '<div><h3>Import complete</h3><p>' + esc(body) + '</p></div></div>' +
+      r.warnings.map(function (w) { return '<p class="health-note warn">' + esc(w) + '</p>'; }).join("") +
+      '<ul class="done-list">' + items + '</ul>' +
+      (r.shoots.length > 1 ? '<div class="done-all"><button type="button" class="btn-quiet" id="open-all">Open all ' + r.shoots.length +
+        ' shoots in one catalog</button><span>For a trip you want to edit as one job.</span></div>' : "") +
+      '<p class="next">Each shoot gets its own Lightroom catalog, made from your template catalog, with every photo already added. ' +
+      'It stays on this computer while you edit, because Lightroom Classic cannot open catalogs on a network drive. ' +
+      'A catalog you keep in the shoot’s <code>_catalog</code> folder on the NAS is copied back here when you open the shoot again.</p>' +
+      '<p class="next"><button type="button" class="btn-quiet" id="again">Back to card</button></p>';
     d.hidden = false;
     d.querySelectorAll("[data-copy]").forEach(function (b) {
       b.addEventListener("click", function () { copyText($("#done-path-" + b.dataset.copy).textContent, b, "Copy path"); });
     });
-    $("#again").addEventListener("click", function () { state.run = null; renderDesk(); });
+    d.querySelectorAll("[data-open]").forEach(function (b) {
+      b.addEventListener("click", function () { openLightroom(r, Number(b.dataset.open), b); });
+    });
+    if ($("#open-all")) $("#open-all").addEventListener("click", function () { openLightroom(r, null, this); });
+    $("#again").addEventListener("click", function () {
+      state.run = null;
+      if (state.roots.indexOf(state.current) < 0) { state.current = null; state.report = null; renderDesk(); poll(); }
+      else selectCard(state.current); // read the card again: its files are on the NAS now
+    });
+  }
+
+  /* ---------- History ---------- */
+  function importCard(r) {
+    var c = r.card_key ? ledgerCard(r.card_key)
+      : state.ledger.cards.filter(function (x) { return (x.volume_id || x.id) === r.card_id; })[0];
+    return c ? c.name || c.model || "Card" : "—";
+  }
+
+  function checkChip(r) {
+    if (r.status === "complete") {
+      var unchecked = r.total_files - r.verified_files;
+      return unchecked ? '<span class="chip warn">' + esc(plural(unchecked, "file", "files")) + ' not checked</span>' : '<span class="chip ok">Verified</span>';
+    }
+    return '<span class="chip warn" title="' + esc(r.error || "") + '">' + (r.status === "cancelled" ? "Stopped" : "Failed") + '</span>';
+  }
+
+  function catalogCell(r, i) {
+    if (r.status !== "complete" || !r.shoots.length) return '<span class="muted">—</span>';
+    var c = state.catalogs[r.started_at];
+    var st = c ? c.state : "none";
+    return st === "local" ? '<span class="cat-cell"><span class="chip live">On this PC</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Open</button></span>'
+      : st === "nas" ? '<span class="cat-cell"><span class="chip">Stored on NAS</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Reopen</button></span>'
+      : '<span class="cat-cell"><span class="chip">Not created</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Open</button></span>';
+  }
+
+  function renderHistory() {
+    var records = state.ledger.imports || [], box = $("#history");
+    if (!records.length) {
+      box.className = "history-empty";
+      box.innerHTML = '<b>No imports yet.</b> Completed, stopped and failed imports appear here.';
+      return;
+    }
+    box.className = "table-wrap";
+    box.innerHTML = '<table><thead><tr><th>Date</th><th>Card</th><th>Camera</th><th class="r">Photos</th><th class="r">Size</th><th class="r">Speed</th>' +
+      '<th>Check</th><th>Folder</th><th>Lightroom catalog</th></tr></thead><tbody>' +
+      records.map(function (r, i) {
+        var folder = r.shoots.length
+          ? '<code>' + esc(baseName(r.shoots[0])) + '</code>' + (r.shoots.length > 1 ? ' <span class="muted">+' + (r.shoots.length - 1) + ' more</span>' : "")
+          : '<span class="muted">—</span>';
+        var photos = r.photos || r.videos ? fmt(r.photos) + (r.videos ? ' <span class="muted">+ ' + fmt(r.videos) + ' clips</span>' : "") : fmt(r.total_files);
+        return '<tr' + (r.started_at === state.lastImportId ? ' class="fresh"' : "") + '>' +
+          '<td>' + esc(whenLabel(r.finished_at)) + '</td><td>' + esc(importCard(r)) + '</td><td>' + esc(r.camera || "—") + '</td>' +
+          '<td class="r">' + photos + '</td><td class="r">' + esc(gbOf(r.total_bytes)) + '</td>' +
+          '<td class="r">' + (r.average_bytes_per_sec ? fmt(r.average_bytes_per_sec / 1e6) + " MB/s" : "—") + '</td>' +
+          '<td>' + checkChip(r) + '</td><td>' + folder + '</td><td>' + catalogCell(r, i) + '</td></tr>';
+      }).join("") + '</tbody></table>';
+    box.querySelectorAll("[data-hopen]").forEach(function (b) {
+      b.addEventListener("click", function () { openLightroom(records[Number(b.dataset.hopen)], null, b); });
+    });
+  }
+
+  /* ---------- Lightroom ---------- */
+  function applyLightroom(setup) {
+    state.lr = setup;
+    $("#lr-exe").value = setup.settings.executable || "";
+    $("#lr-template").value = setup.settings.template || "";
+    $("#lr-root").value = setup.settings.catalog_root || "";
+    $("#lr-plugin").textContent = setup.plugin_path;
+    $("#lr-note").textContent = setup.settings.template && setup.settings.executable ? "Ready" : "Set up once";
+  }
+
+  function refreshCatalogs() {
+    return invoke("lightroom_catalogs").then(function (list) {
+      state.catalogs = {};
+      list.forEach(function (c) { state.catalogs[c.import_id] = c; });
+      renderHistory();
+    }).catch(function (e) { console.error(e); });
+  }
+
+  function saveLightroom() {
+    var button = $("#lr-save");
+    button.disabled = true;
+    function value(id) { return $(id).value.trim() || null; }
+    invoke("save_lightroom_settings", { settings: { executable: value("#lr-exe"), template: value("#lr-template"), catalog_root: value("#lr-root") } })
+      .then(function (setup) { applyLightroom(setup); $("#lr-status").textContent = "Saved. Enable the plug-in in Lightroom before opening a shoot."; refreshCatalogs(); })
+      .catch(function (e) { $("#lr-status").textContent = String(e); })
+      .finally(function () { button.disabled = false; });
+  }
+
+  // Opens one shoot (or all of an import's shoots) in its catalog. The Card Intake
+  // plug-in in Lightroom adds the photos in place and reports back.
+  function openLightroom(record, shoot, button) {
+    if (state.run && state.run.active) { toast("Wait for the import to finish."); return; }
+    button.disabled = true;
+    invoke("open_in_lightroom", { importId: record.started_at, shoot: shoot }).then(function (launch) {
+      state.lrLaunch = launch;
+      launch.started = Date.now();
+      launch.name = baseName(launch.catalog);
+      button.textContent = button.textContent === "Reopen" ? "Open" : button.textContent.indexOf("Open all") === 0 ? button.textContent : "Open again";
+      toast("Opened " + launch.name + " in Lightroom Classic. The Card Intake plug-in adds the photos from the NAS.");
+      refreshCatalogs();
+    }).catch(function (e) {
+      $("#lr-setup").open = true;
+      $("#lr-status").textContent = String(e);
+      toast(String(e));
+    }).finally(function () { button.disabled = false; });
+  }
+
+  function pollLightroom() {
+    var launch = state.lrLaunch;
+    if (!launch || launch.busy) return;
+    launch.busy = true;
+    invoke("lightroom_status", { catalog: launch.catalog, requestId: launch.request_id }).then(function (result) {
+      if (state.lrLaunch !== launch) return;
+      if (result && result.status === "complete") {
+        toast("Lightroom added " + plural(result.added, "photo", "photos") + " to " + launch.name +
+          (result.skipped ? " (" + fmt(result.skipped) + " were already in it)" : "") + ". Originals stay on the NAS.");
+        state.lrLaunch = null;
+      } else if (result && result.status === "failed") {
+        $("#lr-setup").open = true;
+        $("#lr-status").textContent = "Lightroom added " + fmt(result.added) + ", skipped " + fmt(result.skipped) + ", failed " + fmt(result.failed) + ". " + result.detail + " Open the shoot again to retry.";
+        toast("Lightroom couldn't add every photo. See Lightroom setup.");
+        state.lrLaunch = null;
+      } else if (Date.now() - launch.started > 60000 && !launch.warned) {
+        launch.warned = true;
+        $("#lr-setup").open = true;
+        $("#lr-status").textContent = "Still waiting for Lightroom. Enable the Card Intake plug-in in Lightroom’s Plug-in Manager; the photos are added as soon as it runs. " + launch.catalog;
+      }
+    }).catch(function (e) { $("#lr-status").textContent = String(e); state.lrLaunch = null; })
+      .finally(function () { launch.busy = false; });
   }
 
   /* ---------- Ledger ---------- */
@@ -973,65 +1496,148 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
   }
 
   function renderLedger() {
-    var current = state.report && state.report.volume;
-    var cards = state.ledger.cards;
-    $("#cards").innerHTML = cards.length ? cards.map(function (c) {
-      var inReader = current && current.id === c.id && state.current;
-      var name = c.name || (inReader ? (current.name || baseName(state.current)) : "Unlabeled card");
-      var last = c.health && c.health.length ? c.health[c.health.length - 1] : null;
-      var chips = (inReader ? '<span class="chip live">In reader</span>' : "") +
-        (last ? healthStatus(last.health) : (inReader ? healthChip(current.health) : ""));
-      var sub = [c.filesystem, capLabel(c.capacity_bytes), c.reader ? c.reader + " reader" : null].filter(Boolean).join(" · ");
-      var facts = last
-        ? fact("Life used", last.health.percentage_used != null ? last.health.percentage_used + "%" : null) +
-          fact("Written", bytesLabel(last.health.data_written_bytes)) +
-          fact("Power cycles", last.health.power_cycles != null ? fmt(last.health.power_cycles) : null) +
-          fact("Insertions", fmt(c.insertions))
-        : fact("First seen", whenLabel(c.first_seen)) + fact("Last seen", whenLabel(c.last_seen)) +
-          fact("Insertions", fmt(c.insertions)) + fact("Card ID", c.id.split("-")[0]);
-      var src = last
-        ? "Health read " + whenLabel(last.at) + (c.hardware_serial ? " · card serial " + c.hardware_serial : "") + "."
-        : "The card ID changes when the card is formatted in the camera.";
-      return '<article class="item"><div class="item-head"><span class="item-name">' + esc(name) + '</span><span class="chips">' + chips + '</span></div>' +
-        '<div class="item-sub">' + esc(sub) + '</div><dl class="facts">' + facts + '</dl><div class="src">' + esc(src) + '</div></article>';
-    }).join("") : '<div class="empty">No cards yet. Insert a card and it shows up here.</div>';
-
-    var cam = state.report && state.report.camera;
-    var cameras = state.ledger.cameras;
-    $("#cameras").innerHTML = cameras.length ? cameras.map(function (c) {
-      var isCurrent = cam && cam.model === c.model && cam.serial === c.serial;
-      var readings = c.shutter_counts || [];
-      var last = readings.length ? readings[readings.length - 1] : null;
-      // The inserted card's own reading wins: it's the newest there is.
-      if (isCurrent && cam.shutter_count != null && (!last || last.count !== cam.shutter_count)) {
-        last = { count: cam.shutter_count, at: localIso(new Date()) };
-      }
-      var nick = NICKNAMES[c.model];
-      var sub = [c.firmware ? "Firmware " + c.firmware : null, isCurrent && cam.lens ? cam.lens : null, isCurrent ? "on the inserted card" : "last seen " + whenLabel(c.last_seen)]
-        .filter(Boolean).join(" · ");
-      var shutter = last
-        ? '<div><span class="lbl">Shutter count</span><b>' + fmt(last.count) + '</b></div><div class="shutter-note">Read ' + esc(whenLabel(last.at)) + '</div>'
-        : '<div><span class="lbl">Shutter count</span><b class="none">—</b></div><div class="shutter-note">' +
-          esc(isCurrent && cam.shutter_note ? cam.shutter_note : "Not read yet.") + '</div>';
-      var chart = readings.length >= 2
-        ? spark(readings.map(function (r) { return r.count; })) +
-          '<div class="spark-labels"><span>' + esc(whenLabel(readings[0].at)) + " · " + fmt(readings[0].count) + '</span><span>' +
-          esc(whenLabel(last.at)) + " · " + fmt(last.count) + '</span></div>'
-        : "";
-      return '<article class="item"><div class="item-head"><span class="item-name">' + esc(c.model) + (nick ? '<small>' + esc(nick) + '</small>' : "") + '</span>' +
-        (c.serial ? '<span class="sn">SN ' + esc(c.serial) + '</span>' : "") + '</div>' +
-        '<div class="item-sub">' + esc(sub) + '</div><div class="shutter">' + shutter + '</div>' + chart + '</article>';
-    }).join("") : '<div class="empty">No cameras yet. They are read from the photos on each card.</div>';
+    renderCards();
+    renderCameras();
   }
 
-  function spark(vals) {
+  function cardType(c) {
+    return cardTypeLabel(c.bus, c.model);
+  }
+
+  function renderCards() {
+    var cards = state.ledger.cards;
+    var currentKey = state.current && state.report ? state.report.card_key : null;
+    $("#cards").innerHTML = cards.length ? cards.map(function (c) {
+      var inReader = currentKey != null && currentKey === c.id;
+      var last = c.health && c.health.length ? c.health[c.health.length - 1] : null;
+      var name = c.name || c.model || (inReader ? (state.report.volume.name || baseName(state.current)) : "Card");
+      var serial = c.hardware_serial ? '<small>SN ' + esc(c.hardware_serial) + '</small>' : "";
+      var chips = (inReader ? '<span class="chip live">In reader</span>' : "") +
+        (last ? healthStatus(last.health)
+          : inReader && state.report.volume.health ? healthChip(state.report.volume.health)
+          : '<span class="chip">No wear data</span>');
+      var sub = [cardType(c), capLabel(c.capacity_bytes), c.filesystem, inReader ? null : "last seen " + whenLabel(c.last_seen)]
+        .filter(Boolean).join(" · ");
+      var facts;
+      if (last) {
+        var h = last.health;
+        facts = fact("Written", bytesLabel(h.data_written_bytes)) + fact("Read", bytesLabel(h.data_read_bytes)) +
+          fact("Life used", h.percentage_used != null ? h.percentage_used + "%" : null) +
+          fact("Power cycles", h.power_cycles != null ? fmt(h.power_cycles) : null);
+      } else {
+        var imports = cardImports(c);
+        var bytes = imports.reduce(function (sum, r) { return sum + r.completed_bytes; }, 0);
+        facts = fact("Imports", fmt(imports.length)) + fact("Imported", bytesLabel(bytes)) +
+          fact("Formats seen", c.hardware_serial ? fmt(c.formats) : null) + fact("Insertions", fmt(c.insertions));
+      }
+      return '<article class="item"><div class="item-head"><span class="item-name">' + esc(name) + serial + '</span>' +
+        '<span class="chips">' + chips + '</span></div>' +
+        (sub ? '<div class="item-sub">' + esc(sub) + '</div>' : "") + '<dl class="facts">' + facts + '</dl></article>';
+    }).join("") : '<div class="empty">No cards yet. Insert a card and it shows up here.</div>';
+  }
+
+  function dateLabel(iso) {
+    var d = parseLocal(iso);
+    if (!d) return iso;
+    var date = MONTHS[d.getMonth()] + " " + d.getDate();
+    return d.getFullYear() === new Date().getFullYear() ? date : date + ", " + d.getFullYear();
+  }
+
+  function renderCamerasHead() {
+    var note = $("#cams-note"), btn = $("#lib-scan"), s = state.shared;
+    if (!note) return;
+    note.removeAttribute("title");
+    if (!s) note.textContent = "From photo EXIF";
+    else if (s.synced) { note.textContent = "Shared through the NAS"; note.title = s.path; }
+    else if (s.path) note.textContent = "NAS copy not updated";
+    else note.textContent = "This computer only · NAS not connected";
+    btn.disabled = !s || !s.path || !!state.library;
+    btn.textContent = state.library ? "Reading…" : "Read NAS photos";
+  }
+
+  function libraryStatus() {
+    var s = state.library;
+    if (!s) return "";
+    var p = s.progress;
+    var text = s.phase === "listing" || !p ? "Finding photo folders on the NAS…"
+      : "Reading NAS photos · " + fmt(p.photos_done) + " of " + plural(p.photos_total, "photo", "photos") + (p.current ? " · " + p.current : "");
+    var pct = p && p.photos_total ? Math.floor(p.photos_done / p.photos_total * 100) : 0;
+    return '<div class="item lib"><div class="item-head"><span class="lib-text">' + esc(text) + '</span>' +
+      '<button type="button" class="btn-quiet" id="lib-stop"' + (s.stopping ? " disabled" : "") + '>' + (s.stopping ? "Stopping…" : "Stop") + '</button></div>' +
+      '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
+  }
+
+  function renderCameras() {
+    renderCamerasHead();
+    var box = $("#cameras");
+    if (!box) return;
+    var cam = state.report && state.report.camera;
+    var cams = state.cameras || [];
+    var html = libraryStatus();
+    if (state.shared && state.shared.error) html += '<div class="empty">' + esc(state.shared.error) + '</div>';
+    if (state.shutterBusy) html += '<div class="empty pulse">Reading the shutter count of every photo on the card…</div>';
+    if (state.shutterNote) html += '<div class="empty">' + esc(state.shutterNote) + '</div>';
+    if (cams.length) html += cams.map(function (c) { return cameraItem(c, cam); }).join("");
+    else if (!state.shutterBusy && !state.library) {
+      html += '<div class="empty">' + esc(cam && cam.shutter_note ? cam.shutter_note : "No cameras yet. They are read from the photos on each card and on the NAS.") + '</div>';
+    }
+    box.innerHTML = html;
+    var stop = $("#lib-stop");
+    if (stop) stop.addEventListener("click", stopLibrary);
+  }
+
+  function cameraItem(c, cam) {
+    var isCurrent = !!cam && cam.model === c.model && cam.serial === c.serial;
+    var count = c.count;
+    // The inserted card's newest photo may be ahead of the history until its photos are read.
+    if (isCurrent && cam.shutter_count != null && cam.shutter_count > count) count = cam.shutter_count;
+    var days = c.days, lastDay = days[days.length - 1];
+    var electronic = c.electronic_count != null ? c.electronic_count : isCurrent && cam.electronic_count != null ? cam.electronic_count : null;
+    var delta = days.length >= 2
+      ? '<strong>+' + fmt(count - days[days.length - 2].max) + '</strong> since ' + esc(dateLabel(days[days.length - 2].date))
+      : count > lastDay.min ? '<strong>+' + fmt(count - lastDay.min) + '</strong> on ' + esc(dateLabel(lastDay.date)) : "";
+    var sub = [c.firmware ? "Firmware " + c.firmware : null, isCurrent && cam.lens ? cam.lens : null,
+      isCurrent ? "on the inserted card" : "last shot " + whenLabel(c.last_shot)].filter(Boolean).join(" · ");
+    var life = "";
+    if (c.rated_shutter) {
+      var pct = count / c.rated_shutter * 100;
+      life = '<div class="life" role="img" aria-label="' + pct.toFixed(1) + '% of rated shutter life"><i style="width:' + Math.min(100, pct).toFixed(1) + '%"></i></div>' +
+        '<div class="life-note" title="' + esc(c.rating_source || "") + '">' + pct.toFixed(1) + "% of " + fmt(c.rated_shutter) + " rated life</div>";
+    } else if (c.shutter_reference) {
+      var ref = count / c.shutter_reference * 100;
+      life = '<div class="life" role="img" aria-label="' + ref.toFixed(1) + '% of expected shutter life"><i style="width:' + Math.min(100, ref).toFixed(1) + '%"></i></div>' +
+        '<div class="life-note" title="Sony hasn’t published a rating for this model">' + ref.toFixed(1) + "% of " + fmt(c.shutter_reference) + " expected life</div>";
+    }
+    // Each shooting day contributes its first and last count, placed at the time they were shot.
+    var points = [];
+    days.forEach(function (d) {
+      points.push({ t: parseLocal(d.first_shot), v: d.min });
+      if (d.max !== d.min) points.push({ t: parseLocal(d.last_shot), v: d.max });
+    });
+    var chart = points.length >= 2
+      ? spark(points) + '<div class="spark-labels"><span>' + esc(dateLabel(days[0].date)) + " · " + fmt(points[0].v) + '</span><span>' +
+        esc(dateLabel(lastDay.date)) + " · " + fmt(count) + '</span></div>'
+      : "";
+    return '<article class="item"><div class="item-head"><span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span>' +
+      (c.serial ? '<span class="sn">SN ' + esc(c.serial) + '</span>' : "") + '</div>' +
+      '<div class="item-sub">' + esc(sub) + '</div>' +
+      '<div class="shutter"><div><span class="lbl">Shutter count</span><b>' + fmt(count) + '</b>' +
+      (electronic != null ? '<small class="electronic"><span>Electronic</span>' + fmt(electronic) + '</small>' : "") +
+      '</div><div class="delta">' + delta + '</div></div>' +
+      life + chart + '</article>';
+  }
+
+  // Shutter count over time. x is proportional to time, so busy weeks look steep.
+  function spark(points) {
     var W = 300, H = 60, px = 5, py = 6;
+    var t0 = points[0].t.getTime(), tspan = points[points.length - 1].t.getTime() - t0 || 1;
+    var vals = points.map(function (p) { return p.v; });
     var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals), span = max - min || 1;
-    var xs = vals.map(function (_, i) { return px + i * (W - 2 * px) / (vals.length - 1); });
+    var xs = points.map(function (p) { return px + (p.t.getTime() - t0) / tspan * (W - 2 * px); });
     var ys = vals.map(function (v) { return H - py - (v - min) / span * (H - 2 * py); });
     var pts = xs.map(function (x, i) { return x.toFixed(1) + "," + ys[i].toFixed(1); });
     var area = "M" + xs[0].toFixed(1) + "," + (H - py) + " L" + pts.join(" L") + " L" + xs[xs.length - 1].toFixed(1) + "," + (H - py) + " Z";
-    return '<svg class="spark" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Shutter count readings from ' + fmt(min) + " to " + fmt(max) + '">' +
+    return '<svg class="spark" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Shutter count from ' + fmt(min) + " to " + fmt(max) + '">' +
       '<line class="grid" x1="' + px + '" x2="' + (W - px) + '" y1="' + py + '" y2="' + py + '"></line>' +
       '<line class="grid" x1="' + px + '" x2="' + (W - px) + '" y1="' + (H - py) + '" y2="' + (H - py) + '"></line>' +
       '<path class="area" d="' + area + '"></path><polyline class="line" points="' + pts.join(" ") + '"></polyline>' +
@@ -1040,19 +1646,26 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 
   /* ---------- Start ---------- */
   renderDesk();
-  $("#nas-path").addEventListener("input", function () { state.nasEdited = true; });
+  $("#nas-path").addEventListener("input", function () { state.nasEdited = true; updateSummary(); });
   $("#nas-path").addEventListener("keydown", function (e) { if (e.key === "Enter") checkNas(); });
   $("#nas-check").addEventListener("click", function () { checkNas(); });
   $("#nas-save").addEventListener("click", saveNas);
+  $("#lib-scan").addEventListener("click", scanLibrary);
+  $("#lr-save").addEventListener("click", saveLightroom);
+  $("#lr-copy-plugin").addEventListener("click", function () { copyText($("#lr-plugin").textContent, this, "Copy plug-in path"); });
   if (invoke) {
-    refreshNas();
-    refreshLedger();
+    refreshPending().catch(function (e) { toast(String(e)); });
+    invoke("get_lightroom_settings").then(applyLightroom).catch(function (e) { $("#lr-status").textContent = String(e); });
+    refreshNas().catch(function (e) { toast(String(e)); });
+    refreshLedger().then(refreshCatalogs).catch(function (e) { toast(String(e)); });
+    refreshCameras().catch(function (e) { console.error(e); });
     poll();
     setInterval(poll, POLL_MS);
-    setInterval(refreshNas, 15000);
+    setInterval(pollLightroom, 1500);
+    setInterval(function () { if (!state.run || !state.run.active) refreshNas().catch(function (e) { console.error(e); }); }, 15000);
   } else {
     $("#nas").innerHTML = '<span class="dot"></span><span>Not running in the app</span>';
-    ["#nas-path", "#nas-check", "#nas-save"].forEach(function (id) { $(id).disabled = true; });
+    ["#nas-path", "#nas-check", "#nas-save", "#lr-save", "#lr-copy-plugin"].forEach(function (id) { $(id).disabled = true; });
     renderLedger();
   }
 })();

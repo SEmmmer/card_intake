@@ -68,6 +68,12 @@ fn source_dirs(root: &Path) -> [PathBuf; 3] {
 ///
 /// Skips the `._` files macOS leaves on exFAT cards.
 pub fn scan_card(root: &Path) -> io::Result<Vec<MediaFile>> {
+    if !std::fs::metadata(root)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "The card path is not a directory",
+        ));
+    }
     let mut files = Vec::new();
     for dir in source_dirs(root).iter().filter(|d| d.is_dir()) {
         for entry in WalkDir::new(dir) {
@@ -246,6 +252,12 @@ mod tests {
     fn empty_card_has_no_files() {
         let card = tempfile::tempdir().unwrap();
         assert!(scan_card(card.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_cards_are_errors_instead_of_empty_scans() {
+        let card = tempfile::tempdir().unwrap();
+        assert!(scan_card(&card.path().join("removed")).is_err());
     }
 
     #[test]

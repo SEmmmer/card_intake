@@ -416,24 +416,24 @@ pub fn space(path: &Path) -> Option<(u64, u64)> {
 
 #[cfg(windows)]
 pub fn location(path: &Path) -> Option<Location> {
-    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
-    let text = path.to_string_lossy();
-    if text.starts_with(r"\\") {
-        return Some(Location::Network("network path".into()));
-    }
-    let drive: String = text.chars().take(2).collect();
-    if !drive.ends_with(':') {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
+    // Resolve junctions and mapped drives. In particular, \\?\C:\ is a local path,
+    // not a UNC share just because it begins with two backslashes.
+    let resolved = fs::canonicalize(path).ok()?;
+    let path: Vec<u16> = resolved.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut root = vec![0u16; 32768];
+    // SAFETY: path is NUL-terminated; root is a valid output buffer.
+    if unsafe { GetVolumePathNameW(path.as_ptr(), root.as_mut_ptr(), root.len() as u32) } == 0 {
         return None;
     }
-    let root = wide(&format!("{drive}\\"));
     // SAFETY: root is a NUL-terminated wide string.
     let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
-    const DRIVE_REMOTE: u32 = 4;
-    Some(if kind == DRIVE_REMOTE {
-        Location::Network(format!("mapped drive {drive}"))
-    } else {
-        Location::Local(format!("drive {drive}"))
-    })
+    match kind {
+        0 | 1 => None, // unknown or no root directory
+        4 => Some(Location::Network("Windows network share".into())),
+        _ => Some(Location::Local("Windows".into())),
+    }
 }
 
 #[cfg(test)]
@@ -457,6 +457,15 @@ mod tests {
         let relative = check_nas("photos");
         assert!(!relative.ok);
         assert_eq!(relative.items[0].title, "Not a full path");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extended_local_paths_are_not_network_shares() {
+        let dir = tempfile::tempdir().unwrap();
+        let extended = fs::canonicalize(dir.path()).unwrap();
+        assert!(extended.to_string_lossy().starts_with(r"\\?\"));
+        assert!(matches!(location(&extended), Some(Location::Local(_))));
     }
 
     #[test]

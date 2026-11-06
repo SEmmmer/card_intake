@@ -2,8 +2,8 @@
 Card Intake plugin for Lightroom Classic.
 
 When Card Intake opens a new per-shoot catalog, it leaves a request file named
-card-intake-import.txt next to the catalog. On startup this plugin adds every photo
-from the folders listed in that file (the same as Import > Add), then deletes it.
+<catalog-name>.card-intake-request.txt next to the catalog. This plugin adds photos
+in place (Import > Add), skips catalogued photos, and reports the result to the app.
 
 Install once per computer: File > Plug-in Manager > Add, and pick this folder.
 ]]
@@ -14,5 +14,6 @@ return {
   LrToolkitIdentifier = "io.github.semmmer.cardintake",
   LrPluginName = "Card Intake",
   LrInitPlugin = "Init.lua",
-  VERSION = { major = 0, minor = 1, revision = 0 },
+  LrShutdownPlugin = "Shutdown.lua",
+  VERSION = { major = 0, minor = 2, revision = 0 },
 }

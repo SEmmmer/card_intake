@@ -246,7 +246,6 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); line-height: 1.3; }
 .facts dd { margin: 2px 0 0; font-family: var(--font-mono); font-size: 14px; font-variant-numeric: tabular-nums; }
 .facts dd.warn { color: var(--warn); font-weight: 500; }
-.src { font-size: 12px; color: var(--muted); margin-top: 10px; }
 @media (max-width: 460px) { .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .sn { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); background: var(--sunken); border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
@@ -440,7 +439,7 @@ tr.fresh td { background: var(--accent-soft); }
   <section class="full notes" aria-label="Where the numbers come from">
     <div>
       <h3>Camera, serial number, shutter count</h3>
-      <p>Read from the newest photo on the card (EXIF, via exiftool). On some Sony bodies the count also includes electronic-shutter frames.</p>
+      <p>Read from every photo on the card and on the NAS (EXIF, via exiftool), and kept in the NAS photo folder so every computer shows the same history.</p>
     </div>
     <div>
       <h3>CFexpress cards</h3>
@@ -483,7 +482,7 @@ tr.fresh td { background: var(--accent-soft); }
     { model: "ILCE-1", nick: "α1", sn: "5021734", fw: "2.01", seen: "On the inserted card", rated: 500000,
       deltaNote: "since the Oct 26 import",
       hist: [98400, 103950, 108120, 111870, 117300, 120410, 125990, 131020, 136480, 141760, 146872, 148213] },
-    { model: "ILCE-7M4", nick: "α7 IV", sn: "4387215", fw: "4.01", seen: "Last seen Oct 19", rated: 200000,
+    { model: "ILCE-7M4", nick: "α7 IV", sn: "4387215", fw: "4.01", seen: "Last seen Oct 19", rated: null,
       deltaNote: "in the Oct 19 import",
       hist: [41230, 43900, 45110, 47820, 50040, 52310, 54980, 56420, 58700, 60120, 61669, 61902] }
   ];
@@ -756,22 +755,21 @@ tr.fresh td { background: var(--accent-soft); }
     $("#cards").innerHTML = cards.map(function (c) {
       var chips = "";
       if (c.live) chips += '<span class="chip live">In reader</span>';
-      var facts, src;
+      var facts;
       if (c.kind === "cf") {
         chips += c.life < 70 ? '<span class="chip ok">Healthy</span>' : '<span class="chip warn">Wearing out</span>';
         facts = fact("Written", c.written) + fact("Read", c.read) + fact("Life used", c.life + "%") + fact("Power cycles", fmt(c.cycles));
-        src = "From the card's own health log · " + c.imports + " imports, " + c.importedTB.toFixed(1) + " TB imported by this app";
       } else {
         chips += c.errors ? '<span class="chip warn">' + c.errors + ' read errors</span>' : '<span class="chip">No wear data</span>';
         facts = fact("Imports", fmt(c.imports)) + fact("Imported", c.importedTB.toFixed(1) + " TB") +
           fact("Formats seen", fmt(c.formats)) + fact("Read errors", String(c.errors), c.errors ? "warn" : "");
-        src = "SD cards don't report wear, so these are this app's own counts.";
       }
+      // The "In reader" tag already says where the inserted card is.
+      var sub = [c.type, c.cap, c.live ? null : c.last].filter(Boolean).join(" · ");
       return '<article class="item">' +
         '<div class="item-head"><span class="item-name">' + esc(c.name) + '</span><span class="chips">' + chips + '</span></div>' +
-        '<div class="item-sub">' + esc(c.type) + " · " + esc(c.cap) + " · " + esc(c.last) + '</div>' +
+        '<div class="item-sub">' + esc(sub) + '</div>' +
         '<dl class="facts">' + facts + '</dl>' +
-        '<div class="src">' + esc(src) + '</div>' +
       '</article>';
     }).join("");
   }
@@ -800,7 +798,12 @@ tr.fresh td { background: var(--accent-soft); }
     $("#cameras").innerHTML = cameras.map(function (c) {
       var count = c.hist[c.hist.length - 1];
       var delta = count - c.hist[c.hist.length - 2];
-      var pct = count / c.rated * 100;
+      // Rated life comes from the maker; Sony publishes none for many bodies (e.g. the α7 IV).
+      var pct = c.rated ? count / c.rated * 100 : null;
+      var life = c.rated
+        ? '<div class="life" role="img" aria-label="' + pct.toFixed(1) + '% of rated shutter life"><i style="width:' + pct.toFixed(1) + '%"></i></div>' +
+          '<div class="life-note">' + pct.toFixed(1) + "% of " + fmt(c.rated) + " rated life</div>"
+        : "";
       return '<article class="item">' +
         '<div class="item-head"><span class="item-name">' + esc(c.model) + '<small>' + esc(c.nick) + '</small></span><span class="sn">SN ' + esc(c.sn) + '</span></div>' +
         '<div class="item-sub">Firmware ' + esc(c.fw) + " · " + esc(c.seen) + '</div>' +
@@ -808,8 +811,7 @@ tr.fresh td { background: var(--accent-soft); }
           '<div><span class="lbl">Shutter count</span><b>' + fmt(count) + '</b></div>' +
           '<div class="delta"><strong>+' + fmt(delta) + '</strong> ' + esc(c.deltaNote) + '</div>' +
         '</div>' +
-        '<div class="life" role="img" aria-label="' + pct.toFixed(1) + '% of rated shutter life"><i style="width:' + pct.toFixed(1) + '%"></i></div>' +
-        '<div class="life-note">' + pct.toFixed(1) + "% of " + fmt(c.rated) + " rated life (set by you)</div>" +
+        life +
         spark(c.hist) +
         '<div class="spark-labels"><span>Nov 2025 · ' + fmt(c.hist[0]) + '</span><span>Now · ' + fmt(count) + '</span></div>' +
       '</article>';
