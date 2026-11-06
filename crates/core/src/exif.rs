@@ -1,8 +1,9 @@
 //! A small EXIF reader for the fields Card Intake needs: camera make, model, serial
 //! number, firmware, lens and capture time.
 //!
-//! Reads TIFF-based raws (ARW, DNG) and JPEGs. It seeks straight to the few tags it
-//! needs, so it reads a few KB per file instead of the whole 60 MB raw.
+//! Reads TIFF-based raws (ARW, DNG, and Nikon's NEF/NRW) and JPEGs. It seeks straight
+//! to the few tags it needs, so it reads a few KB per file instead of the whole 60 MB
+//! raw.
 
 use chrono::NaiveDateTime;
 use std::fs::File;
@@ -298,6 +299,23 @@ pub(crate) mod tests {
         )
     }
 
+    /// A Nikon Z 9 raw: a little-endian TIFF like any NEF, with the tags Nikon writes.
+    pub(crate) fn nikon_sample() -> Vec<u8> {
+        build_tiff(
+            true,
+            &[
+                (TAG_MAKE, "NIKON CORPORATION"),
+                (TAG_MODEL, "NIKON Z 9"),
+                (TAG_SOFTWARE, "Ver.05.30"),
+            ],
+            &[
+                (TAG_DATE_TIME_ORIGINAL, "2026:11:07 09:15:22"),
+                (TAG_BODY_SERIAL_NUMBER, "6001234"),
+                (TAG_LENS_MODEL, "NIKKOR Z 24-70mm f/2.8 S"),
+            ],
+        )
+    }
+
     fn expected() -> BasicExif {
         BasicExif {
             make: Some("SONY".into()),
@@ -320,6 +338,20 @@ pub(crate) mod tests {
     fn reads_big_endian_tiff() {
         let got = read_basic_from(&mut Cursor::new(sample(false))).unwrap();
         assert_eq!(got, expected());
+    }
+
+    #[test]
+    fn reads_a_nikon_z_9_nef() {
+        // NEF is a TIFF container, so the same reader serves Sony, Nikon and DNG files.
+        let got = read_basic_from(&mut Cursor::new(nikon_sample())).unwrap();
+        assert_eq!(got.make.as_deref(), Some("NIKON CORPORATION"));
+        assert_eq!(got.model.as_deref(), Some("NIKON Z 9"));
+        assert_eq!(got.serial.as_deref(), Some("6001234"));
+        assert_eq!(got.lens.as_deref(), Some("NIKKOR Z 24-70mm f/2.8 S"));
+        assert_eq!(
+            got.captured.map(|t| t.to_string()).as_deref(),
+            Some("2026-11-07 09:15:22")
+        );
     }
 
     #[test]

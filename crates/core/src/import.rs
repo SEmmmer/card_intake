@@ -1168,6 +1168,33 @@ mod tests {
     }
 
     #[test]
+    fn imports_a_nikon_z_9_cards_raws_and_sidecars() {
+        let mut f = Fixture::new();
+        // A Z 9 card: NEF raws in Nikon's own DCIM folder name, Lightroom's sidecar
+        // beside them.
+        fs::remove_file(f.request.root.join("DCIM/100SONY/DSC00001.ARW")).unwrap();
+        let nef = crate::exif::tests::nikon_sample();
+        f.add("DCIM/100NCZ_9/DSC_0001.NEF", &nef);
+        f.add("DCIM/100NCZ_9/DSC_0001.xmp", b"nikon edits");
+        f.request.shoots = vec![ShootSelection {
+            date: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+            name: "Kyoto".into(),
+        }];
+
+        let result = f.run();
+        assert_eq!(result.status, ImportStatus::Complete, "{result:?}");
+        assert_eq!((result.photos, result.copied_files), (1, 2));
+        assert_eq!(result.verified_files, 2);
+        let folder = f.request.nas_root.join("2026/2026-11-07_Kyoto");
+        assert_eq!(fs::read(folder.join("DSC_0001.NEF")).unwrap(), nef);
+        assert_eq!(
+            fs::read(folder.join("DSC_0001.xmp")).unwrap(),
+            b"nikon edits"
+        );
+        assert!(f.parts().is_empty());
+    }
+
+    #[test]
     fn retries_hash_and_skip_identical_files_even_when_verification_is_disabled() {
         let mut f = Fixture::new();
         assert_eq!(f.run().status, ImportStatus::Complete);

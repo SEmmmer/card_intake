@@ -1,11 +1,12 @@
-//! Card health from the card's own NVMe health log (CFexpress cards are NVMe drives),
-//! read with smartctl.
+//! Card health from the card's own NVMe health log (CFexpress cards are NVMe drives).
 //!
 //! - Windows: a card the reader shows as an NVMe drive (PCIe, Thunderbolt or USB4
 //!   readers such as the Sony MRW-G3 on a USB4 port) is read directly, without smartctl
-//!   or admin rights. Behind a USB bridge, smartctl reaches the log through the bridge
-//!   chip's pass-through (`-d sntrealtek`, `sntjmicron`, `sntasmedia`); that needs admin
-//!   rights, so Windows asks once per reading.
+//!   or admin rights. Behind a JMicron JMS583 USB bridge (CFexpress Type B readers such
+//!   as the CHIPFANCIER CFCR-II) the app passes the NVMe commands through the bridge
+//!   itself; that needs admin rights, so Windows asks once per reading. Behind other
+//!   USB bridges, smartctl reaches the log through the bridge chip's pass-through
+//!   (`-d sntrealtek`, `sntjmicron`, `sntasmedia`), also with admin rights.
 //! - macOS: smartctl can only read drives macOS sees as NVMe (e.g. in a Thunderbolt
 //!   reader). Through a USB reader macOS offers no pass-through, so it can't be read.
 //! - SD cards have no health log at all.
@@ -13,6 +14,7 @@
 use crate::volume_info::VolumeInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
 use std::path::Path;
 
 /// One reading of a card's NVMe health log.
@@ -36,12 +38,22 @@ pub struct CardHealth {
     pub host_read_commands: Option<u64>,
     /// Write commands the card has completed over its life.
     pub host_write_commands: Option<u64>,
+    /// Minutes the card's controller has spent busy with commands.
+    pub controller_busy_minutes: Option<u64>,
     pub power_cycles: Option<u64>,
     pub power_on_hours: Option<u64>,
     pub unsafe_shutdowns: Option<u64>,
     pub media_errors: Option<u64>,
     pub error_log_entries: Option<u64>,
     pub temperature_c: Option<u64>,
+    /// Minutes spent above the card's warning temperature.
+    pub warning_temp_minutes: Option<u64>,
+    /// Minutes spent above the card's critical temperature.
+    pub critical_temp_minutes: Option<u64>,
+    /// The NVMe version the card's controller follows, e.g. "1.4".
+    pub nvme_version: Option<String>,
+    /// The reader's USB bridge chip the app read the card through, e.g. "JMicron JMS583".
+    pub bridge: Option<String>,
     /// The smartctl device type that worked, e.g. "sntrealtek".
     pub device_type: Option<String>,
 }
@@ -90,12 +102,17 @@ pub fn parse_smartctl(bytes: &[u8]) -> Result<CardHealth, String> {
         data_written_bytes: num("data_units_written").and_then(|u| u.checked_mul(DATA_UNIT_BYTES)),
         host_read_commands: num("host_reads"),
         host_write_commands: num("host_writes"),
+        controller_busy_minutes: num("controller_busy_time"),
         power_cycles: num("power_cycles"),
         power_on_hours: num("power_on_hours"),
         unsafe_shutdowns: num("unsafe_shutdowns"),
         media_errors: num("media_errors"),
         error_log_entries: num("num_err_log_entries"),
         temperature_c: num("temperature"),
+        warning_temp_minutes: num("warning_temp_time"),
+        critical_temp_minutes: num("critical_comp_time"),
+        nvme_version: json["nvme_version"]["string"].as_str().map(str::to_string),
+        bridge: None,
         device_type: json["device"]["type"].as_str().map(str::to_string),
     })
 }
@@ -112,9 +129,74 @@ const DEVICE_TYPES: &[Option<&str>] = &[
 
 const SD_NOTE: &str = "SD cards keep no health log; only CFexpress cards do.";
 
-/// Reads the health log of the card mounted at `root`.
+/// Reads the health log of the card mounted at `root`. On Windows this may ask for
+/// admin rights (a card behind a USB bridge).
 pub fn read_health(root: &Path, volume: &VolumeInfo, smartctl: Option<&Path>) -> HealthOutcome {
     platform::read_health(root, volume, smartctl)
+}
+
+/// The argument Card Intake's own program answers when the app starts it with admin
+/// rights to read a card through the reader's USB bridge.
+const ADMIN_FLAG: &str = "--read-card-health-as-admin";
+
+/// Call first thing in `main`. When this process is the copy the app started with admin
+/// rights to read a card (`<program> --read-card-health-as-admin E: <answer.json>`), it
+/// reads the card, writes the answer for the process that asked, and returns the exit
+/// code. Otherwise returns `None`.
+pub fn serve_admin_request(args: &[String]) -> Option<i32> {
+    if args.get(1).map(String::as_str) != Some(ADMIN_FLAG) {
+        return None;
+    }
+    let (Some(root), Some(answer_path)) = (args.get(2), args.get(3)) else {
+        return Some(2);
+    };
+    let answer = match crate::storage::read_nvme_health(Path::new(root)) {
+        Ok(health) => serde_json::json!({ "health": health }),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
+    // Only ever a new file: this copy runs with admin rights.
+    let written = std::fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(answer_path)
+        .and_then(|mut file| file.write_all(answer.to_string().as_bytes()));
+    Some(if written.is_ok() { 0 } else { 1 })
+}
+
+/// The card health in the answer [`serve_admin_request`] wrote, or the reason there's none.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_admin_answer(text: &str) -> Result<CardHealth, String> {
+    let unreadable = || "The admin helper's answer couldn't be read.".to_string();
+    let json: Value = serde_json::from_str(text).map_err(|_| unreadable())?;
+    if let Some(error) = json["error"].as_str() {
+        return Err(error.to_string());
+    }
+    serde_json::from_value(json["health"].clone()).map_err(|_| unreadable())
+}
+
+/// Quotes one argument of a Windows command line so the program receives it unchanged:
+/// backslashes count only before a quote, so those are doubled.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn quote_arg(arg: &str) -> String {
+    let mut quoted = String::from('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        if c == '\\' {
+            backslashes += 1;
+            continue;
+        }
+        let escaped = if c == '"' {
+            backslashes * 2 + 1
+        } else {
+            backslashes
+        };
+        quoted.extend(std::iter::repeat_n('\\', escaped));
+        quoted.push(c);
+        backslashes = 0;
+    }
+    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+    quoted.push('"');
+    quoted
 }
 
 fn run_smartctl(smartctl: &Path, device_type: Option<&str>, device: &str) -> Vec<u8> {
@@ -170,22 +252,47 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use crate::storage::NvmeError;
     use std::fs;
+    use std::mem::{size_of, zeroed};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
 
     pub fn read_health(root: &Path, volume: &VolumeInfo, smartctl: Option<&Path>) -> HealthOutcome {
-        // A card the reader shows as an NVMe drive answers directly: no smartctl,
-        // no admin rights.
-        if let Ok(health) = crate::storage::read_nvme_health(root) {
-            return HealthOutcome::Read {
-                health: Box::new(health),
-            };
+        let read = |health| HealthOutcome::Read {
+            health: Box::new(health),
+        };
+        // A card the reader shows as an NVMe drive answers directly: no smartctl, no
+        // admin rights. So does one behind a JMicron bridge when the app runs as admin.
+        match crate::storage::read_nvme_health(root) {
+            Ok(health) => return read(health),
+            // Behind a JMicron bridge: Windows asks for admin rights once.
+            Err(NvmeError::NeedsAdmin { .. }) => {
+                return match read_as_admin(root) {
+                    Ok(health) => read(health),
+                    Err(e) => unavailable(e),
+                };
+            }
+            Err(NvmeError::Failed(_)) => {}
+        }
+        // An SD card has no log to find, so smartctl and admin rights would be wasted.
+        if let Some(class) = crate::card_details::card_details(root).sd_class {
+            return unavailable(format!(
+                "This is an {class} card. {SD_NOTE} Its size class, lock switch and file \
+                 system state are under Card details."
+            ));
         }
         let Some(device) = volume.device.as_deref() else {
             return unavailable("Couldn't tell which drive letter holds this card.");
         };
         let Some(smartctl) = smartctl else {
             return unavailable(
-                "This reader doesn't show the card as an NVMe drive, so reading its health log                  needs smartctl. Install smartmontools for Windows (smartmontools.org), then try again.",
+                "This reader doesn't show the card as an NVMe drive, so reading its health log \
+                 needs smartctl. Install smartmontools for Windows (smartmontools.org), then try again.",
             );
         };
 
@@ -223,6 +330,78 @@ mod platform {
             }
             Err(e) => unavailable(e),
         }
+    }
+
+    /// Reads the card in a copy of this program that Windows starts with admin rights,
+    /// after asking. The copy gets only the drive letter and a new file for its answer.
+    fn read_as_admin(root: &Path) -> Result<CardHealth, String> {
+        let program = std::env::current_exe()
+            .map_err(|e| format!("Couldn't find Card Intake's own program file ({e})."))?;
+        let drive: String = root.to_string_lossy().chars().take(2).collect();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let answer = std::env::temp_dir().join(format!(
+            "card-intake-health-{}-{stamp}.json",
+            std::process::id()
+        ));
+        let answer_text = answer.to_string_lossy();
+        let params = [ADMIN_FLAG, drive.as_str(), answer_text.as_ref()]
+            .map(quote_arg)
+            .join(" ");
+        let exit_code = run_as_admin(&program, &params);
+        let text = fs::read_to_string(&answer);
+        let _ = fs::remove_file(&answer);
+        let exit_code = exit_code?;
+        let text = text.map_err(|_| {
+            format!("The admin helper stopped without an answer (exit code {exit_code}).")
+        })?;
+        parse_admin_answer(&text)
+    }
+
+    /// Starts `program` with admin rights (Windows asks first), hidden, and waits for it.
+    /// Returns its exit code.
+    fn run_as_admin(program: &Path, params: &str) -> Result<u32, String> {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        let wide = |s: &OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+        let verb = wide(OsStr::new("runas"));
+        let file = wide(program.as_os_str());
+        let params = wide(OsStr::new(params));
+        // SAFETY: all zeros is a valid SHELLEXECUTEINFOW (null pointers and handles).
+        let mut info: SHELLEXECUTEINFOW = unsafe { zeroed() };
+        info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.lpParameters = params.as_ptr();
+        info.nShow = 0; // SW_HIDE
+        // SAFETY: `info` is set up above, and the strings it points to outlive the call.
+        if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            let e = std::io::Error::last_os_error();
+            return Err(if e.raw_os_error() == Some(ERROR_CANCELLED as i32) {
+                "Windows didn't give admin rights, so the card wasn't read. \
+                 Try again and choose Yes."
+                    .to_string()
+            } else {
+                format!("Couldn't start the admin helper ({e}).")
+            });
+        }
+        if info.hProcess.is_null() {
+            return Err("Couldn't start the admin helper.".into());
+        }
+        // SAFETY: `hProcess` is a process handle this function owns and closes once.
+        let (waited, exit_code) = unsafe {
+            let waited = WaitForSingleObject(info.hProcess, 60_000);
+            let mut exit_code = 1u32;
+            GetExitCodeProcess(info.hProcess, &mut exit_code);
+            CloseHandle(info.hProcess);
+            (waited, exit_code)
+        };
+        if waited != WAIT_OBJECT_0 {
+            return Err("The admin helper didn't finish within a minute.".into());
+        }
+        Ok(exit_code)
     }
 
     /// Runs smartctl for each device type in one elevated batch file, so Windows asks
@@ -334,6 +513,71 @@ mod tests {
             {"string": "E:: Unknown USB bridge [0x054c:0x0fb9 (0x2101)]", "severity": "error"}]}}"#;
         let err = parse_smartctl(json).unwrap_err();
         assert!(err.contains("Unknown USB bridge"), "{err}");
+    }
+
+    #[test]
+    fn parses_smartctls_busy_time_temperature_times_and_nvme_version() {
+        let json =
+            br#"{"model_name": "CEB-G256T", "nvme_version": {"string": "1.4", "value": 66560},
+            "nvme_smart_health_information_log": {"controller_busy_time": 412,
+            "warning_temp_time": 3, "critical_comp_time": 0}}"#;
+        let h = parse_smartctl(json).unwrap();
+        assert_eq!(h.controller_busy_minutes, Some(412));
+        assert_eq!(h.warning_temp_minutes, Some(3));
+        assert_eq!(h.critical_temp_minutes, Some(0));
+        assert_eq!(h.nvme_version.as_deref(), Some("1.4"));
+        assert_eq!(h.bridge, None);
+    }
+
+    #[test]
+    fn quotes_arguments_for_the_admin_helper() {
+        // A trailing backslash would otherwise escape the closing quote.
+        assert_eq!(quote_arg(r"E:\"), r#""E:\\""#);
+        assert_eq!(quote_arg("E:"), r#""E:""#);
+        assert_eq!(
+            quote_arg(r"C:\Users\A B\AppData\Local\Temp\answer.json"),
+            r#""C:\Users\A B\AppData\Local\Temp\answer.json""#
+        );
+        assert_eq!(quote_arg(r#"say \"hi""#), r#""say \\\"hi\"""#);
+    }
+
+    #[test]
+    fn reads_the_admin_helpers_answer() {
+        let health = CardHealth {
+            serial: Some("ABC".into()),
+            bridge: Some("JMicron JMS583".into()),
+            ..CardHealth::default()
+        };
+        let answer = serde_json::json!({ "health": health }).to_string();
+        assert_eq!(parse_admin_answer(&answer), Ok(health));
+        let refused = r#"{"error": "The card didn't answer."}"#;
+        assert_eq!(
+            parse_admin_answer(refused).unwrap_err(),
+            "The card didn't answer."
+        );
+        assert!(parse_admin_answer("").is_err());
+    }
+
+    #[test]
+    fn only_the_admin_flag_starts_the_admin_helper() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(serve_admin_request(&args(&["app"])), None);
+        assert_eq!(serve_admin_request(&args(&["app", "--health", "E:"])), None);
+        assert_eq!(
+            serve_admin_request(&args(&["app", ADMIN_FLAG, "E:"])),
+            Some(2)
+        );
+
+        // It never overwrites a file, even one it could write.
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("answer.json");
+        std::fs::write(&existing, "keep").unwrap();
+        let path = existing.to_string_lossy().to_string();
+        assert_eq!(
+            serve_admin_request(&args(&["app", ADMIN_FLAG, "Z:", &path])),
+            Some(1)
+        );
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "keep");
     }
 
     #[test]

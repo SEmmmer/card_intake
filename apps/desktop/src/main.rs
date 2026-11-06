@@ -7,6 +7,8 @@ mod lightroom;
 mod settings;
 
 use card_intake_core::{
+    cameras,
+    card_details::{self, CardDetails},
     destinations::{self, DateDestination},
     exif,
     exiftool::{self, ShutterSample},
@@ -38,9 +40,10 @@ struct AppState {
     imports: Arc<imports::ImportControl>,
     pending_path: PathBuf,
     local_data: PathBuf,
+    /// The user's Pictures folder: Lightroom catalogs go in `Lightroom/Card Intake` there.
+    pictures: Option<PathBuf>,
     /// This computer's copy of the shutter count database.
-    shutter: Mutex<ShutterDb>,
-    shutter_path: PathBuf,
+    shutter: Mutex<shutter::Store>,
     library: library::LibraryControl,
 }
 
@@ -58,42 +61,26 @@ impl AppState {
         (status.connected && status.network == Some(true)).then(|| PathBuf::from(status.root))
     }
 
-    /// Adds readings to this computer's copy, then merges it with the shared
-    /// database in the photo share (when connected) and keeps the merged result.
+    /// Adds readings to this computer's database, then syncs it with the shared one
+    /// in the photo share (when connected): only rows changed since the last sync go
+    /// either way.
     fn sync_shutter(&self, add: &ShutterDb) -> Result<CamerasResponse, String> {
-        let local = {
-            let mut db = self.shutter.lock().map_err(|e| e.to_string())?;
-            db.merge(add);
-            db.save(&self.shutter_path)
-                .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
-            db.clone()
-        };
+        let mut store = self.shutter.lock().map_err(|e| e.to_string())?;
+        store
+            .add(add)
+            .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
         let mut shared = SharedStatus::default();
-        let merged = match self.shared_root() {
-            None => local,
-            Some(root) => {
-                shared.path = Some(shutter::shared_path(&root).display().to_string());
-                match shutter::sync_shared(&root, &local) {
-                    Ok(remote) => {
-                        shared.synced = true;
-                        let mut db = self.shutter.lock().map_err(|e| e.to_string())?;
-                        db.merge(&remote);
-                        if *db != local {
-                            db.save(&self.shutter_path)
-                                .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
-                        }
-                        db.clone()
-                    }
-                    Err(e) => {
-                        shared.error = Some(e.to_string());
-                        local
-                    }
-                }
+        if let Some(root) = self.shared_root() {
+            shared.path = Some(shutter::shared_path(&root).display().to_string());
+            match shutter::sync_shared(&root, &mut store) {
+                Ok(()) => shared.synced = true,
+                Err(e) => shared.error = Some(e.to_string()),
             }
-        };
-        shared.folders = merged.folders.len();
+        }
+        let read = |e: std::io::Error| format!("Couldn't read the shutter counts: {e}");
+        shared.folders = store.folder_count().map_err(read)?;
         Ok(CamerasResponse {
-            cameras: merged.views(),
+            cameras: store.load().map_err(read)?.views(),
             shared,
         })
     }
@@ -126,6 +113,9 @@ struct CardReport {
     drive: DriveIdentity,
     /// The card's health log, when it could be read without asking (NVMe cards).
     health: Option<CardHealth>,
+    /// What the card and its reader reveal: reader, link speed, slot, size class,
+    /// lock switch, partition and file system.
+    details: CardDetails,
     /// The card's record in the ledger.
     card_key: Option<String>,
     photos: usize,
@@ -194,7 +184,10 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
 
     let now = Local::now().naive_local();
     let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
-    report.card_key = ledger.record_card(sighting(&report.volume, &report.drive), now);
+    report.card_key = ledger.record_card(
+        sighting(&report.volume, &report.drive, &report.details),
+        now,
+    );
     if let (Some(key), Some(health)) = (&report.card_key, &report.health) {
         ledger.record_health(key, health.clone(), now);
     }
@@ -213,12 +206,21 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
     Ok(report)
 }
 
-/// Reads the card's own health log. On Windows this asks for admin rights.
+#[derive(Serialize)]
+struct HealthResponse {
+    #[serde(flatten)]
+    outcome: HealthOutcome,
+    /// The card's record in the ledger. It can change with the reading: a card known
+    /// by its serial number takes over the record of the card as inserted.
+    card_key: Option<String>,
+}
+
+/// Reads the card's own health log. On Windows this may ask for admin rights.
 #[tauri::command]
 async fn read_card_health(
     root: String,
     state: State<'_, AppState>,
-) -> Result<HealthOutcome, String> {
+) -> Result<HealthResponse, String> {
     let smartctl = state.smartctl.clone();
     let (volume, outcome) = tauri::async_runtime::spawn_blocking(move || {
         let root = Path::new(&root);
@@ -229,30 +231,30 @@ async fn read_card_health(
     .await
     .map_err(|e| e.to_string())?;
 
+    let mut card_key = None;
     if let HealthOutcome::Read { health } = &outcome {
         let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
-        let seen = CardSighting {
-            volume_id: volume.id.clone(),
-            hardware_serial: health.serial.clone(),
-            ..CardSighting::default()
-        };
-        if let Some(key) = ledger.card_key(&seen)
-            && ledger.record_health(&key, (**health).clone(), Local::now().naive_local())
-        {
+        card_key = ledger.record_reading(
+            volume.id.as_deref(),
+            (**health).clone(),
+            Local::now().naive_local(),
+        );
+        if card_key.is_some() {
             state.save_ledger(&ledger)?;
         }
     }
-    Ok(outcome)
+    Ok(HealthResponse { outcome, card_key })
 }
 
 /// What the ledger needs to recognise a card.
-fn sighting(volume: &VolumeInfo, drive: &DriveIdentity) -> CardSighting {
+fn sighting(volume: &VolumeInfo, drive: &DriveIdentity, details: &CardDetails) -> CardSighting {
     CardSighting {
         volume_id: volume.id.clone(),
         hardware_serial: drive.card_serial.clone(),
         // With the card itself on the bus, the product name is the card's model.
         model: drive.card_serial.as_ref().and(drive.product.clone()),
         bus: drive.bus.clone(),
+        sd_class: details.sd_class.clone(),
         capacity_bytes: volume.total_bytes,
         filesystem: volume.filesystem.clone(),
         reader: volume.reader.clone(),
@@ -438,7 +440,11 @@ fn build_report(
     let count = |source| files.iter().filter(|f| f.time_source == source).count();
 
     let drive = storage::identify(root);
-    let health = (drive.bus.as_deref() == Some("NVMe"))
+    // Read on insertion when it needs no asking: on the NVMe bus, or through the
+    // reader's bridge when the app already runs as admin (the card then answered).
+    let direct = drive.bus.as_deref() == Some("NVMe")
+        || (drive.bridge.is_some() && drive.card_serial.is_some());
+    let health = direct
         .then(|| storage::read_nvme_health(root).ok())
         .flatten();
     Ok(CardReport {
@@ -446,6 +452,7 @@ fn build_report(
         volume: volume_info::volume_info(root),
         drive,
         health,
+        details: card_details::card_details(root),
         card_key: None,
         photos: photos.clone().count(),
         photo_bytes: photos.map(|f| f.size).sum(),
@@ -494,7 +501,9 @@ fn camera_summary(files: &[MediaFile], exiftool: Option<&Path>) -> Option<Camera
                     Some(count) => (Some(count), None),
                     None => (
                         None,
-                        Some("ExifTool can't read the shutter count for this model yet.".into()),
+                        Some(no_shutter_note(&model).unwrap_or_else(|| {
+                            "ExifTool can't read the shutter count for this model yet.".into()
+                        })),
                     ),
                 }
             }
@@ -511,6 +520,19 @@ fn camera_summary(files: &[MediaFile], exiftool: Option<&Path>) -> Option<Camera
         shutter_count,
         electronic_count,
         shutter_note,
+    })
+}
+
+/// Why a camera has no shutter count, when the reason is the body itself: a Nikon Z 9
+/// counts its electronic shutter, and its photos here didn't carry that count.
+fn no_shutter_note(model: &str) -> Option<String> {
+    let info = cameras::model_info(model)?;
+    (!info.has_mechanical_shutter).then(|| {
+        format!(
+            "The {} has no mechanical shutter: its count is the electronic shutter's, \
+             and ExifTool found none in this card's photos.",
+            info.name
+        )
     })
 }
 
@@ -578,7 +600,7 @@ fn find_smartctl(resource_dir: Option<&Path>) -> Option<PathBuf> {
 /// Command-line checks that print JSON and exit, without opening a window or saving anything:
 ///
 ///     card_intake_desktop --report <card>      what the app reads from a card
-///     card_intake_desktop --health <card>      the card's health log
+///     card_intake_desktop --health <card>      the card's health log (may ask for admin rights)
 ///     card_intake_desktop --check-nas <path>   the NAS folder check
 ///     card_intake_desktop --shutter <folder>   shutter counts of every photo in a folder
 fn run_cli(args: &[String]) -> Option<i32> {
@@ -599,6 +621,7 @@ fn run_cli(args: &[String]) -> Option<i32> {
             let volume = volume_info::volume_info(root);
             print(serde_json::to_string_pretty(&serde_json::json!({
                 "drive": storage::identify(root),
+                "details": card_details::card_details(root),
                 "health": health::read_health(root, &volume, find_smartctl(None).as_deref()),
             })));
         }
@@ -649,6 +672,10 @@ fn run_cli(args: &[String]) -> Option<i32> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // The copy of the app Windows started with admin rights to read a card.
+    if let Some(code) = health::serve_admin_request(&args) {
+        std::process::exit(code);
+    }
     if let Some(code) = run_cli(&args) {
         std::process::exit(code);
     }
@@ -657,7 +684,15 @@ fn main() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let ledger_path = data_dir.join("ledger.json");
-            let shutter_path = data_dir.join(shutter::SHARED_FILE);
+            let mut shutter = shutter::Store::open(&data_dir.join(shutter::SHARED_DB))
+                .unwrap_or_else(|e| {
+                    eprintln!("{e} Keeping shutter counts in memory for this session.");
+                    shutter::Store::in_memory()
+                });
+            // Counts kept by an older build of this app.
+            if let Err(e) = shutter.import_json(&data_dir.join(shutter::SHARED_FILE)) {
+                eprintln!("Couldn't bring in the old shutter counts: {e}");
+            }
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             let resource_dir = app.path().resource_dir().ok();
             app.manage(AppState {
@@ -670,8 +705,8 @@ fn main() {
                 imports: Arc::new(imports::ImportControl::default()),
                 pending_path: data_dir.join("pending-import.json"),
                 local_data: app.path().app_local_data_dir()?,
-                shutter: Mutex::new(ShutterDb::load(&shutter_path).unwrap_or_default()),
-                shutter_path,
+                pictures: app.path().picture_dir().ok(),
+                shutter: Mutex::new(shutter),
                 library: library::LibraryControl::default(),
             });
             Ok(())
@@ -706,7 +741,7 @@ fn main() {
             lightroom::get_lightroom_settings,
             lightroom::save_lightroom_settings,
             lightroom::open_in_lightroom,
-            lightroom::lightroom_status,
+            lightroom::finish_catalog,
             lightroom::lightroom_catalogs,
             imports::cancel_import
         ])
@@ -757,6 +792,16 @@ mod tests {
                 .destinations
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_nikon_z_9_card_says_its_count_is_electronic_when_none_is_found() {
+        let note = no_shutter_note("NIKON Z 9").unwrap();
+        assert!(note.contains("Z 9"), "{note}");
+        assert!(note.contains("electronic"), "{note}");
+        // Other bodies keep the generic explanation when ExifTool finds nothing.
+        assert_eq!(no_shutter_note("ILCE-7RM6"), None);
+        assert_eq!(no_shutter_note("NIKON Z 8"), None);
     }
 
     #[test]

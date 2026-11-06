@@ -246,6 +246,12 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .done-all { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 12px; }
 .done-all span { font-size: 13px; color: var(--muted); }
 .done .next { font-size: 13px; color: var(--muted); margin-top: 12px; max-width: 70ch; }
+.trip-name { font: 500 13px var(--font-mono); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; width: 16ch; min-width: 0; }
+.trip-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.lr-arm { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin-top: 12px; font-size: 13px; color: var(--muted); }
+.lr-arm select { font: 500 13px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.cat-list { display: grid; gap: 6px; }
+.cat-name { font: 500 12px var(--font-mono); color: var(--muted); }
 .path-note { display: block; margin-top: 3px; font-size: 12.5px; color: var(--muted); }
 .warn-text { color: var(--warn); margin-top: 10px; }
 .cap .d { background: repeating-linear-gradient(135deg, var(--stripe) 0 4px, transparent 4px 8px); }
@@ -412,14 +418,14 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         <span class="muted" id="lr-note"></span>
       </div>
     <details class="list nas-panel lr-setup" id="lr-setup">
-      <summary>Catalog template, folder and Lightroom</summary>
-      <p class="nas-note">Create an empty catalog in your current Lightroom Classic version, then close it and choose it here as the template. Each shoot gets a local working catalog; photos stay on the NAS.</p>
+      <summary>Catalog template, folders and Lightroom</summary>
+      <p class="nas-note">Create an empty catalog in your current Lightroom Classic version, close it, and choose it here as the template. Each shoot gets its own catalog on this computer; the photos stay on the NAS.</p>
       <label for="lr-template">Empty .lrcat template</label><div class="nas-row"><input id="lr-template" type="text" spellcheck="false" placeholder="C:\Catalogs\Empty.lrcat"></div>
-      <label for="lr-root">Local working catalog folder</label><div class="nas-row"><input id="lr-root" type="text" spellcheck="false"></div>
-      <label for="lr-exe">Lightroom Classic executable</label><div class="nas-row"><input id="lr-exe" type="text" spellcheck="false"></div>
+      <label for="lr-root">Catalog folder on this computer</label><div class="nas-row"><input id="lr-root" type="text" spellcheck="false"></div>
+      <label for="lr-presets">Presets and profiles to install (optional)</label><div class="nas-row"><input id="lr-presets" type="text" spellcheck="false" placeholder="D:\Presets\FroPacks"></div>
+      <label for="lr-exe">Lightroom Classic</label><div class="nas-row"><input id="lr-exe" type="text" spellcheck="false"></div>
       <p><button type="button" class="btn-small" id="lr-save">Save Lightroom setup</button></p>
-      <p class="nas-note">Enable the plug-in once: Lightroom → File → Plug-in Manager → Add. Choose:</p><code id="lr-plugin"></code>
-      <p><button type="button" class="btn-quiet" id="lr-copy-plugin">Copy plug-in path</button></p>
+      <p class="nas-note" id="lr-plugin"></p>
       <p class="nas-note" id="lr-status" role="status"></p>
     </details>
     </section>
@@ -443,7 +449,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     </div>
     <div>
       <h3>Card health</h3>
-      <p>CFexpress cards are NVMe drives with their own health log and serial number. When the reader shows the card as an NVMe drive (Thunderbolt or USB4, e.g. an MRW-G3 on a USB4 port), Windows reads both on insertion without admin rights. Behind a USB bridge it takes smartctl and admin rights; macOS can't read it there. SD cards keep no health log.</p>
+      <p>CFexpress cards are NVMe drives with their own health log and serial number, whichever camera formatted them: a Nikon Z 9’s Type B card reads like a Sony card. When the reader shows the card as an NVMe drive (Thunderbolt or USB4, e.g. an MRW-G3 on a USB4 port), Windows reads both on insertion without admin rights. In a USB reader with a JMicron JMS583 bridge (e.g. a CHIPFANCIER CFexpress Type B reader), the app reads them through the bridge once Windows gives admin rights. Behind other USB bridges it takes smartctl and admin rights. macOS can’t read cards in USB readers. SD cards keep no health log.</p>
     </div>
   </section>
 </main>
@@ -481,7 +487,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     lastImportId: null,    // highlighted in the history
     lr: null,              // Lightroom setup
     catalogs: {},          // import start time -> where its catalog is
-    lrLaunch: null,
+
     nasEdited: false,      // the user typed in the path box; don't overwrite it
     nasCheck: null,        // last check result
     health: {},            // card root -> latest outcome this session
@@ -821,9 +827,13 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     return m ? "drive " + m[1].toUpperCase() : root;
   }
 
-  function cardTypeLabel(bus, model) {
+  // `nvme`: the card is known to be NVMe without being on the NVMe bus, e.g. behind
+  // a reader's USB-to-NVMe bridge, or because it has a health log. `sdClass`: SDHC,
+  // SDXC... from an SD card's size.
+  function cardTypeLabel(bus, model, nvme, sdClass) {
     var m = String(model || "").toUpperCase();
-    if (bus === "NVMe") return m.indexOf("CEA") === 0 ? "CFexpress Type A" : m.indexOf("CEB") === 0 ? "CFexpress Type B" : "CFexpress";
+    if (bus === "NVMe" || nvme) return m.indexOf("CEA") === 0 ? "CFexpress Type A" : m.indexOf("CEB") === 0 ? "CFexpress Type B" : "CFexpress";
+    if (sdClass) return sdClass;
     if (bus === "SD" || bus === "MMC") return "SD";
     return null;
   }
@@ -853,10 +863,15 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var r = state.report, v = r.volume, drive = r.drive || {};
     var rec = r.card_key ? ledgerCard(r.card_key) : null;
     var name = (rec && rec.name) || (drive.card_serial && drive.product) || v.name || baseName(r.root);
-    var eyebrow = ["Inserted card", driveLabel(r.root), v.reader ? v.reader + " reader" : null,
+    // The bus matters: on NVMe the card itself is on the bus, so its own model, serial
+    // number and health log are readable without smartctl.
+    var eyebrow = ["Inserted card", driveLabel(r.root), drive.bus === "NVMe" ? "NVMe drive" : null,
+      v.reader ? v.reader + " reader" : null,
+      drive.bridge ? "USB reader with a " + drive.bridge + " bridge" : null,
       drive.card_serial ? "recognized by its serial number" : (v.id ? "recognized by its volume ID, which formatting changes" : null)]
       .filter(Boolean).join(" · ");
-    var chip = [cardTypeLabel(drive.bus, drive.product), capLabel(v.total_bytes), v.filesystem].filter(Boolean).join(" · ");
+    var details = r.details || {};
+    var chip = [cardTypeLabel(drive.bus, drive.card_serial ? drive.product : null, !!drive.bridge, details.sd_class), capLabel(v.total_bytes), v.filesystem].filter(Boolean).join(" · ");
     var imports = rec ? cardImports(rec) : [];
     var meta = imports.length
       ? "Last imported " + whenLabel(imports[0].finished_at) + " · " + plural(imports.length, "import", "imports") + " by this app"
@@ -906,8 +921,47 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       '<div class="health"><div class="health-head"><h3 id="health-title">Card health</h3>' +
       '<button type="button" class="btn-quiet" id="health-read">Read card health</button></div>' +
       '<div id="health-body"></div></div>' +
+      detailsSection(details) +
       '</div>';
     return html;
+  }
+
+  /* ---------- Card details: what the card and its reader reveal ---------- */
+  var SD_RANGES = { SDSC: "up to 2 GB", SDHC: "2–32 GB", SDXC: "32 GB–2 TB", SDUC: "over 2 TB" };
+
+  function smallSize(b) {
+    if (b == null) return null;
+    return b < 1048576 ? Math.round(b / 1024) + " KiB" : Math.round(b / 1048576) + " MiB";
+  }
+
+  function detailsSection(d) {
+    var reader = d.reader || {}, fs = d.file_system || {};
+    var sd = !!d.sd_class;
+    var facts = [
+      ["Reader", reader.name ? reader.name + (reader.usb_id ? " (" + reader.usb_id + ")" : "") : reader.usb_id],
+      ["Connection", reader.link ? reader.link + (reader.protocol === "BOT" ? " · bulk-only" : reader.protocol ? " · " + reader.protocol : "") : null],
+      ["Slot", d.slots > 1 && d.slot ? d.slot + " of " + d.slots : null],
+      ["Exact size", d.capacity_bytes != null ? fmt(d.capacity_bytes) + " bytes" : null],
+      ["SD class", sd ? d.sd_class + (SD_RANGES[d.sd_class] ? " (" + SD_RANGES[d.sd_class] + ")" : "") : null],
+      [sd ? "Lock switch" : "Write-protected", d.write_protected == null ? null : sd ? (d.write_protected ? "On (read-only)" : "Off") : (d.write_protected ? "Yes" : "No")],
+      ["Partition", d.partition_table === "none" ? "None (whole card)" : d.partition_table ?
+        d.partition_table + (d.partition_offset_bytes != null ? " at " + smallSize(d.partition_offset_bytes) : "") + (d.partition_type ? ", type " + d.partition_type + "h" : "") : null],
+      ["File system", fs.name ? fs.name + (fs.revision ? " " + fs.revision : "") + (fs.cluster_bytes ? ", " + smallSize(fs.cluster_bytes) + " clusters" : "") : null],
+      ["Closed cleanly", fs.dirty == null ? null : fs.dirty ? "No" : "Yes"],
+      ["Bad sectors flagged", fs.media_failure == null ? null : fs.media_failure ? "Yes" : "No"]
+    ].filter(function (f) { return f[1] != null; });
+    if (!facts.length) return "";
+
+    var notes = [];
+    if (fs.dirty) notes.push('<p class="health-note warn">The file system wasn’t closed cleanly: the card came out, or the camera lost power, while it was writing. Copy it, then let Windows or the camera check it.</p>');
+    if (fs.media_failure) notes.push('<p class="health-note warn">The camera or computer that last wrote to this card met sectors it couldn’t read or write. Copy what’s on it and stop using the card.</p>');
+    if (sd && d.write_protected) notes.push('<p class="health-note warn">The lock switch is on: cameras can’t record to this card until it’s slid back.</p>');
+    if (reader.link && reader.link_capable && reader.link !== reader.link_capable)
+      notes.push('<p class="health-note warn">The reader can run at ' + esc(reader.link_capable) + ' but is connected at ' + esc(reader.link) + '. Another port or cable would make imports faster.</p>');
+    if (sd) notes.push('<p class="health-note">A USB reader doesn’t pass on an SD card’s own registers (maker, product name, serial number, manufacture date, speed class), so the card is known by its volume ID, which formatting changes.</p>');
+
+    return '<div class="health" id="card-details"><div class="health-head"><h3>Card details</h3></div>' +
+      '<dl class="facts">' + facts.map(function (f) { return fact(f[0], f[1]); }).join("") + '</dl>' + notes.join("") + '</div>';
   }
 
   /* ---------- Card health ---------- */
@@ -929,7 +983,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       fact("Unsafe shutdowns", h.unsafe_shutdowns != null ? fmt(h.unsafe_shutdowns) : null) +
       fact("Media errors", h.media_errors != null ? fmt(h.media_errors) : null) +
       fact("Temperature", h.temperature_c != null ? h.temperature_c + " °C" : null) +
-      fact("Card serial", h.serial);
+      fact("Card serial", h.serial) +
+      fact("Card model", h.model) +
+      fact("Firmware", h.firmware);
   }
 
   function lastHealthReading(cardKey) {
@@ -940,16 +996,23 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   function renderHealth() {
     var body = $("#health-body");
     if (!body || !state.report) return;
-    var direct = state.report.drive && state.report.drive.bus === "NVMe";
+    // Read on insertion: on the NVMe bus, or through a USB bridge when the app runs as admin.
+    var direct = !!state.report.health || (state.report.drive && state.report.drive.bus === "NVMe");
     var btn = $("#health-read");
     btn.disabled = state.healthBusy || !!(state.run && state.run.active);
     btn.textContent = state.healthBusy ? "Reading…" : direct ? "Read again" : "Read card health";
+    // An SD card has no health log to read, so there's nothing to click.
+    var sdClass = state.report.details && state.report.details.sd_class;
+    btn.hidden = !!sdClass;
 
     var outcome = state.health[state.current];
     var last = lastHealthReading(state.report.card_key);
     var title = "Card health";
     var html;
-    if (state.healthBusy) {
+    if (sdClass) {
+      html = '<p class="health-note">SD cards keep no health log of their own; only CFexpress cards do. What this ' +
+        esc(sdClass) + ' card does reveal is under Card details.</p>';
+    } else if (state.healthBusy) {
       html = '<p class="health-note">Reading the card’s health log.' + (direct ? "" : " On Windows, choose Yes when asked for admin rights.") + '</p>';
     } else if (outcome && outcome.kind === "unavailable") {
       html = '<p class="health-note warn">' + esc(outcome.reason) + '</p>';
@@ -958,6 +1021,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       title += " " + healthStatus(outcome.health);
       html = '<dl class="facts">' + healthFacts(outcome.health) + '</dl><p class="health-note">' +
         (outcome.inserted ? "Read from the card when it was inserted" : "Read just now") +
+        (outcome.health.bridge ? " through the reader’s " + esc(outcome.health.bridge) + " bridge" : "") +
         (outcome.health.device_type ? " (smartctl -d " + esc(outcome.health.device_type) + ")" : "") + '.</p>';
     } else if (last) {
       title += " " + healthStatus(last.health);
@@ -976,6 +1040,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     renderHealth();
     invoke("read_card_health", { root: root }).then(function (outcome) {
       state.health[root] = outcome;
+      // A card known by its serial number may take over the inserted card's record.
+      if (outcome.card_key && state.report && state.current === root) state.report.card_key = outcome.card_key;
       return refreshLedger();
     }).catch(function (e) {
       state.health[root] = { kind: "unavailable", reason: String(e) };
@@ -1206,9 +1272,10 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       progress.innerHTML = '<p class="stopped" id="stopped" hidden></p><div class="phase" id="phase">Checking card and destination</div>' +
         '<div class="prow"><div class="pct" id="pct">0%</div><button type="button" class="btn-quiet" id="stop">Stop</button></div>' +
         '<div class="bar" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="bar"></i></div>' +
-        '<div class="pline" id="pline" aria-live="polite"></div>';
+        '<div class="pline" id="pline" aria-live="polite"></div><div class="lr-arm" id="lr-arm"></div>';
       $("#stop").addEventListener("click", stopImport);
       updateProgress();
+      renderArm();
       return;
     }
     var r = run.result;
@@ -1232,8 +1299,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if ($("#start").disabled || (state.run && state.run.active)) return;
     // Resuming after a stop repeats the same request; files already copied are checked and skipped.
     var request = state.run && state.run.request ? state.run.request : importRequest();
-    var run = state.run = { active: true, request: request, progress: null, result: null, error: null, stopping: false, phase: null };
+    var run = state.run = { active: true, request: request, progress: null, result: null, error: null, stopping: false, phase: null, arm: null };
     state.resumable = null;
+    state.tripName = null;
     var channel = new tauri.core.Channel();
     channel.onmessage = function (progress) {
       if (state.run !== run || !run.active) return;
@@ -1248,6 +1316,10 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         run.active = false;
         if (run.result) state.lastImportId = run.result.started_at;
         renderDesk();
+        if (run.arm) {
+          if (run.result && run.result.status === "complete") openLightroom(run.result, run.arm.trip ? null : 0, run.arm.trip, null);
+          else toast("Lightroom wasn't opened: the import didn't finish.");
+        }
         setNasBusy(false);
         refreshLedger().then(refreshCatalogs).catch(function (e) { toast("Couldn't refresh import history: " + e); });
         refreshNas().catch(function (e) { console.error(e); });
@@ -1289,6 +1361,38 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     $("#pline").textContent = line.length ? line.join(" · ") : "Scanning selected shoots…";
   }
 
+  // The shoot "Open in Lightroom" opens: the import's first.
+  function firstShoot(shoots) {
+    return folderName(shoots.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })[0]);
+  }
+
+  // While copying, ask for Lightroom to open as soon as the import is done.
+  function renderArm() {
+    var run = state.run, box = $("#lr-arm");
+    if (!box || !run || !run.active) return;
+    var shoots = run.request.shoots, when = run.request.verify ? "when the import is verified" : "when the import finishes";
+    if (run.arm) {
+      box.innerHTML = '<span>Lightroom opens ' + esc(run.arm.trip ? "the trip " + run.arm.trip : firstShoot(shoots)) + ' ' + when + '.</span>' +
+        '<button type="button" class="btn-quiet" id="arm-off">Don’t open</button>';
+      $("#arm-off").addEventListener("click", function () { run.arm = null; renderArm(); });
+      return;
+    }
+    box.innerHTML = (shoots.length > 1
+      ? '<select id="arm-what" aria-label="Catalog to open"><option value="first">' + esc(firstShoot(shoots)) + '</option><option value="trip">All as a trip</option></select>' +
+        '<input type="text" class="trip-name" id="arm-trip" spellcheck="false" aria-label="Trip name" placeholder="Trip name" hidden>'
+      : "") + '<button type="button" class="btn-quiet" id="arm">Open in Lightroom when done</button>';
+    if ($("#arm-what")) $("#arm-what").addEventListener("change", function () {
+      $("#arm-trip").hidden = this.value !== "trip";
+      if (!$("#arm-trip").hidden) $("#arm-trip").focus();
+    });
+    $("#arm").addEventListener("click", function () {
+      var trip = $("#arm-what") && $("#arm-what").value === "trip" ? $("#arm-trip").value.trim() : null;
+      if (trip === "") { toast("Name the trip first."); $("#arm-trip").focus(); return; }
+      run.arm = { trip: trip };
+      renderArm();
+    });
+  }
+
   function stopImport() {
     var run = state.run;
     if (!run || !run.active || run.stopping) return;
@@ -1315,6 +1419,16 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     return items.length < 2 ? items.join("") : items.slice(0, -1).join(", ") + " and " + items[items.length - 1];
   }
 
+  function catalogFor(r, i) {
+    return (state.catalogs[r.started_at] || []).filter(function (c) { return c.shoots.indexOf(i) >= 0; })[0] || null;
+  }
+
+  // A trip name the shoots share, e.g. "Japan" for 2026-11-03_Japan and 2026-11-05_Japan.
+  function tripGuess(shoots) {
+    var titles = shoots.map(function (s) { return baseName(s).slice(11); });
+    return titles[0] && titles.every(function (t) { return t === titles[0]; }) ? titles[0] : "";
+  }
+
   function renderDone() {
     var r = state.run.result, d = $("#done");
     var what = [];
@@ -1332,29 +1446,37 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     }
     if (r.ejected) body += " The card has been ejected.";
     var items = r.shoots.map(function (s, i) {
-      var cat = catalogPath(s);
+      var c = catalogFor(r, i), path = catalogPath(s);
+      var cat = c && c.trip ? "Trip catalog: " + c.name : path ? "Catalog: " + path : "";
       return '<li><div class="dl-main"><code id="done-path-' + i + '">' + esc(importedPath(r.nas_root, s)) + '</code>' +
-        (cat ? '<span class="dl-cat">Catalog: ' + esc(cat) + '</span>' : "") + '</div>' +
+        (cat ? '<span class="dl-cat">' + esc(cat) + '</span>' : "") + '</div>' +
         '<div class="dl-btns"><button type="button" class="btn-open" data-open="' + i + '">Open in Lightroom</button>' +
         '<button type="button" class="btn-quiet" data-copy="' + i + '">Copy path</button></div></li>';
     }).join("");
     d.innerHTML = '<div class="done-head">' + CHECK + '<div><h3>Import complete</h3><p>' + esc(body) + '</p></div></div>' +
       r.warnings.map(function (w) { return '<p class="health-note warn">' + esc(w) + '</p>'; }).join("") +
       '<ul class="done-list">' + items + '</ul>' +
-      (r.shoots.length > 1 ? '<div class="done-all"><button type="button" class="btn-quiet" id="open-all">Open all ' + r.shoots.length +
-        ' shoots in one catalog</button><span>For a trip you want to edit as one job.</span></div>' : "") +
-      '<p class="next">Each shoot gets its own Lightroom catalog, made from your template catalog, with every photo already added. ' +
-      'It stays on this computer while you edit, because Lightroom Classic cannot open catalogs on a network drive. ' +
-      'A catalog you keep in the shoot’s <code>_catalog</code> folder on the NAS is copied back here when you open the shoot again.</p>' +
+      (r.shoots.length > 1 ? '<div class="done-all"><input type="text" class="trip-name" id="trip-name" spellcheck="false" aria-label="Trip name" placeholder="Trip name" value="' +
+        esc(state.tripName != null ? state.tripName : tripGuess(r.shoots)) + '"><button type="button" class="btn-quiet" id="open-trip">Open as a trip</button>' +
+        '<span>One catalog for all ' + r.shoots.length + ' shoots, named after the first day. Only shoots without a catalog can join.</span></div>' : "") +
+      '<p class="next">Each shoot gets its own Lightroom catalog on this computer, made from your template; the Card Intake plug-in adds the photos from the NAS as it opens. ' +
+      'When you’ve finished editing, close the catalog and press <b>Finish</b> in Recent imports: it moves to the shoot’s <code>_catalog</code> folder on the NAS with its Smart Previews.</p>' +
       '<p class="next"><button type="button" class="btn-quiet" id="again">Back to card</button></p>';
     d.hidden = false;
     d.querySelectorAll("[data-copy]").forEach(function (b) {
       b.addEventListener("click", function () { copyText($("#done-path-" + b.dataset.copy).textContent, b, "Copy path"); });
     });
     d.querySelectorAll("[data-open]").forEach(function (b) {
-      b.addEventListener("click", function () { openLightroom(r, Number(b.dataset.open), b); });
+      b.addEventListener("click", function () { openLightroom(r, Number(b.dataset.open), null, b); });
     });
-    if ($("#open-all")) $("#open-all").addEventListener("click", function () { openLightroom(r, null, this); });
+    if ($("#trip-name")) {
+      $("#trip-name").addEventListener("input", function () { state.tripName = this.value; });
+      $("#open-trip").addEventListener("click", function () {
+        var name = $("#trip-name").value.trim();
+        if (!name) { toast("Name the trip first."); $("#trip-name").focus(); return; }
+        openLightroom(r, null, name, this);
+      });
+    }
     $("#again").addEventListener("click", function () {
       state.run = null;
       if (state.roots.indexOf(state.current) < 0) { state.current = null; state.report = null; renderDesk(); poll(); }
@@ -1377,13 +1499,23 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     return '<span class="chip warn" title="' + esc(r.error || "") + '">' + (r.status === "cancelled" ? "Stopped" : "Failed") + '</span>';
   }
 
+  // Each of the import's catalogs: one per shoot, or a trip holding several.
   function catalogCell(r, i) {
-    if (r.status !== "complete" || !r.shoots.length) return '<span class="muted">—</span>';
-    var c = state.catalogs[r.started_at];
-    var st = c ? c.state : "none";
-    return st === "local" ? '<span class="cat-cell"><span class="chip live">On this PC</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Open</button></span>'
-      : st === "nas" ? '<span class="cat-cell"><span class="chip">Stored on NAS</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Reopen</button></span>'
-      : '<span class="cat-cell"><span class="chip">Not created</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Open</button></span>';
+    var cats = r.status === "complete" ? state.catalogs[r.started_at] || [] : [];
+    if (!cats.length) return '<span class="muted">—</span>';
+    return '<div class="cat-list">' + cats.map(function (c) {
+      var key = i + ":" + c.shoots[0];
+      var button = function (attr, label, title) {
+        return '<button type="button" class="btn-quiet" data-' + attr + '="' + key + '"' + (title ? ' title="' + esc(title) + '"' : "") + '>' + label + '</button>';
+      };
+      var name = cats.length > 1 || c.trip ? '<span class="cat-name">' + esc(c.trip ? "Trip " + c.name : c.name) + '</span>' : "";
+      var body = c.state === "open" ? '<span class="chip live">Open in Lightroom</span>'
+        : c.state === "local" ? '<span class="chip live">On this PC</span>' + button("hopen", "Open") +
+          button("hfinish", "Finish", "Copy the catalog and its Smart Previews to the NAS, then remove it from this computer")
+        : c.state === "nas" ? '<span class="chip">Finished · on NAS</span>' + button("hopen", "Reopen")
+        : '<span class="chip">Not created</span>' + button("hopen", "Open");
+      return '<span class="cat-cell">' + name + body + '</span>';
+    }).join("") + '</div>';
   }
 
   function renderHistory() {
@@ -1408,25 +1540,37 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
           '<td>' + checkChip(r) + '</td><td>' + folder + '</td><td>' + catalogCell(r, i) + '</td></tr>';
       }).join("") + '</tbody></table>';
     box.querySelectorAll("[data-hopen]").forEach(function (b) {
-      b.addEventListener("click", function () { openLightroom(records[Number(b.dataset.hopen)], null, b); });
+      var k = b.dataset.hopen.split(":");
+      b.addEventListener("click", function () { openLightroom(records[Number(k[0])], Number(k[1]), null, b); });
+    });
+    box.querySelectorAll("[data-hfinish]").forEach(function (b) {
+      var k = b.dataset.hfinish.split(":");
+      b.addEventListener("click", function () { finishCatalog(records[Number(k[0])], Number(k[1]), b); });
     });
   }
 
   /* ---------- Lightroom ---------- */
   function applyLightroom(setup) {
     state.lr = setup;
-    $("#lr-exe").value = setup.settings.executable || "";
-    $("#lr-template").value = setup.settings.template || "";
-    $("#lr-root").value = setup.settings.catalog_root || "";
-    $("#lr-plugin").textContent = setup.plugin_path;
-    $("#lr-note").textContent = setup.settings.template && setup.settings.executable ? "Ready" : "Set up once";
+    var s = setup.settings;
+    $("#lr-exe").value = s.executable || "";
+    $("#lr-template").value = s.template || "";
+    $("#lr-root").value = s.catalog_root || "";
+    $("#lr-presets").value = s.presets || "";
+    $("#lr-plugin").textContent = (setup.plugin
+      ? "The Card Intake plug-in is installed in Lightroom. Restart Lightroom once to load it, then choose its presets in File → Plug-in Manager → Card Intake."
+      : "The Card Intake plug-in can't be installed on this computer.") +
+      (setup.presets_installed ? " " + plural(setup.presets_installed, "preset or profile is", "presets and profiles are") + " installed for every catalog." : "") +
+      (setup.presets_error ? " Presets weren't updated: " + setup.presets_error : "");
+    $("#lr-note").textContent = s.template && s.executable ? "Ready" : "Set up once";
   }
 
   function refreshCatalogs() {
     return invoke("lightroom_catalogs").then(function (list) {
       state.catalogs = {};
-      list.forEach(function (c) { state.catalogs[c.import_id] = c; });
+      list.forEach(function (c) { (state.catalogs[c.import_id] = state.catalogs[c.import_id] || []).push(c); });
       renderHistory();
+      if (state.run && state.run.result && state.run.result.status === "complete" && !$("#done").hidden) renderDone();
     }).catch(function (e) { console.error(e); });
   }
 
@@ -1434,53 +1578,37 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var button = $("#lr-save");
     button.disabled = true;
     function value(id) { return $(id).value.trim() || null; }
-    invoke("save_lightroom_settings", { settings: { executable: value("#lr-exe"), template: value("#lr-template"), catalog_root: value("#lr-root") } })
-      .then(function (setup) { applyLightroom(setup); $("#lr-status").textContent = "Saved. Enable the plug-in in Lightroom before opening a shoot."; refreshCatalogs(); })
+    invoke("save_lightroom_settings", { settings: { executable: value("#lr-exe"), template: value("#lr-template"), catalog_root: value("#lr-root"), presets: value("#lr-presets") } })
+      .then(function (setup) { applyLightroom(setup); $("#lr-status").textContent = "Saved."; refreshCatalogs(); })
       .catch(function (e) { $("#lr-status").textContent = String(e); })
       .finally(function () { button.disabled = false; });
   }
 
-  // Opens one shoot (or all of an import's shoots) in its catalog. The Card Intake
-  // plug-in in Lightroom adds the photos in place and reports back.
-  function openLightroom(record, shoot, button) {
+  // Opens a shoot's catalog (its trip's, if it's in one), or a new trip catalog for
+  // all of the import's shoots. The plug-in adds new photos as the catalog opens.
+  function openLightroom(record, shoot, trip, button) {
     if (state.run && state.run.active) { toast("Wait for the import to finish."); return; }
-    button.disabled = true;
-    invoke("open_in_lightroom", { importId: record.started_at, shoot: shoot }).then(function (launch) {
-      state.lrLaunch = launch;
-      launch.started = Date.now();
-      launch.name = baseName(launch.catalog);
-      button.textContent = button.textContent === "Reopen" ? "Open" : button.textContent.indexOf("Open all") === 0 ? button.textContent : "Open again";
-      toast("Opened " + launch.name + " in Lightroom Classic. The Card Intake plug-in adds the photos from the NAS.");
+    if (button) button.disabled = true;
+    invoke("open_in_lightroom", { importId: record.started_at, shoot: shoot, trip: trip }).then(function (launch) {
+      toast(launch.already_open
+        ? launch.name + " is already open in Lightroom. To add new files, choose Library → Plug-in Extras → Add new files from NAS."
+        : "Opening " + launch.name + " in Lightroom Classic. The Card Intake plug-in adds new photos from the NAS as it opens.");
       refreshCatalogs();
     }).catch(function (e) {
       $("#lr-setup").open = true;
       $("#lr-status").textContent = String(e);
       toast(String(e));
-    }).finally(function () { button.disabled = false; });
+    }).finally(function () { if (button) button.disabled = false; });
   }
 
-  function pollLightroom() {
-    var launch = state.lrLaunch;
-    if (!launch || launch.busy) return;
-    launch.busy = true;
-    invoke("lightroom_status", { catalog: launch.catalog, requestId: launch.request_id }).then(function (result) {
-      if (state.lrLaunch !== launch) return;
-      if (result && result.status === "complete") {
-        toast("Lightroom added " + plural(result.added, "photo", "photos") + " to " + launch.name +
-          (result.skipped ? " (" + fmt(result.skipped) + " were already in it)" : "") + ". Originals stay on the NAS.");
-        state.lrLaunch = null;
-      } else if (result && result.status === "failed") {
-        $("#lr-setup").open = true;
-        $("#lr-status").textContent = "Lightroom added " + fmt(result.added) + ", skipped " + fmt(result.skipped) + ", failed " + fmt(result.failed) + ". " + result.detail + " Open the shoot again to retry.";
-        toast("Lightroom couldn't add every photo. See Lightroom setup.");
-        state.lrLaunch = null;
-      } else if (Date.now() - launch.started > 60000 && !launch.warned) {
-        launch.warned = true;
-        $("#lr-setup").open = true;
-        $("#lr-status").textContent = "Still waiting for Lightroom. Enable the Card Intake plug-in in Lightroom’s Plug-in Manager; the photos are added as soon as it runs. " + launch.catalog;
-      }
-    }).catch(function (e) { $("#lr-status").textContent = String(e); state.lrLaunch = null; })
-      .finally(function () { launch.busy = false; });
+  // Moves a closed catalog to the NAS with its Smart Previews.
+  function finishCatalog(record, shoot, button) {
+    button.disabled = true;
+    invoke("finish_catalog", { importId: record.started_at, shoot: shoot }).then(function (done) {
+      toast(done.name + " is stored on the NAS in " + done.stored + ". The copy on this computer was removed; Reopen brings it back.");
+      refreshCatalogs();
+    }).catch(function (e) { toast(String(e)); })
+      .finally(function () { button.disabled = false; });
   }
 
   /* ---------- Ledger ---------- */
@@ -1501,7 +1629,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   }
 
   function cardType(c) {
-    return cardTypeLabel(c.bus, c.model);
+    // Only CFexpress (NVMe) cards keep a health log.
+    return cardTypeLabel(c.bus, c.model, !!(c.health && c.health.length), c.sd_class);
   }
 
   function renderCards() {
@@ -1577,8 +1706,14 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (state.shared && state.shared.error) html += '<div class="empty">' + esc(state.shared.error) + '</div>';
     if (state.shutterBusy) html += '<div class="empty pulse">Reading the shutter count of every photo on the card…</div>';
     if (state.shutterNote) html += '<div class="empty">' + esc(state.shutterNote) + '</div>';
-    if (cams.length) html += cams.map(function (c) { return cameraItem(c, cam); }).join("");
-    else if (!state.shutterBusy && !state.library) {
+    if (cams.length) {
+      html += cams.map(function (c) { return cameraItem(c, cam); }).join("");
+      // The inserted card's body has no count to list (ExifTool couldn't read it): say
+      // why, so it doesn't look like the card's camera is missing.
+      if (cam && cam.shutter_note && !cams.some(function (c) { return c.model === cam.model; })) {
+        html += '<div class="empty">' + esc(cam.shutter_note) + '</div>';
+      }
+    } else if (!state.shutterBusy && !state.library) {
       html += '<div class="empty">' + esc(cam && cam.shutter_note ? cam.shutter_note : "No cameras yet. They are read from the photos on each card and on the NAS.") + '</div>';
     }
     box.innerHTML = html;
@@ -1621,7 +1756,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     return '<article class="item"><div class="item-head"><span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span>' +
       (c.serial ? '<span class="sn">SN ' + esc(c.serial) + '</span>' : "") + '</div>' +
       '<div class="item-sub">' + esc(sub) + '</div>' +
-      '<div class="shutter"><div><span class="lbl">Shutter count</span><b>' + fmt(count) + '</b>' +
+      '<div class="shutter"><div><span class="lbl">' +
+      (c.has_mechanical_shutter === false ? "Electronic shutter count" : "Shutter count") +
+      '</span><b>' + fmt(count) + '</b>' +
       (electronic != null ? '<small class="electronic"><span>Electronic</span>' + fmt(electronic) + '</small>' : "") +
       '</div><div class="delta">' + delta + '</div></div>' +
       life + chart + '</article>';
@@ -1652,7 +1789,6 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   $("#nas-save").addEventListener("click", saveNas);
   $("#lib-scan").addEventListener("click", scanLibrary);
   $("#lr-save").addEventListener("click", saveLightroom);
-  $("#lr-copy-plugin").addEventListener("click", function () { copyText($("#lr-plugin").textContent, this, "Copy plug-in path"); });
   if (invoke) {
     refreshPending().catch(function (e) { toast(String(e)); });
     invoke("get_lightroom_settings").then(applyLightroom).catch(function (e) { $("#lr-status").textContent = String(e); });
@@ -1661,11 +1797,10 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     refreshCameras().catch(function (e) { console.error(e); });
     poll();
     setInterval(poll, POLL_MS);
-    setInterval(pollLightroom, 1500);
     setInterval(function () { if (!state.run || !state.run.active) refreshNas().catch(function (e) { console.error(e); }); }, 15000);
   } else {
     $("#nas").innerHTML = '<span class="dot"></span><span>Not running in the app</span>';
-    ["#nas-path", "#nas-check", "#nas-save", "#lr-save", "#lr-copy-plugin"].forEach(function (id) { $(id).disabled = true; });
+    ["#nas-path", "#nas-check", "#nas-save", "#lr-save"].forEach(function (id) { $(id).disabled = true; });
     renderLedger();
   }
 })();
