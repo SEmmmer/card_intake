@@ -1,9 +1,11 @@
 //! Card health from the card's own NVMe health log (CFexpress cards are NVMe drives),
 //! read with smartctl.
 //!
-//! - Windows: smartctl reaches the log through most USB readers, using the bridge chip's
-//!   pass-through (`-d sntrealtek`, `sntjmicron`, `sntasmedia`). It needs admin rights,
-//!   so Windows asks once per reading.
+//! - Windows: a card the reader shows as an NVMe drive (PCIe, Thunderbolt or USB4
+//!   readers such as the Sony MRW-G3 on a USB4 port) is read directly, without smartctl
+//!   or admin rights. Behind a USB bridge, smartctl reaches the log through the bridge
+//!   chip's pass-through (`-d sntrealtek`, `sntjmicron`, `sntasmedia`); that needs admin
+//!   rights, so Windows asks once per reading.
 //! - macOS: smartctl can only read drives macOS sees as NVMe (e.g. in a Thunderbolt
 //!   reader). Through a USB reader macOS offers no pass-through, so it can't be read.
 //! - SD cards have no health log at all.
@@ -110,9 +112,9 @@ const DEVICE_TYPES: &[Option<&str>] = &[
 
 const SD_NOTE: &str = "SD cards keep no health log; only CFexpress cards do.";
 
-/// Reads the health log of the card holding `volume`.
-pub fn read_health(volume: &VolumeInfo, smartctl: Option<&Path>) -> HealthOutcome {
-    platform::read_health(volume, smartctl)
+/// Reads the health log of the card mounted at `root`.
+pub fn read_health(root: &Path, volume: &VolumeInfo, smartctl: Option<&Path>) -> HealthOutcome {
+    platform::read_health(root, volume, smartctl)
 }
 
 fn run_smartctl(smartctl: &Path, device_type: Option<&str>, device: &str) -> Vec<u8> {
@@ -135,7 +137,11 @@ fn unavailable(reason: impl Into<String>) -> HealthOutcome {
 mod platform {
     use super::*;
 
-    pub fn read_health(volume: &VolumeInfo, smartctl: Option<&Path>) -> HealthOutcome {
+    pub fn read_health(
+        _root: &Path,
+        volume: &VolumeInfo,
+        smartctl: Option<&Path>,
+    ) -> HealthOutcome {
         let reader = volume.reader.as_deref().unwrap_or("this reader");
         if volume.bus.as_deref() == Some("USB") {
             return unavailable(format!(
@@ -166,13 +172,20 @@ mod platform {
     use super::*;
     use std::fs;
 
-    pub fn read_health(volume: &VolumeInfo, smartctl: Option<&Path>) -> HealthOutcome {
+    pub fn read_health(root: &Path, volume: &VolumeInfo, smartctl: Option<&Path>) -> HealthOutcome {
+        // A card the reader shows as an NVMe drive answers directly: no smartctl,
+        // no admin rights.
+        if let Ok(health) = crate::storage::read_nvme_health(root) {
+            return HealthOutcome::Read {
+                health: Box::new(health),
+            };
+        }
         let Some(device) = volume.device.as_deref() else {
             return unavailable("Couldn't tell which drive letter holds this card.");
         };
         let Some(smartctl) = smartctl else {
             return unavailable(
-                "Needs smartctl. Install smartmontools for Windows (smartmontools.org), then try again.",
+                "This reader doesn't show the card as an NVMe drive, so reading its health log                  needs smartctl. Install smartmontools for Windows (smartmontools.org), then try again.",
             );
         };
 
@@ -262,7 +275,11 @@ mod platform {
 mod platform {
     use super::*;
 
-    pub fn read_health(_volume: &VolumeInfo, _smartctl: Option<&Path>) -> HealthOutcome {
+    pub fn read_health(
+        _root: &Path,
+        _volume: &VolumeInfo,
+        _smartctl: Option<&Path>,
+    ) -> HealthOutcome {
         unavailable("Reading card health isn't built for this system yet.")
     }
 }
@@ -335,7 +352,7 @@ mod tests {
             device: Some("disk5".into()),
             ..VolumeInfo::default()
         };
-        match read_health(&volume, None) {
+        match read_health(Path::new("/Volumes/Untitled"), &volume, None) {
             HealthOutcome::Unavailable { reason } => {
                 assert!(reason.contains("MRW-G3"), "{reason}");
                 assert!(reason.contains("Windows"), "{reason}");

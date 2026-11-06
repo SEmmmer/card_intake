@@ -3,3 +3,4 @@
 *.swp
 apps/desktop/gen/
 apps/desktop/resources/exiftool/
+node_modules/

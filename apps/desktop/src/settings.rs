@@ -9,6 +9,8 @@ pub struct Settings {
     /// The photo share, e.g. `/Volumes/photos` or `\\NAS\photos`.
     #[serde(default)]
     pub nas_root: Option<String>,
+    #[serde(default)]
+    pub lightroom: crate::lightroom::LightroomSettings,
 }
 
 impl Settings {
@@ -44,6 +46,7 @@ mod tests {
         assert_eq!(Settings::load(&path).unwrap(), Settings::default());
         let settings = Settings {
             nas_root: Some("/Volumes/photos".into()),
+            ..Default::default()
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);

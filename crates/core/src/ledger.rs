@@ -10,14 +10,31 @@ use std::path::Path;
 pub struct Ledger {
     pub cards: Vec<CardRecord>,
     pub cameras: Vec<CameraRecord>,
+    #[serde(default)]
+    pub imports: Vec<crate::import::ImportResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CardRecord {
-    /// The volume's ID. Formatting the card gives it a new one.
+    /// The record's key. For a card whose own serial number is known it's
+    /// `sn:<serial>`, which survives formatting; otherwise the volume ID the card had
+    /// when it was first seen.
     pub id: String,
+    /// The volume ID the card has now. Formatting gives it a new one. Ledgers from
+    /// before this field existed keep it in `id`.
+    #[serde(default)]
+    pub volume_id: Option<String>,
     /// A name the user gives the card, e.g. "A1-1". Not editable yet.
     pub name: Option<String>,
+    /// The card's model, e.g. "CEA-G240T", when the reader shows the card itself.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// How the card was connected the last time: "NVMe", "USB", "SD"...
+    #[serde(default)]
+    pub bus: Option<String>,
+    /// Formats noticed: the same card (by serial number) came back with a new volume ID.
+    #[serde(default)]
+    pub formats: u32,
     pub capacity_bytes: Option<u64>,
     pub filesystem: Option<String>,
     pub reader: Option<String>,
@@ -31,6 +48,12 @@ pub struct CardRecord {
     /// Health log readings, oldest first.
     #[serde(default)]
     pub health: Vec<HealthReading>,
+}
+
+impl CardRecord {
+    pub fn current_volume_id(&self) -> &str {
+        self.volume_id.as_deref().unwrap_or(&self.id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -60,9 +83,14 @@ pub struct ShutterReading {
 }
 
 /// What the app learned about a card when it was inserted.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CardSighting {
-    pub id: String,
+    /// The volume ID, which formatting changes.
+    pub volume_id: Option<String>,
+    /// The card's own serial number, which formatting doesn't change.
+    pub hardware_serial: Option<String>,
+    pub model: Option<String>,
+    pub bus: Option<String>,
     pub capacity_bytes: Option<u64>,
     pub filesystem: Option<String>,
     pub reader: Option<String>,
@@ -78,6 +106,11 @@ pub struct CameraSighting {
 }
 
 impl Ledger {
+    pub fn record_import(&mut self, result: crate::import::ImportResult) {
+        self.imports.insert(0, result);
+        self.imports.truncate(100);
+    }
+
     /// Loads the ledger, or starts an empty one if the file doesn't exist yet.
     pub fn load(path: &Path) -> io::Result<Self> {
         match std::fs::read_to_string(path) {
@@ -98,34 +131,98 @@ impl Ledger {
         std::fs::rename(tmp, path)
     }
 
-    pub fn record_card(&mut self, seen: CardSighting, now: NaiveDateTime) {
-        match self.cards.iter_mut().find(|c| c.id == seen.id) {
-            Some(card) => {
+    /// The record a card belongs to: by its own serial number when known, otherwise
+    /// by its current volume ID (unless that record belongs to a card with another serial).
+    fn find_card(&self, seen: &CardSighting) -> Option<usize> {
+        if let Some(serial) = &seen.hardware_serial
+            && let Some(i) = self
+                .cards
+                .iter()
+                .position(|c| c.hardware_serial.as_ref() == Some(serial))
+        {
+            return Some(i);
+        }
+        let volume = seen.volume_id.as_deref()?;
+        self.cards.iter().position(|c| {
+            c.current_volume_id() == volume
+                && (c.hardware_serial.is_none() || seen.hardware_serial.is_none())
+        })
+    }
+
+    /// Remembers a card and returns its record's key, or `None` when there's nothing
+    /// to recognise it by (no serial number and no volume ID).
+    pub fn record_card(&mut self, seen: CardSighting, now: NaiveDateTime) -> Option<String> {
+        let key = match self.find_card(&seen) {
+            Some(i) => {
+                let card = &mut self.cards[i];
+                if let Some(volume) = seen.volume_id {
+                    // Only a card recognised by its serial can come back with a new
+                    // volume ID: it was formatted.
+                    if card.current_volume_id() != volume {
+                        card.formats += 1;
+                    }
+                    card.volume_id = Some(volume);
+                }
                 card.last_seen = now;
                 card.insertions += 1;
+                card.hardware_serial = seen.hardware_serial.or(card.hardware_serial.take());
+                card.model = seen.model.or(card.model.take());
+                card.bus = seen.bus.or(card.bus.take());
                 card.capacity_bytes = seen.capacity_bytes.or(card.capacity_bytes);
                 card.filesystem = seen.filesystem.or(card.filesystem.take());
                 card.reader = seen.reader.or(card.reader.take());
+                card.id.clone()
             }
-            None => self.cards.push(CardRecord {
-                id: seen.id,
-                name: None,
-                capacity_bytes: seen.capacity_bytes,
-                filesystem: seen.filesystem,
-                reader: seen.reader,
-                first_seen: now,
-                last_seen: now,
-                insertions: 1,
-                hardware_serial: None,
-                health: Vec::new(),
-            }),
-        }
+            None => {
+                let id = match (&seen.hardware_serial, &seen.volume_id) {
+                    (Some(serial), _) => format!("sn:{serial}"),
+                    (None, Some(volume)) => volume.clone(),
+                    (None, None) => return None,
+                };
+                self.cards.push(CardRecord {
+                    id: id.clone(),
+                    volume_id: seen.volume_id,
+                    name: None,
+                    model: seen.model,
+                    bus: seen.bus,
+                    formats: 0,
+                    capacity_bytes: seen.capacity_bytes,
+                    filesystem: seen.filesystem,
+                    reader: seen.reader,
+                    first_seen: now,
+                    last_seen: now,
+                    insertions: 1,
+                    hardware_serial: seen.hardware_serial,
+                    health: Vec::new(),
+                });
+                id
+            }
+        };
         self.cards.sort_by_key(|c| std::cmp::Reverse(c.last_seen));
+        Some(key)
+    }
+
+    /// The key of the record this card belongs to, without recording anything.
+    pub fn card_key(&self, seen: &CardSighting) -> Option<String> {
+        self.find_card(seen).map(|i| self.cards[i].id.clone())
+    }
+
+    /// The key of the card that has this volume ID now.
+    pub fn card_key_for_volume(&self, volume_id: &str) -> Option<String> {
+        self.cards
+            .iter()
+            .find(|c| c.current_volume_id() == volume_id)
+            .map(|c| c.id.clone())
     }
 
     /// Adds a health reading to a known card. Returns false if the card isn't known.
-    pub fn record_health(&mut self, card_id: &str, health: CardHealth, now: NaiveDateTime) -> bool {
-        let Some(card) = self.cards.iter_mut().find(|c| c.id == card_id) else {
+    pub fn record_health(
+        &mut self,
+        card_key: &str,
+        health: CardHealth,
+        now: NaiveDateTime,
+    ) -> bool {
+        let Some(card) = self.cards.iter_mut().find(|c| c.id == card_key) else {
             return false;
         };
         if health.serial.is_some() {
@@ -182,10 +279,20 @@ mod tests {
 
     fn card(id: &str) -> CardSighting {
         CardSighting {
-            id: id.into(),
+            volume_id: Some(id.into()),
             capacity_bytes: Some(240_000_000_000),
             filesystem: Some("ExFAT".into()),
             reader: Some("MRW-G3".into()),
+            ..CardSighting::default()
+        }
+    }
+
+    fn cfexpress(volume: &str, serial: &str) -> CardSighting {
+        CardSighting {
+            hardware_serial: Some(serial.into()),
+            model: Some("CEA-G240T".into()),
+            bus: Some("NVMe".into()),
+            ..card(volume)
         }
     }
 
@@ -241,6 +348,51 @@ mod tests {
         ledger.save(&path).unwrap();
 
         assert_eq!(Ledger::load(&path).unwrap(), ledger);
+    }
+
+    #[test]
+    fn a_card_known_by_its_serial_survives_formatting() {
+        let mut ledger = Ledger::default();
+        let key = ledger
+            .record_card(cfexpress("E2F0-8E6E", "BF7F0763"), at("2026-11-01 10:00"))
+            .unwrap();
+        assert_eq!(key, "sn:BF7F0763");
+        // Formatted in the camera: new volume ID, same card.
+        let again = ledger
+            .record_card(cfexpress("1234-ABCD", "BF7F0763"), at("2026-11-02 10:00"))
+            .unwrap();
+        assert_eq!(again, key);
+        assert_eq!(ledger.cards.len(), 1);
+        assert_eq!(ledger.cards[0].formats, 1);
+        assert_eq!(ledger.cards[0].volume_id.as_deref(), Some("1234-ABCD"));
+        assert_eq!(
+            ledger.card_key_for_volume("1234-ABCD").as_deref(),
+            Some(key.as_str())
+        );
+        assert_eq!(ledger.card_key_for_volume("E2F0-8E6E"), None);
+        // A second card of the same model is a different record, even if a volume ID
+        // happens to repeat.
+        ledger.record_card(cfexpress("1234-ABCD", "OTHER"), at("2026-11-03 10:00"));
+        assert_eq!(ledger.cards.len(), 2);
+    }
+
+    #[test]
+    fn an_old_record_gains_the_serial_and_a_card_without_any_id_is_not_recorded() {
+        let mut ledger = Ledger::default();
+        let old = ledger
+            .record_card(card("E2F0-8E6E"), at("2026-11-01 10:00"))
+            .unwrap();
+        assert_eq!(old, "E2F0-8E6E");
+        let key = ledger
+            .record_card(cfexpress("E2F0-8E6E", "BF7F0763"), at("2026-11-02 10:00"))
+            .unwrap();
+        assert_eq!(key, old);
+        assert_eq!(ledger.cards[0].hardware_serial.as_deref(), Some("BF7F0763"));
+        assert_eq!(ledger.cards[0].formats, 0);
+        assert_eq!(
+            ledger.record_card(CardSighting::default(), at("2026-11-02 10:00")),
+            None
+        );
     }
 
     #[test]
