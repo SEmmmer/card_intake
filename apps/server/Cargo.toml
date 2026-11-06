@@ -1,0 +1,11 @@
+[package]
+name = "card_intake_server"
+description = "Card Intake NAS service: inbox sorter, Immich rescans and the shoot dashboard."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

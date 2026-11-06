@@ -1,0 +1,12 @@
+[package]
+name = "card_intake_desktop"
+description = "Card Intake for Windows and macOS: import camera cards to the NAS."
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+card_intake_core = { path = "../../crates/core" }
+tauri = { workspace = true }

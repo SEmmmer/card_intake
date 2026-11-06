@@ -1,0 +1,13 @@
+[package]
+name = "card_intake_core"
+description = "Shared logic for Card Intake: card detection, scanning, shoot grouping and folder naming."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

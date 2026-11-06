@@ -1,0 +1,15 @@
+# For Synology Container Manager (Project > Create), next to Immich.
+# Change /volume1/photos to your photo share's path on the NAS.
+services:
+  card-intake:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: card-intake
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - /volume1/photos:/photos
+    environment:
+      CARD_INTAKE_PHOTOS: /photos

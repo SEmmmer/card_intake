@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Card Intake</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: an intake desk. The inserted card's import flow sits on the left, a ledger of known cards and cameras on the right, import history runs across the bottom. */
+:root {
+  --bg: #eceff2;
+  --surface: #ffffff;
+  --sunken: #f3f5f8;
+  --line: #d5dae1;
+  --ink: #14181d;
+  --muted: #59626f;
+  --accent: #2a46c4;
+  --accent-ink: #ffffff;
+  --accent-soft: #e2e7fa;
+  --accent-mid: #8fa0e6;
+  --stripe: #c3c9d2;
+  --ok: #1b7443;
+  --ok-soft: #ddf0e4;
+  --warn: #9a5b06;
+  --warn-soft: #f8ecd4;
+  --shadow: rgba(24, 34, 64, 0.16);
+  --font-display: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --radius: 10px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216;
+    --surface: #171b21;
+    --sunken: #12161b;
+    --line: #2a313b;
+    --ink: #e7eaee;
+    --muted: #9aa3af;
+    --accent: #8ca1ff;
+    --accent-ink: #0c1230;
+    --accent-soft: #1d2648;
+    --accent-mid: #4a5a9e;
+    --stripe: #3a424e;
+    --ok: #62c98f;
+    --ok-soft: #122d1e;
+    --warn: #e7a94d;
+    --warn-soft: #33250e;
+    --shadow: rgba(0, 0, 0, 0.5);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216;
+  --surface: #171b21;
+  --sunken: #12161b;
+  --line: #2a313b;
+  --ink: #e7eaee;
+  --muted: #9aa3af;
+  --accent: #8ca1ff;
+  --accent-ink: #0c1230;
+  --accent-soft: #1d2648;
+  --accent-mid: #4a5a9e;
+  --stripe: #3a424e;
+  --ok: #62c98f;
+  --ok-soft: #122d1e;
+  --warn: #e7a94d;
+  --warn-soft: #33250e;
+  --shadow: rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+h1, h2, h3 { text-wrap: balance; }
+code, .mono { font-family: var(--font-mono); }
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.wrap { max-width: 1240px; margin: 0 auto; padding-left: 20px; padding-right: 20px; }
+@media (max-width: 640px) { .wrap { padding-left: 16px; padding-right: 16px; } }
+
+/* Top bar */
+.topbar { background: var(--surface); border-bottom: 1px solid var(--line); }
+.topbar .wrap { display: flex; align-items: center; justify-content: space-between; gap: 10px 24px; flex-wrap: wrap; padding-block: 14px; }
+.brand { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.brand h1 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 26px; line-height: 1.1; letter-spacing: 0.01em; }
+.tag { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); border: 1px dashed var(--stripe); padding: 2px 8px; border-radius: 4px; }
+.nas { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.nas .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); flex: none; }
+.nas strong { color: var(--ink); font-family: var(--font-mono); font-weight: 500; }
+
+/* Page grid */
+.layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 28px 24px; padding-block: 24px 48px; align-items: start; }
+@media (max-width: 980px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.full { grid-column: 1 / -1; }
+.sec-title { font-family: var(--font-display); font-weight: 600; font-size: 22px; line-height: 1.2; margin: 0; }
+.sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.sec-head .muted { font-size: 13px; }
+
+/* Desk: the inserted card */
+.desk { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 18px 40px -28px var(--shadow); overflow: hidden; }
+.desk > .sec { padding: 20px 24px; }
+.desk > .sec + .sec { border-top: 1px solid var(--line); }
+@media (max-width: 640px) { .desk > .sec { padding: 16px; } }
+
+.card-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 16px 18px; align-items: center; }
+.glyph { width: 44px; height: 54px; display: block; }
+.glyph .body { fill: var(--sunken); stroke: var(--ink); stroke-width: 1.5; }
+.glyph .pins { fill: var(--accent); }
+.glyph .lbl { fill: var(--stripe); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: 0.03em; }
+.card-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+.card-title h2 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 36px; line-height: 1; }
+.card-meta { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.camera-tag { text-align: right; font-size: 13px; color: var(--muted); }
+.camera-tag b { display: block; font-family: var(--font-display); font-weight: 600; font-size: 21px; color: var(--ink); line-height: 1.2; }
+@media (max-width: 640px) {
+  .card-head { grid-template-columns: auto minmax(0, 1fr); }
+  .camera-tag { grid-column: 1 / -1; text-align: left; }
+  .camera-tag b { display: inline; margin-right: 8px; }
+}
+
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; line-height: 1.6; padding: 1px 9px; border-radius: 999px; background: var(--sunken); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.chip.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.chip.live { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+.cap { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--sunken); border: 1px solid var(--line); margin-top: 18px; }
+.cap span { display: block; height: 100%; }
+.cap .p { background: var(--accent); }
+.cap .v { background: var(--accent-mid); }
+.cap .d { background: repeating-linear-gradient(135deg, var(--stripe) 0 4px, transparent 4px 8px); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.legend .p { background: var(--accent); }
+.legend .v { background: var(--accent-mid); }
+.legend .d { background: repeating-linear-gradient(135deg, var(--stripe) 0 3px, transparent 3px 6px); border: 1px solid var(--stripe); }
+
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+.stat b { display: block; font-family: var(--font-display); font-weight: 600; font-size: 26px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12.5px; color: var(--muted); }
+@media (max-width: 640px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Shoots */
+.hint { font-size: 13px; color: var(--muted); margin: 2px 0 0; }
+.shoots { margin-top: 10px; }
+.shoot { display: grid; grid-template-columns: 22px 120px minmax(0, 1fr) 118px; gap: 6px 16px; align-items: start; padding: 14px 0; border-top: 1px solid var(--line); }
+.shoot:last-child { padding-bottom: 2px; }
+.shoot input[type="checkbox"] { margin-top: 4px; }
+.shoot.off .name, .shoot.off .counts, .shoot.off .when { opacity: 0.5; }
+.when { cursor: pointer; }
+.when .day { display: block; font-family: var(--font-display); font-weight: 600; font-size: 19px; line-height: 1.2; }
+.when .time { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.name label { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-bottom: 3px; }
+.name input { width: 100%; font: 500 15px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
+.name input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.name input:disabled { background: var(--sunken); color: var(--muted); }
+.path { display: block; margin-top: 6px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.path b { color: var(--ink); font-weight: 500; }
+.counts { text-align: right; font-size: 13px; color: var(--muted); }
+.counts .n { font-family: var(--font-display); font-weight: 600; font-size: 19px; color: var(--ink); font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .shoot { grid-template-columns: 22px minmax(0, 1fr) auto; }
+  .shoot .name { grid-column: 2 / -1; grid-row: 2; }
+}
+
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type="checkbox"]:disabled { cursor: not-allowed; }
+
+/* Options */
+.options { display: grid; gap: 12px; margin-top: 12px; }
+.opt { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 12px; align-items: start; cursor: pointer; }
+.opt input { margin-top: 2px; }
+.opt b { font-weight: 500; display: block; }
+.opt span { font-size: 13px; color: var(--muted); }
+
+/* Action bar */
+.actions { display: flex; align-items: center; justify-content: space-between; gap: 14px 20px; flex-wrap: wrap; background: var(--sunken); }
+.summary { font-weight: 600; font-variant-numeric: tabular-nums; }
+.estimate { font-size: 13px; color: var(--muted); max-width: 56ch; margin-top: 2px; }
+.btn { font-family: var(--font-display); font-weight: 600; font-size: 19px; letter-spacing: 0.02em; color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 8px; padding: 11px 24px; cursor: pointer; }
+.btn:hover:not(:disabled) { filter: brightness(1.08); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:focus-visible, .btn-quiet:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn-quiet { font: 500 13px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+.btn-quiet:hover { border-color: var(--muted); }
+
+/* Progress */
+.progress .phase { font-family: var(--font-mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+.prow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 4px; }
+.pct { font-family: var(--font-display); font-weight: 700; font-size: 44px; line-height: 1; font-variant-numeric: tabular-nums; }
+.bar { height: 8px; border-radius: 4px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; margin-top: 12px; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.1s linear; }
+.pline { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); margin-top: 10px; overflow-wrap: anywhere; }
+.demo-note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.stopped { margin: 0 0 12px; font-size: 14px; color: var(--warn); }
+
+/* Done */
+.done { background: var(--ok-soft); }
+.done-head { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; align-items: start; }
+.done-head svg { width: 30px; height: 30px; }
+.done-head svg circle { fill: var(--ok); }
+.done-head svg path { fill: none; stroke: var(--surface); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.done h3 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1.2; color: var(--ok); }
+.done p { margin: 4px 0 0; max-width: 62ch; }
+.done-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+.done-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px 14px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+.dl-main { min-width: 0; flex: 1 1 260px; }
+.done-list code { display: block; font-size: 12.5px; overflow-wrap: anywhere; }
+.dl-cat { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.dl-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-open { font: 600 13px var(--font-body); color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; white-space: nowrap; }
+.btn-open:hover { filter: brightness(1.08); }
+.btn-open:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.done-all { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 12px; }
+.done-all span { font-size: 13px; color: var(--muted); }
+.done .next { font-size: 13px; color: var(--muted); margin-top: 12px; max-width: 70ch; }
+.cat-cell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 32px); background: var(--ink); color: var(--bg); font-size: 13.5px; line-height: 1.45; padding: 10px 16px; border-radius: 8px; box-shadow: 0 10px 30px -10px var(--shadow); z-index: 20; }
+
+/* Ledger */
+.ledger { display: grid; gap: 28px; }
+.list { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.item { padding: 14px 16px; }
+.item + .item { border-top: 1px solid var(--line); }
+.item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.item-name { font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.2; }
+.item-name small { font-family: var(--font-body); font-weight: 400; font-size: 13px; color: var(--muted); margin-left: 6px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.item-sub { font-size: 13px; color: var(--muted); margin-top: 1px; }
+.facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 10px; margin: 12px 0 0; }
+.facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); line-height: 1.3; }
+.facts dd { margin: 2px 0 0; font-family: var(--font-mono); font-size: 14px; font-variant-numeric: tabular-nums; }
+.facts dd.warn { color: var(--warn); font-weight: 500; }
+.src { font-size: 12px; color: var(--muted); margin-top: 10px; }
+@media (max-width: 460px) { .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.sn { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); background: var(--sunken); border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
+.shutter { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.shutter b { font-family: var(--font-display); font-weight: 700; font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
+.shutter .lbl { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
+.delta { font-size: 13px; color: var(--muted); text-align: right; }
+.delta strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.life { height: 6px; border-radius: 3px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; margin-top: 10px; }
+.life i { display: block; height: 100%; background: var(--ink); opacity: 0.75; }
+.life-note { font-size: 12.5px; color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.spark { width: 100%; height: auto; display: block; margin-top: 12px; }
+.spark .grid { stroke: var(--line); stroke-width: 1; }
+.spark .area { fill: var(--accent-soft); }
+.spark .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+.spark .end { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.spark-labels { display: flex; justify-content: space-between; gap: 12px; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+/* History */
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 980px; }
+th { text-align: left; font: 500 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); padding: 10px 14px; background: var(--sunken); border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
+td code { font-size: 12.5px; }
+tr.fresh td { background: var(--accent-soft); }
+
+/* Notes */
+.notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 28px; border-top: 1px solid var(--line); padding-top: 18px; }
+.notes h3 { margin: 0 0 4px; font-family: var(--font-display); font-weight: 600; font-size: 17px; }
+.notes p { margin: 0; font-size: 13px; color: var(--muted); max-width: 60ch; }
+.notes .foot { grid-column: 1 / -1; font-size: 12px; }
+@media (max-width: 860px) { .notes { grid-template-columns: minmax(0, 1fr); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .bar i { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <div class="brand">
+      <h1>Card Intake</h1>
+      <span class="tag">Example data</span>
+    </div>
+    <div class="nas" aria-label="NAS connection">
+      <span class="dot" aria-hidden="true"></span>
+      <strong>\\NAS\photos</strong>
+      <span>Connected · 10 GbE · <span id="nas-free" class="num">31.2 TB</span> free</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap layout">
+
+  <!-- The inserted card -->
+  <section class="desk" aria-labelledby="card-name">
+    <div class="sec">
+      <div class="card-head">
+        <svg class="glyph" viewBox="0 0 44 54" aria-hidden="true">
+          <path class="body" d="M4 2 H32 L40 10 V52 H4 Z"></path>
+          <rect class="lbl" x="9" y="14" width="22" height="3" rx="1"></rect>
+          <rect class="lbl" x="9" y="20" width="15" height="3" rx="1"></rect>
+          <rect class="pins" x="9" y="42" width="4" height="7" rx="1"></rect>
+          <rect class="pins" x="15" y="42" width="4" height="7" rx="1"></rect>
+          <rect class="pins" x="21" y="42" width="4" height="7" rx="1"></rect>
+          <rect class="pins" x="27" y="42" width="4" height="7" rx="1"></rect>
+        </svg>
+        <div>
+          <div class="eyebrow">Inserted card · drive E: · recognized by its serial number</div>
+          <div class="card-title">
+            <h2 id="card-name">A1-1</h2>
+            <span class="chip">CFexpress Type A · 160 GB · exFAT</span>
+          </div>
+          <div class="card-meta">Last imported Oct 12 · <span id="card-imports" class="num">58</span> imports by this app</div>
+        </div>
+        <div class="camera-tag">
+          Shot on
+          <b>ILCE-1</b>
+          <span class="sn">SN 5021734</span>
+        </div>
+      </div>
+
+      <div class="cap" role="img" aria-label="Card space: 96.8 GB new photos, 22.1 GB videos, 16.0 GB already on the NAS, 25.1 GB free">
+        <span class="p" style="width:60.5%"></span>
+        <span class="v" style="width:13.8%"></span>
+        <span class="d" style="width:10%"></span>
+      </div>
+      <div class="legend">
+        <span><i class="p"></i>New photos 96.8 GB</span>
+        <span><i class="v"></i>Videos 22.1 GB</span>
+        <span><i class="d"></i>Already on NAS 16.0 GB</span>
+        <span>Free 25.1 GB</span>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><b>1,284</b><span>new photos (ARW)</span></div>
+        <div class="stat"><b>6</b><span>video clips (MP4)</span></div>
+        <div class="stat"><b>212</b><span>already on NAS, skipped</span></div>
+        <div class="stat"><b>Nov 2–4</b><span>capture dates, 2026</span></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h3 class="sec-title">Shoots on this card</h3>
+      <p class="hint">Grouped by capture date. Name each shoot and its folder is created on the NAS.</p>
+      <div class="shoots" id="shoots"></div>
+    </div>
+
+    <div class="sec">
+      <h3 class="sec-title">Options</h3>
+      <div class="options">
+        <label class="opt" for="opt-verify">
+          <input type="checkbox" id="opt-verify" checked>
+          <div><b>Check every file after copying</b><span>Reads each file back from the NAS and compares it with the card (xxHash64), so you know it's safe to format.</span></div>
+        </label>
+        <label class="opt" for="opt-video">
+          <input type="checkbox" id="opt-video" checked>
+          <div><b>Copy videos too</b><span>Clips go into a <code>video</code> folder inside each shoot.</span></div>
+        </label>
+        <label class="opt" for="opt-eject">
+          <input type="checkbox" id="opt-eject">
+          <div><b>Eject the card when done</b><span>Only after every file has been checked.</span></div>
+        </label>
+      </div>
+    </div>
+
+    <div class="sec actions" id="actions">
+      <div>
+        <div class="summary" id="summary"></div>
+        <div class="estimate" id="estimate"></div>
+      </div>
+      <button type="button" class="btn" id="start">Import to NAS</button>
+    </div>
+
+    <div class="sec progress" id="progress" hidden>
+      <p class="stopped" id="stopped" hidden></p>
+      <div class="phase" id="phase">Copying to NAS</div>
+      <div class="prow">
+        <div class="pct" id="pct">0%</div>
+        <button type="button" class="btn-quiet" id="stop">Stop</button>
+      </div>
+      <div class="bar"><i id="bar"></i></div>
+      <div class="pline" id="pline" aria-live="polite"></div>
+      <div class="demo-note">This demo runs 30× faster than a real import.</div>
+    </div>
+
+    <div class="sec done" id="done" hidden></div>
+  </section>
+
+  <!-- Ledger: cards and cameras -->
+  <aside class="ledger">
+    <section aria-labelledby="cards-h">
+      <div class="sec-head">
+        <h2 class="sec-title" id="cards-h">Cards</h2>
+        <span class="muted">Most recent first</span>
+      </div>
+      <div class="list" id="cards"></div>
+    </section>
+
+    <section aria-labelledby="cams-h">
+      <div class="sec-head">
+        <h2 class="sec-title" id="cams-h">Cameras</h2>
+        <span class="muted">From photo EXIF</span>
+      </div>
+      <div class="list" id="cameras"></div>
+    </section>
+  </aside>
+
+  <!-- History -->
+  <section class="full" aria-labelledby="hist-h">
+    <div class="sec-head">
+      <h2 class="sec-title" id="hist-h">Recent imports</h2>
+      <span class="muted">Every import is logged on the NAS</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th><th>Card</th><th>Camera</th><th class="r">Photos</th><th class="r">Size</th><th class="r">Speed</th><th>Check</th><th>Folder</th><th>Lightroom catalog</th>
+          </tr>
+        </thead>
+        <tbody id="history"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="full notes" aria-label="Where the numbers come from">
+    <div>
+      <h3>Camera, serial number, shutter count</h3>
+      <p>Read from the newest photo on the card (EXIF, via exiftool). On some Sony bodies the count also includes electronic-shutter frames.</p>
+    </div>
+    <div>
+      <h3>CFexpress cards</h3>
+      <p>These are NVMe drives, so they keep their own health log: data read and written, life used, power cycles. Your card reader has to pass that log through. You can check this once with smartctl.</p>
+    </div>
+    <div>
+      <h3>SD cards</h3>
+      <p>SD cards keep no wear log a reader can see. The app counts what it sees itself: imports, data imported, formats (the card's volume ID changes) and read errors. After an in-camera format, you confirm which card it is.</p>
+    </div>
+    <p class="foot muted">Example data. This is a mock-up of the import app: nothing on this page reads your cards or your NAS.</p>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var SPEEDUP = 30;
+  var COPY_MBS = 700;     // CFexpress Type A reader, the real limit
+  var VERIFY_MBS = 1050;  // read back from the NAS over 10 GbE
+  var ROOT = "\\\\NAS\\photos\\";
+  var LOCAL = "D:\\LrC Catalogs\\";   // catalogs must live on a local disk while you edit
+
+  var shoots = [
+    { date: "2026-11-02", day: "Mon, Nov 2", time: "06:41 – 18:12", photos: 642, gb: 48.1, clips: 2, clipGb: 7.4, name: "Yosemite", on: true, firstNo: 3518 },
+    { date: "2026-11-03", day: "Tue, Nov 3", time: "05:58 – 09:40", photos: 418, gb: 31.6, clips: 4, clipGb: 14.7, name: "Mono-Lake-birds", on: true, firstNo: 4160 },
+    { date: "2026-11-04", day: "Wed, Nov 4", time: "16:20 – 17:05", photos: 224, gb: 17.1, clips: 0, clipGb: 0, name: "Bishop-portraits", on: true, firstNo: 4578 }
+  ];
+
+  var cards = [
+    { name: "A1-1", kind: "cf", type: "CFexpress Type A", cap: "160 GB", last: "In the reader now", live: true, imports: 58, importedTB: 4.12, written: "4.6 TB", read: "9.3 TB", life: 2, cycles: 386 },
+    { name: "A1-2", kind: "cf", type: "CFexpress Type A", cap: "160 GB", last: "Last import Oct 26", imports: 31, importedTB: 2.21, written: "2.5 TB", read: "5.1 TB", life: 1, cycles: 171 },
+    { name: "SD-03", kind: "sd", type: "SD UHS-II V90", cap: "128 GB", last: "Last import Oct 19", imports: 47, importedTB: 3.86, formats: 44, errors: 0 },
+    { name: "SD-01", kind: "sd", type: "SD UHS-I U3", cap: "64 GB", last: "Last import Sep 28", imports: 112, importedTB: 5.57, formats: 109, errors: 2 }
+  ];
+
+  var cameras = [
+    { model: "ILCE-1", nick: "α1", sn: "5021734", fw: "2.01", seen: "On the inserted card", rated: 500000,
+      deltaNote: "since the Oct 26 import",
+      hist: [98400, 103950, 108120, 111870, 117300, 120410, 125990, 131020, 136480, 141760, 146872, 148213] },
+    { model: "ILCE-7M4", nick: "α7 IV", sn: "4387215", fw: "4.01", seen: "Last seen Oct 19", rated: 200000,
+      deltaNote: "in the Oct 19 import",
+      hist: [41230, 43900, 45110, 47820, 50040, 52310, 54980, 56420, 58700, 60120, 61669, 61902] }
+  ];
+
+  var history = [
+    { date: "Oct 26", card: "A1-2", cam: "ILCE-1", photos: 864, size: 61.2, speed: 712, check: "ok", folder: "2026-10-25_Bay-Bridge-night", more: 0, cat: "local" },
+    { date: "Oct 19", card: "SD-03", cam: "ILCE-7M4", photos: 233, size: 14.9, speed: 268, check: "ok", folder: "2026-10-18_Family-park", more: 0, cat: "nas" },
+    { date: "Oct 12", card: "A1-1", cam: "ILCE-1", photos: 1912, size: 141.0, speed: 705, check: "ok", folder: "2026-10-11_Point-Reyes-elk", more: 1, cat: "nas" },
+    { date: "Sep 28", card: "SD-01", cam: "ILCE-7M4", photos: 120, size: 6.1, speed: 84, check: "warn", checkText: "2 files re-read", folder: "2026-09-27_Street", more: 0, cat: "nas" }
+  ];
+
+  var nasFreeTB = 31.2;
+
+  function $(s) { return document.querySelector(s); }
+  function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
+  function gb(n) { return n.toFixed(1) + " GB"; }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function dur(s) {
+    s = Math.max(0, Math.round(s));
+    var m = Math.floor(s / 60), r = s % 60;
+    return m ? m + " min " + (r < 10 ? "0" : "") + r + " s" : r + " s";
+  }
+  function cleanName(v) { return v.trim().replace(/[\\\/:*?"<>|]/g, "").replace(/\s+/g, "-"); }
+  function folderName(sh) { var n = cleanName(sh.name); return n ? sh.date + "_" + n : sh.date; }
+  function shootPath(sh) { return ROOT + "2026\\" + folderName(sh) + "\\"; }
+  function catPath(name) { return LOCAL + "2026\\" + name + "\\" + name + ".lrcat"; }
+
+  var toastTimer = null;
+  function toast(msg) {
+    var el = $("#toast");
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.hidden = true; }, 5200);
+  }
+
+  /* ---------- Shoots ---------- */
+  function renderShoots() {
+    $("#shoots").innerHTML = shoots.map(function (s, i) {
+      var clips = s.clips ? " · " + s.clips + " clip" + (s.clips > 1 ? "s" : "") : "";
+      return '<div class="shoot" id="shoot-' + i + '">' +
+        '<input type="checkbox" id="inc-' + i + '" checked aria-label="Import ' + esc(s.day) + '">' +
+        '<label class="when" for="inc-' + i + '"><span class="day">' + esc(s.day) + '</span><span class="time">' + esc(s.time) + '</span></label>' +
+        '<div class="name">' +
+          '<label for="name-' + i + '">Shoot name</label>' +
+          '<input type="text" id="name-' + i + '" value="' + esc(s.name) + '" placeholder="e.g. Yosemite" autocomplete="off" spellcheck="false">' +
+          '<code class="path" id="path-' + i + '"></code>' +
+        '</div>' +
+        '<div class="counts"><span class="n">' + fmt(s.photos) + '</span> photos<br>' + gb(s.gb) + clips + '</div>' +
+      '</div>';
+    }).join("");
+
+    shoots.forEach(function (s, i) {
+      updatePath(i);
+      $("#inc-" + i).addEventListener("change", function (e) {
+        s.on = e.target.checked;
+        $("#shoot-" + i).classList.toggle("off", !s.on);
+        updateSummary();
+      });
+      $("#name-" + i).addEventListener("input", function (e) {
+        s.name = e.target.value;
+        updatePath(i);
+      });
+    });
+  }
+
+  function updatePath(i) {
+    var s = shoots[i];
+    $("#path-" + i).innerHTML = esc(ROOT + "2026\\") + "<b>" + esc(folderName(s)) + "</b>\\";
+  }
+
+  function totals() {
+    var video = $("#opt-video").checked;
+    var t = { photos: 0, pgb: 0, clips: 0, cgb: 0, folders: 0, list: [] };
+    shoots.forEach(function (s) {
+      if (!s.on) return;
+      t.photos += s.photos; t.pgb += s.gb; t.folders += 1; t.list.push(s);
+      if (video) { t.clips += s.clips; t.cgb += s.clipGb; }
+    });
+    t.totalGB = t.pgb + t.cgb;
+    t.files = t.photos + t.clips;
+    return t;
+  }
+
+  function updateSummary() {
+    var t = totals();
+    var verify = $("#opt-verify").checked;
+    var btn = $("#start");
+    if (!t.folders) {
+      btn.disabled = true;
+      $("#summary").textContent = "No shoots selected";
+      $("#estimate").textContent = "Tick at least one shoot to import it.";
+      return;
+    }
+    btn.disabled = false;
+    $("#summary").textContent = fmt(t.photos) + " photos" + (t.clips ? " + " + t.clips + " clips" : "") +
+      " · " + gb(t.totalGB) + " → " + t.folders + " folder" + (t.folders > 1 ? "s" : "");
+    var mb = t.totalGB * 1000;
+    var copyS = mb / COPY_MBS, verS = verify ? mb / VERIFY_MBS : 0;
+    $("#estimate").textContent = "About " + dur(copyS + verS) + ". The card reader tops out near " + COPY_MBS +
+      " MB/s; your 10 GbE link could carry about 1,100 MB/s." + (verify ? " Checking adds " + dur(verS) + "." : "");
+  }
+
+  function lockForm(locked) {
+    shoots.forEach(function (s, i) {
+      $("#inc-" + i).disabled = locked;
+      $("#name-" + i).disabled = locked;
+    });
+    ["#opt-verify", "#opt-video", "#opt-eject"].forEach(function (id) { $(id).disabled = locked; });
+  }
+
+  /* ---------- Import simulation ---------- */
+  var run = null;
+
+  function fileAt(idx) {
+    var n = idx;
+    for (var k = 0; k < run.t.list.length; k++) {
+      var s = run.t.list[k];
+      if (n <= s.photos) { var no = s.firstNo + n; return "DSC" + String(no).padStart(5, "0") + ".ARW"; }
+      n -= s.photos;
+    }
+    return "C" + String(Math.max(1, n)).padStart(4, "0") + ".MP4";
+  }
+
+  function startImport() {
+    if (!run || !run.paused) {
+      var t = totals();
+      run = { phase: "copy", done: 0, totalMB: t.totalGB * 1000, t: t, verify: $("#opt-verify").checked, eject: $("#opt-eject").checked, paused: false, speeds: [] };
+    }
+    run.paused = false;
+    lockForm(true);
+    $("#actions").hidden = true;
+    $("#stopped").hidden = true;
+    $("#progress").hidden = false;
+    tick(true);
+    run.timer = setInterval(tick, 100);
+  }
+
+  function tick(firstPaint) {
+    var base = run.phase === "copy" ? COPY_MBS : VERIFY_MBS;
+    var speed = base + (Math.random() - 0.5) * base * 0.06;
+    if (!firstPaint) {
+      run.done = Math.min(run.totalMB, run.done + speed * 0.1 * SPEEDUP);
+      if (run.phase === "copy") run.speeds.push(speed);
+    }
+    var frac = run.done / run.totalMB;
+    var files = run.t.files;
+    var idx = Math.min(files, Math.max(1, Math.ceil(frac * files)));
+    var remaining = (run.totalMB - run.done) / base + (run.phase === "copy" && run.verify ? run.totalMB / VERIFY_MBS : 0);
+    var steps = run.verify ? 2 : 1;
+    $("#phase").textContent = run.phase === "copy"
+      ? (steps === 2 ? "Step 1 of 2 · " : "") + "Copying to NAS"
+      : "Step 2 of 2 · Checking files on the NAS";
+    $("#pct").textContent = Math.floor(frac * 100) + "%";
+    $("#bar").style.width = (frac * 100).toFixed(1) + "%";
+    $("#pline").textContent = fileAt(idx) + " · " + fmt(idx) + " of " + fmt(files) + " files · " +
+      fmt(speed) + " MB/s · about " + dur(remaining) + " left";
+
+    if (run.done >= run.totalMB) {
+      if (run.phase === "copy" && run.verify) { run.phase = "verify"; run.done = 0; }
+      else finish();
+    }
+  }
+
+  function stopImport() {
+    clearInterval(run.timer);
+    run.paused = true;
+    var files = run.t.files;
+    var idx = Math.min(files, Math.max(0, Math.floor(run.done / run.totalMB * files)));
+    var msg = run.phase === "copy"
+      ? "Stopped after " + fmt(idx) + " of " + fmt(files) + " files. Files already copied stay on the NAS; resuming skips them."
+      : "Stopped while checking. All files are copied, but don't format the card until the check finishes.";
+    $("#stopped").textContent = msg;
+    $("#stopped").hidden = false;
+    $("#actions").hidden = false;
+    $("#start").textContent = "Resume import";
+    $("#progress").querySelector(".prow").hidden = true;
+  }
+
+  function finish() {
+    clearInterval(run.timer);
+    var t = run.t;
+    $("#progress").hidden = true;
+    $("#actions").hidden = true;
+
+    var what = fmt(t.photos) + " photos" + (t.clips ? " and " + t.clips + " clips" : "");
+    var body = run.verify
+      ? "All " + what + " are on the NAS and match the card. You can format this card in the camera."
+      : "All " + what + " are copied. They weren't checked against the card, so keep the card until you've checked them.";
+    if (run.eject) body += " The card has been ejected.";
+
+    var items = t.list.map(function (s, i) {
+      return '<li>' +
+        '<div class="dl-main"><code id="done-path-' + i + '">' + esc(shootPath(s)) + '</code>' +
+        '<span class="dl-cat">Catalog: ' + esc(catPath(folderName(s))) + '</span></div>' +
+        '<div class="dl-btns">' +
+          '<button type="button" class="btn-open" data-open="' + i + '">Open in Lightroom</button>' +
+          '<button type="button" class="btn-quiet" data-copy="' + i + '">Copy path</button>' +
+        '</div></li>';
+    }).join("");
+    var all = t.list.length > 1
+      ? '<div class="done-all"><button type="button" class="btn-quiet" id="open-all">Open all ' + t.list.length +
+        ' shoots in one catalog</button><span>For a trip you want to edit as one job.</span></div>'
+      : "";
+
+    $("#done").innerHTML =
+      '<div class="done-head">' +
+        '<svg viewBox="0 0 30 30" aria-hidden="true"><circle cx="15" cy="15" r="15"></circle><path d="M8.5 15.5 L13 20 L21.5 10.5"></path></svg>' +
+        '<div><h3>Import complete</h3><p>' + esc(body) + '</p></div>' +
+      '</div>' +
+      '<ul class="done-list">' + items + '</ul>' + all +
+      '<p class="next">Each shoot gets its own Lightroom catalog, made from your template catalog, with every photo already added. ' +
+      'It stays on this computer while you edit, because Lightroom Classic cannot open catalogs on a network drive. ' +
+      'When you finish the shoot, it moves into the shoot’s <code>_catalog</code> folder on the NAS.</p>';
+    $("#done").hidden = false;
+
+    $("#done").querySelectorAll("[data-open]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var s = t.list[+b.getAttribute("data-open")];
+        toast("Demo: created " + folderName(s) + ".lrcat from your template. Lightroom Classic opens it and adds " +
+          fmt(s.photos) + " photos from the NAS.");
+        b.textContent = "Open again";
+      });
+    });
+    var allBtn = $("#open-all");
+    if (allBtn) allBtn.addEventListener("click", function () {
+      toast("Demo: created " + folderName(t.list[0]) + ".lrcat with all " + t.list.length + " shoots (" +
+        fmt(t.photos) + " photos). Lightroom Classic opens it and adds them.");
+    });
+
+    $("#done").querySelectorAll("[data-copy]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var code = $("#done-path-" + b.getAttribute("data-copy"));
+        var text = code.textContent;
+        var ok = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy path"; }, 1500); };
+        var fallback = function () {
+          var r = document.createRange(); r.selectNodeContents(code);
+          var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+          b.textContent = "Selected, press Ctrl+C";
+        };
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok, fallback);
+          else fallback();
+        } catch (e) { fallback(); }
+      });
+    });
+
+    // Record the import
+    var avg = run.speeds.length ? run.speeds.reduce(function (a, b) { return a + b; }, 0) / run.speeds.length : COPY_MBS;
+    cards[0].imports += 1;
+    cards[0].importedTB += t.totalGB / 1000;
+    cards[0].last = run.eject ? "Ejected just now" : "In the reader now";
+    $("#card-imports").textContent = cards[0].imports;
+    nasFreeTB -= t.totalGB / 1000;
+    $("#nas-free").textContent = nasFreeTB.toFixed(1) + " TB";
+    history.unshift({
+      date: "Today", card: "A1-1", cam: "ILCE-1", photos: t.photos, size: t.totalGB, speed: avg,
+      check: run.verify ? "ok" : "none", folder: folderName(t.list[0]), more: t.list.length - 1, fresh: true, cat: "local"
+    });
+    renderCards();
+    renderHistory();
+  }
+
+  /* ---------- Ledger ---------- */
+  function renderCards() {
+    $("#cards").innerHTML = cards.map(function (c) {
+      var chips = "";
+      if (c.live) chips += '<span class="chip live">In reader</span>';
+      var facts, src;
+      if (c.kind === "cf") {
+        chips += c.life < 70 ? '<span class="chip ok">Healthy</span>' : '<span class="chip warn">Wearing out</span>';
+        facts = fact("Written", c.written) + fact("Read", c.read) + fact("Life used", c.life + "%") + fact("Power cycles", fmt(c.cycles));
+        src = "From the card's own health log · " + c.imports + " imports, " + c.importedTB.toFixed(1) + " TB imported by this app";
+      } else {
+        chips += c.errors ? '<span class="chip warn">' + c.errors + ' read errors</span>' : '<span class="chip">No wear data</span>';
+        facts = fact("Imports", fmt(c.imports)) + fact("Imported", c.importedTB.toFixed(1) + " TB") +
+          fact("Formats seen", fmt(c.formats)) + fact("Read errors", String(c.errors), c.errors ? "warn" : "");
+        src = "SD cards don't report wear, so these are this app's own counts.";
+      }
+      return '<article class="item">' +
+        '<div class="item-head"><span class="item-name">' + esc(c.name) + '</span><span class="chips">' + chips + '</span></div>' +
+        '<div class="item-sub">' + esc(c.type) + " · " + esc(c.cap) + " · " + esc(c.last) + '</div>' +
+        '<dl class="facts">' + facts + '</dl>' +
+        '<div class="src">' + esc(src) + '</div>' +
+      '</article>';
+    }).join("");
+  }
+
+  function fact(label, value, cls) {
+    return '<div><dt>' + esc(label) + '</dt><dd' + (cls ? ' class="' + cls + '"' : "") + '>' + esc(value) + '</dd></div>';
+  }
+
+  function spark(vals) {
+    var W = 300, H = 60, px = 5, py = 6;
+    var min = vals[0], max = vals[vals.length - 1];
+    var xs = vals.map(function (_, i) { return px + i * (W - 2 * px) / (vals.length - 1); });
+    var ys = vals.map(function (v) { return H - py - (v - min) / (max - min) * (H - 2 * py); });
+    var pts = xs.map(function (x, i) { return x.toFixed(1) + "," + ys[i].toFixed(1); });
+    var area = "M" + xs[0].toFixed(1) + "," + (H - py) + " L" + pts.join(" L") + " L" + xs[xs.length - 1].toFixed(1) + "," + (H - py) + " Z";
+    return '<svg class="spark" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Shutter count at each import over the past year, from ' + fmt(min) + " to " + fmt(max) + '">' +
+      '<line class="grid" x1="' + px + '" x2="' + (W - px) + '" y1="' + py + '" y2="' + py + '"></line>' +
+      '<line class="grid" x1="' + px + '" x2="' + (W - px) + '" y1="' + (H - py) + '" y2="' + (H - py) + '"></line>' +
+      '<path class="area" d="' + area + '"></path>' +
+      '<polyline class="line" points="' + pts.join(" ") + '"></polyline>' +
+      '<circle class="end" cx="' + xs[xs.length - 1].toFixed(1) + '" cy="' + ys[ys.length - 1].toFixed(1) + '" r="3.5"></circle>' +
+    '</svg>';
+  }
+
+  function renderCameras() {
+    $("#cameras").innerHTML = cameras.map(function (c) {
+      var count = c.hist[c.hist.length - 1];
+      var delta = count - c.hist[c.hist.length - 2];
+      var pct = count / c.rated * 100;
+      return '<article class="item">' +
+        '<div class="item-head"><span class="item-name">' + esc(c.model) + '<small>' + esc(c.nick) + '</small></span><span class="sn">SN ' + esc(c.sn) + '</span></div>' +
+        '<div class="item-sub">Firmware ' + esc(c.fw) + " · " + esc(c.seen) + '</div>' +
+        '<div class="shutter">' +
+          '<div><span class="lbl">Shutter count</span><b>' + fmt(count) + '</b></div>' +
+          '<div class="delta"><strong>+' + fmt(delta) + '</strong> ' + esc(c.deltaNote) + '</div>' +
+        '</div>' +
+        '<div class="life" role="img" aria-label="' + pct.toFixed(1) + '% of rated shutter life"><i style="width:' + pct.toFixed(1) + '%"></i></div>' +
+        '<div class="life-note">' + pct.toFixed(1) + "% of " + fmt(c.rated) + " rated life (set by you)</div>" +
+        spark(c.hist) +
+        '<div class="spark-labels"><span>Nov 2025 · ' + fmt(c.hist[0]) + '</span><span>Now · ' + fmt(count) + '</span></div>' +
+      '</article>';
+    }).join("");
+  }
+
+  /* ---------- History ---------- */
+  function renderHistory() {
+    $("#history").innerHTML = history.map(function (h, i) {
+      var check = h.check === "ok" ? '<span class="chip ok">Verified</span>'
+        : h.check === "warn" ? '<span class="chip warn">' + esc(h.checkText) + '</span>'
+        : '<span class="chip">Not checked</span>';
+      var folder = '<code>' + esc(h.folder) + '</code>' + (h.more ? ' <span class="muted">+' + h.more + ' more</span>' : "");
+      var cat = h.cat === "local"
+        ? '<span class="cat-cell"><span class="chip live">On this PC</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Open</button></span>'
+        : '<span class="cat-cell"><span class="chip">Stored on NAS</span><button type="button" class="btn-quiet" data-hopen="' + i + '">Reopen</button></span>';
+      return '<tr' + (h.fresh ? ' class="fresh"' : "") + '>' +
+        '<td>' + esc(h.date) + '</td>' +
+        '<td>' + esc(h.card) + '</td>' +
+        '<td>' + esc(h.cam) + '</td>' +
+        '<td class="r">' + fmt(h.photos) + '</td>' +
+        '<td class="r">' + gb(h.size) + '</td>' +
+        '<td class="r">' + fmt(h.speed) + ' MB/s</td>' +
+        '<td>' + check + '</td>' +
+        '<td>' + folder + '</td>' +
+        '<td>' + cat + '</td>' +
+      '</tr>';
+    }).join("");
+  }
+
+  $("#history").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-hopen]");
+    if (!b) return;
+    var h = history[+b.getAttribute("data-hopen")];
+    toast(h.cat === "local"
+      ? "Demo: opening " + h.folder + ".lrcat in Lightroom Classic."
+      : "Demo: copying " + h.folder + ".lrcat from the NAS to this PC, then opening it. Previews rebuild as you browse.");
+  });
+
+  /* ---------- Wire up ---------- */
+  renderShoots();
+  renderCards();
+  renderCameras();
+  renderHistory();
+  updateSummary();
+
+  $("#opt-verify").addEventListener("change", updateSummary);
+  $("#opt-video").addEventListener("change", updateSummary);
+  $("#start").addEventListener("click", function () {
+    $("#progress").querySelector(".prow").hidden = false;
+    startImport();
+  });
+  $("#stop").addEventListener("click", stopImport);
+})();
+</script>
+</body>
+</html>
