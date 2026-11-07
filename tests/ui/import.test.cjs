@@ -63,6 +63,15 @@ async function app(t, network = true, options = {}) {
         case 'get_lightroom_settings': return Promise.resolve({ settings: { executable: 'C:\\Adobe\\Lightroom.exe', template: 'C:\\Empty.lrcat', catalog_root: 'D:\\LrC Catalogs', presets: null }, plugin: PLUGIN, presets_installed: 0 });
         case 'save_lightroom_settings': return Promise.resolve({ settings: args.settings, plugin: PLUGIN, presets_installed: args.settings.presets ? 98 : 0 });
         case 'lightroom_catalogs': return Promise.resolve(fixture.catalogs);
+        case 'delivery_states': return Promise.resolve(fixture.deliveries || options.deliveries || []);
+        case 'plan_delivery': return new Promise((resolve, reject) => { fixture.plan = resolve; fixture.planError = reject; });
+        case 'deliver': return new Promise((resolve, reject) => { fixture.deliver = resolve; fixture.deliverError = reject; });
+        case 'get_delivery_settings': return Promise.resolve(options.delivery || { deliver_to: '', url: '', has_key: false, library_id: '', libraries: [] });
+        case 'save_delivery_settings':
+          fixture.deliverySaved = args.settings;
+          return Promise.resolve({ deliver_to: args.settings.deliver_to, url: args.settings.url, has_key: true, library_id: 'lib1', libraries: [{ id: 'lib1', name: 'MyPhoto', assetCount: 42, importPaths: ['/photos/MyPhoto'] }] });
+        case 'get_settings': return Promise.resolve(options.settings || { folded: [] });
+        case 'save_folded': fixture.folded = args.folded; return Promise.resolve(null);
         case 'open_in_lightroom': return Promise.resolve(fixture.launch || { catalog: 'D:\\LrC Catalogs\\2026\\2026-11-06_Tokyo\\2026-11-06_Tokyo.lrcat', name: '2026-11-06_Tokyo', already_open: false });
         case 'finish_catalog': return Promise.resolve({ name: '2026-11-06_Tokyo', stored: '\\\\NAS\\photos\\2026\\2026-11-06_Tokyo\\_catalog' });
         case 'get_cameras': return Promise.resolve(fixture.cameras);
@@ -135,6 +144,219 @@ const existing = [{
   folders: [{ name: '2026-11-06_夜景', title: '夜景', photos: 1, videos: 1, bytes: 200 }],
   photos_on_nas: 1, videos_on_nas: 1, photo_bytes_on_nas: 100, video_bytes_on_nas: 100
 }];
+
+test('Deliver has its own button beside Finish/Reopen and works with open and uncreated catalogs', async t => {
+  for (const state of ['open','local','nas','none']) {
+    const r = result();
+    const a = await app(t, true, { ledger: { imports: [r] }, catalogs: [{ import_id: r.started_at, shoots: [0], name: '2026-11-06_Tokyo', trip: false, state }] });
+    const cell = a.$('#history .cat-cell');
+    assert.equal(cell.querySelectorAll('[data-deliver]').length, 1);
+    assert.equal(cell.querySelector('[data-deliver]').disabled, false);
+    assert.ok(cell.querySelector('[data-deliver]').classList.contains('go'));
+    if (state === 'local') assert.equal(cell.querySelector('[data-hfinish]').textContent, 'Finish');
+    if (state === 'nas') assert.equal(cell.querySelector('[data-hopen]').textContent, 'Reopen');
+  }
+});
+
+// What plan_delivery returns for one shoot: seven new PixCake JPEGs, six Lightroom twins skipped.
+function plannedShoot(overrides = {}) {
+  return {
+    shoot: '\\\\NAS\\photos\\2026\\2026-11-06_夜景', target: '\\\\NAS\\Picture\\MyPhoto\\2026-11-06_夜景', target_exists: false, plan_only: true,
+    new: 7, existing: 0, delivered: 0,
+    photos: Array.from({ length: 7 }, (_, i) => ({ name: `EM_${i}.jpg`, source: `final\\EM_${i}_(2).jpg`, kind: 'pixcake', stars: 5, stars_from: 'catalog', action: 'new', thumbnail: 'data:image/jpeg;base64,/9j/AAAA' })),
+    skipped: Array.from({ length: 6 }, (_, i) => ({ source: `topix\\EM_${i}.jpg`, reason: 'replaced by PixCake' })),
+    warnings: [], errors: [], ...overrides
+  };
+}
+const delivered = s => ({ ...s, plan_only: false, delivered: s.new,
+  photos: s.photos.map(p => ({ ...p, thumbnail: undefined, action: p.action === 'new' ? 'delivered' : p.action })) });
+
+test('Deliver first shows the new photos with thumbnails, and copies only what was confirmed', async t => {
+  const r = result({ shoots: ['2026\\2026-11-06_夜景', '2026\\2026-11-07_Tokyo'] });
+  const a = await app(t, true, { ledger: { imports: [r] }, catalogs: [{ import_id: r.started_at, shoots: [0, 1], name: '2026-11-06_Japan', trip: true, state: 'open' }] });
+  assert.equal(a.window.document.querySelectorAll('[data-deliver]').length, 1);
+  a.$('[data-deliver]').click();
+  assert.deepEqual(a.last('plan_delivery'), { importId: r.started_at, shoot: 0 });
+  assert.equal(a.$('[data-deliver]').disabled, true);
+  assert.equal(a.$('[data-deliver]').textContent, 'Delivering…');
+  assert.equal(a.$('#start').disabled, true);
+  const tokyo = plannedShoot({
+    shoot: '\\\\NAS\\photos\\2026\\2026-11-07_Tokyo', target: '\\\\NAS\\Picture\\MyPhoto\\2026-11-07_Tokyo', target_exists: true, new: 1, existing: 2, skipped: [],
+    photos: [
+      { name: 'DSC1.jpg', source: 'DSC1.jpg', kind: 'lightroom', stars: 3, stars_from: 'catalog', action: 'exists' },
+      { name: 'DSC2.jpg', source: 'out\\DSC2.jpg', kind: 'lightroom', stars: 0, stars_from: 'none', action: 'new' },
+      { name: 'DSC3.jpg', source: 'DSC3.jpg', kind: 'lightroom', stars: 4, stars_from: 'catalog', action: 'exists' }
+    ]
+  });
+  a.fixture.plan({ shoots: [plannedShoot(), tokyo], errors: [] }); await settle();
+  assert.equal(a.$('#deliver-dialog').hidden, false);
+  assert.equal(a.$('#deliver-title').textContent, 'Deliver 8 photos?');
+  assert.equal(a.$('#deliver-confirm').textContent, 'Deliver 8 photos');
+  const body = a.$('#deliver-body');
+  assert.equal(body.querySelectorAll('.thumb').length, 8);
+  assert.equal(body.querySelectorAll('.thumb img').length, 7);
+  assert.equal(body.querySelector('.thumb img').getAttribute('src'), 'data:image/jpeg;base64,/9j/AAAA');
+  assert.match(body.textContent, /To \\\\NAS\\Picture\\MyPhoto\\2026-11-06_夜景 · a new folder/);
+  assert.match(body.textContent, /2026-11-07_Tokyo · adds to the folder that’s already there/);
+  assert.match(body.textContent, /Skipped: 6 Lightroom JPEGs replaced by PixCake\./);
+  assert.match(body.textContent, /Skipped: 2 photos are already there and will be left alone\./);
+  assert.match(body.textContent, /EM_0\.jpg★★★★★ · PixCake/);
+  assert.match(body.textContent, /DSC2\.jpgNo stars · Lightroom/);
+  assert.equal(a.calls.some(c => c.command === 'deliver'), false, 'nothing is copied before confirming');
+
+  a.$('#deliver-confirm').click();
+  assert.equal(a.$('#deliver-dialog').hidden, true);
+  const sent = a.last('deliver');
+  assert.equal(sent.importId, r.started_at);
+  assert.deepEqual(sent.confirmed.map(s => s.photos.length), [7, 1]);
+  assert.deepEqual(sent.confirmed[1], { shoot: tokyo.shoot, photos: [{ name: 'DSC2.jpg', source: 'out\\DSC2.jpg' }] });
+  assert.equal(a.$('[data-deliver]').textContent, 'Delivering…');
+  a.fixture.deliveries = [{ import_id: r.started_at, shoot: 0, count: 8, last_delivered: new Date().toISOString() }];
+  a.fixture.deliver({ shoots: [delivered(plannedShoot()), delivered(tokyo)], rescanning: true, warnings: [], errors: [] }); await settle();
+  assert.match(a.$('#toast').textContent, /^Delivered 8 photos to 2 folders: 7 from PixCake, 1 from Lightroom\. Immich is rescanning\.$/);
+  assert.match(a.$('#history').textContent, /Delivered 8 · today/);
+  assert.equal(a.$('[data-deliver]').disabled, false); assert.equal(a.$('#start').disabled, false);
+  assert.match(a.$('#delivery-details').textContent, /EM_0\.jpg ← final\\EM_0_\(2\)\.jpg · PixCake · 5 stars \(catalog\) · delivered/);
+  assert.match(a.$('#delivery-details').textContent, /DSC1\.jpg ← DSC1\.jpg · Lightroom · 3 stars \(catalog\) · already there, left alone/);
+  assert.equal(a.calls.filter(c => c.command === 'finish_catalog').length, 0);
+});
+
+test('pressing Deliver again with nothing new says so and copies nothing', async t => {
+  const r = result({ shoots: ['2026\\2026-11-06_夜景'] });
+  const a = await app(t, true, { ledger: { imports: [r] }, catalogs: [{ import_id: r.started_at, shoots: [0], name: '2026-11-06_夜景', trip: false, state: 'nas' }] });
+  a.$('[data-deliver]').click();
+  const again = plannedShoot({ target_exists: true, new: 0, existing: 7 });
+  again.photos = again.photos.map(p => ({ ...p, action: 'exists', thumbnail: undefined }));
+  a.fixture.plan({ shoots: [again], errors: [] }); await settle();
+  assert.equal(a.$('#deliver-dialog').hidden, true);
+  assert.equal(a.$('#toast').textContent, 'Nothing new to deliver: all 7 photos are already in MyPhoto\\2026-11-06_夜景. Nothing was changed.');
+  assert.equal(a.calls.some(c => c.command === 'deliver'), false);
+  assert.equal(a.$('[data-deliver]').disabled, false);
+
+  a.$('[data-deliver]').click();
+  a.fixture.plan({ shoots: [plannedShoot({ new: 0, photos: [], skipped: [{ source: 'DSC00001.JPG', reason: 'camera JPEG' }] })], errors: [] }); await settle();
+  assert.match(a.$('#toast').textContent, /^No finished JPEGs to deliver in 2026-11-06_夜景\. Export them from Lightroom or PixCake/);
+  assert.equal(a.calls.some(c => c.command === 'deliver'), false);
+});
+
+test('Cancel or Escape closes the confirmation without copying anything', async t => {
+  const r = result();
+  const a = await app(t, true, { ledger: { imports: [r] }, catalogs: [{ import_id: r.started_at, shoots: [0], name: 'Tokyo', trip: false, state: 'none' }] });
+  a.$('[data-deliver]').click(); a.fixture.plan({ shoots: [plannedShoot()], errors: [] }); await settle();
+  assert.equal(a.$('#deliver-dialog').hidden, false);
+  a.$('#deliver-cancel').click();
+  assert.equal(a.$('#deliver-dialog').hidden, true);
+  assert.equal(a.$('[data-deliver]').disabled, false); assert.equal(a.$('#start').disabled, false);
+  a.$('[data-deliver]').click(); a.fixture.plan({ shoots: [plannedShoot()], errors: [] }); await settle();
+  a.window.document.dispatchEvent(new a.window.KeyboardEvent('keydown', { key: 'Escape' }));
+  assert.equal(a.$('#deliver-dialog').hidden, true);
+  assert.equal(a.calls.some(c => c.command === 'deliver'), false);
+});
+
+test('Deliver errors restore the button, open the setup when needed, and an import disables delivery', async t => {
+  const r = result();
+  const a = await app(t, true, { ledger: { imports: [r] }, catalogs: [{ import_id: r.started_at, shoots: [0], name: 'Tokyo', trip: false, state: 'none' }] });
+  a.$('[data-deliver]').click();
+  a.fixture.planError('Set the finished photos folder (e.g. \\\\NAS\\Picture\\MyPhoto) under Deliver first.'); await settle();
+  assert.equal(a.$('#deliver-setup').open, true);
+  assert.match(a.$('#toast').textContent, /finished photos folder/);
+  assert.equal(a.$('[data-deliver]').disabled, false);
+  a.$('[data-deliver]').click(); a.fixture.plan({ shoots: [plannedShoot()], errors: [] }); await settle();
+  a.$('#deliver-confirm').click();
+  a.fixture.deliverError('The photos to deliver changed since you checked them. Press Deliver again to see the new list.'); await settle();
+  assert.equal(a.$('[data-deliver]').disabled, false); assert.match(a.$('#toast').textContent, /changed since you checked/);
+  a.$('#start').click(); assert.equal(a.$('[data-deliver]').disabled, true);
+});
+
+test('Deliver settings keep the finished photos folder and Immich library, and never show the key', async t => {
+  const a = await app(t);
+  assert.equal(a.$('#immich-patterns'), null, 'no exclusion patterns any more');
+  a.type('#deliver-to', '\\\\NAS\\Picture\\MyPhoto'); a.type('#immich-url', 'http://nas:2283'); a.type('#immich-key', 'test-secret');
+  assert.equal(a.$('#immich-key').type, 'password');
+  a.$('#deliver-save').click(); await settle();
+  assert.deepEqual(a.last('save_delivery_settings').settings, { deliver_to: '\\\\NAS\\Picture\\MyPhoto', url: 'http://nas:2283', api_key: 'test-secret', library_id: '' });
+  assert.equal(a.$('#immich-key').value, ''); assert.match(a.$('#immich-key').placeholder, /Saved key/);
+  assert.equal(a.window.document.body.textContent.includes('test-secret'), false);
+  assert.equal(a.$('#immich-library').value, 'lib1');
+  assert.match(a.$('#immich-library').selectedOptions[0].textContent, /MyPhoto · \/photos\/MyPhoto/);
+  assert.equal(a.$('#deliver-note').textContent, 'Ready · Immich');
+  assert.equal(a.$('#deliver-to').value, '\\\\NAS\\Picture\\MyPhoto');
+  a.$('#deliver-save').click(); await settle();
+  assert.equal(a.last('save_delivery_settings').settings.api_key, '');
+});
+
+test('a shoot folder gone from the NAS says so, while the import\'s other shoot still opens', async t => {
+  const r = result({ shoots: ['2026\\2026-11-03', '2026\\2026-11-06_夜景'] });
+  const note = '2026\\2026-11-03 isn\'t on the NAS any more. It may have been renamed or deleted.';
+  const a = await app(t, true, { ledger: { imports: [r] }, catalogs: [
+    { import_id: r.started_at, shoots: [0], name: '2026-11-03', trip: false, state: 'missing', note },
+    { import_id: r.started_at, shoots: [1], name: '2026-11-06_夜景', trip: false, state: 'none' }
+  ] });
+  const cells = a.window.document.querySelectorAll('#history .cat-cell');
+  assert.equal(cells[0].textContent, '2026-11-03Folder missing');
+  assert.equal(cells[0].querySelector('.chip.warn').title, note);
+  assert.equal(cells[0].querySelectorAll('button').length, 0);
+  cells[1].querySelector('[data-hopen]').click();
+  await settle();
+  assert.deepEqual(a.last('open_in_lightroom'), { importId: r.started_at, shoot: 1, trip: null });
+});
+
+test('imports that fill the same single catalog share one row with their totals', async t => {
+  const second = result({ started_at: '2026-11-07T18:44:17', finished_at: '2026-11-07T18:45:21', shoots: ['2026\\2026-11-07_test'],
+    photos: 215, videos: 0, total_files: 215, verified_files: 215, total_bytes: 15e9, completed_bytes: 15e9, average_bytes_per_sec: 300e6 });
+  const first = result({ started_at: '2026-11-07T15:49:01', finished_at: '2026-11-07T15:49:11', shoots: ['2026\\2026-11-07_test'],
+    photos: 27, videos: 0, total_files: 27, verified_files: 27, total_bytes: 2e9, completed_bytes: 2e9, average_bytes_per_sec: 200e6 });
+  const both = result({ started_at: '2026-11-07T01:47:34', finished_at: '2026-11-07T01:48:31', shoots: ['2026\\2026-11-03_video-test', '2026\\2026-11-06_夜景'] });
+  const a = await app(t, true, { ledger: { imports: [second, first, both] }, catalogs: [
+    { import_id: second.started_at, shoots: [0], name: '2026-11-07_test', trip: false, state: 'local' },
+    { import_id: first.started_at, shoots: [0], name: '2026-11-07_test', trip: false, state: 'local' },
+    { import_id: both.started_at, shoots: [0], name: '2026-11-03_video-test', trip: false, state: 'none' },
+    { import_id: both.started_at, shoots: [1], name: '2026-11-06_夜景', trip: false, state: 'none' }
+  ] });
+  await settle();
+  const rows = a.window.document.querySelectorAll('#history tbody tr');
+  assert.equal(rows.length, 2);
+  const cells = rows[0].querySelectorAll('td');
+  assert.match(cells[0].textContent, /2 imports/);
+  assert.match(cells[0].querySelector('.chip.merged').title, /215 photos[\s\S]*27 photos/);
+  assert.equal(cells[3].textContent, '242');
+  assert.equal(cells[4].textContent, '17.0 GB');
+  assert.equal(cells[5].textContent, '283 MB/s');
+  assert.equal(cells[7].textContent, '2026-11-07_test');
+  assert.equal(rows[0].querySelectorAll('[data-deliver]').length, 1);
+  assert.equal(rows[0].querySelectorAll('[data-hfinish]').length, 1);
+  rows[0].querySelector('[data-deliver]').click();
+  assert.deepEqual(a.last('plan_delivery'), { importId: second.started_at, shoot: 0 });
+  // The import holding two shoots keeps its own row.
+  assert.equal(rows[1].querySelectorAll('[data-deliver]').length, 2);
+  assert.doesNotMatch(rows[1].textContent, /imports/);
+});
+
+test('each camera and card folds to its name, and the app remembers it', async t => {
+  const a = await app(t, true, {
+    settings: { folded: ['card:OTHER'] },
+    cameras: { shared, cameras: [a7r6()], new_cameras: [] },
+    ledger: { cards: [{ id: 'OTHER', name: 'Other card', last_seen: '2026-11-07T12:00:00' }] }
+  });
+  await settle();
+  const card = () => a.$('#cards .item');
+  const camera = () => a.$('#cameras article.item');
+  assert.ok(card().classList.contains('folded'));
+  assert.equal(card().querySelector('.facts'), null);
+  assert.match(card().textContent, /Other card/);
+  assert.equal(card().querySelector('[data-fold]').getAttribute('aria-expanded'), 'false');
+  assert.ok(!camera().classList.contains('folded'));
+  assert.match(camera().textContent, /Shutter count894/);
+  camera().querySelector('[data-fold]').click();
+  assert.ok(camera().classList.contains('folded'));
+  assert.doesNotMatch(camera().textContent, /Shutter count/);
+  assert.match(camera().textContent, /ILCE-7RM6/);
+  assert.deepEqual(a.last('save_folded').folded.sort(), ['camera:03506694', 'card:OTHER']);
+  card().querySelector('[data-fold]').click();
+  assert.ok(!card().classList.contains('folded'));
+  assert.ok(card().querySelector('.facts'));
+  assert.deepEqual(a.last('save_folded').folded, ['camera:03506694']);
+});
 
 test('imports like the prototype: progress in the desk with the form locked, then the done panel and history row', async t => {
   const a = await app(t);
@@ -816,9 +1038,9 @@ test('Lightroom: open a shoot or a trip from the done panel; Open, Reopen and Fi
   await settle();
   const rows = a.window.document.querySelectorAll('#history tbody tr');
   const catalog = row => row.lastElementChild.textContent;
-  assert.equal(catalog(rows[0]), 'On this PCOpenFinish');
-  assert.equal(catalog(rows[1]), 'Trip 2026-10-01_FallFinished · on NASReopen');
-  assert.equal(catalog(rows[2]), 'Open in Lightroom');
+  assert.equal(catalog(rows[0]), 'On this PCOpenFinishDeliver');
+  assert.equal(catalog(rows[1]), 'Trip 2026-10-01_FallFinished · on NASReopenDeliver');
+  assert.equal(catalog(rows[2]), 'Open in LightroomDeliver');
   assert.equal(catalog(rows[3]), '—');
   rows[1].querySelector('[data-hopen]').click();
   await settle();

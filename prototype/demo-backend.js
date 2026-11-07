@@ -464,6 +464,70 @@
     return c.trip ? join(lightroom.catalog_root, year, "_trips", c.name, c.name + ".lrcat") : join(lightroom.catalog_root, year, c.name, c.name + ".lrcat");
   }
 
+  var deliveryStates = {};
+  var folded = [];
+  var deliverySetup = { deliver_to: "\\\\NAS\\Picture\\MyPhoto", url: "", has_key: false, library_id: "", libraries: [] };
+  var demoLibrary = { id: "demo-library", name: "MyPhoto", assetCount: 7214, importPaths: ["/photos/MyPhoto"] };
+  var demoPhotos = ["01226", "01228", "01249", "01257", "01263", "01360", "01388"];
+  // A small coloured tile stands in for each photo's embedded thumbnail.
+  function demoThumb(i) {
+    var hue = [210, 28, 250, 190, 330, 45, 160][i % 7];
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="160"><rect width="120" height="160" fill="hsl(' + hue + ',45%,42%)"/>' +
+      '<circle cx="60" cy="62" r="24" fill="hsl(' + hue + ',50%,78%)"/><rect x="26" y="96" width="68" height="44" rx="20" fill="hsl(' + hue + ',50%,78%)"/></svg>';
+    return "data:image/svg+xml," + encodeURIComponent(svg);
+  }
+  function deliveryFolders(id, index) {
+    var record = importById(id), catalog = record && catalogOf(record.shoots[index]);
+    if (!record) return null;
+    return { record: record, folders: catalog && catalog.trip ? catalog.members : [record.shoots[index]] };
+  }
+  function demoPlan(record, folder) {
+    var done = !!deliveryStates[folder];
+    return {
+      shoot: join(record.nas_root, folder), target: join(deliverySetup.deliver_to, baseName(folder)), target_exists: done, plan_only: true,
+      "new": done ? 0 : demoPhotos.length, existing: done ? demoPhotos.length : 0, delivered: 0,
+      photos: demoPhotos.map(function (n, i) {
+        return { name: "EM_" + n + ".jpg", source: "final\\EM_" + n + "_(2).jpg", kind: "pixcake", stars: 5 - (i % 3), stars_from: "catalog",
+          action: done ? "exists" : "new", thumbnail: done ? undefined : demoThumb(i) };
+      }),
+      skipped: ["01226", "01249", "01257", "01263", "01360", "01388"].map(function (n) { return { source: "topix\\EM_" + n + ".jpg", reason: "replaced by PixCake" }; }),
+      warnings: [], errors: []
+    };
+  }
+  function planDemo(id, index) {
+    var job = deliveryFolders(id, index);
+    if (!job) return Promise.reject("That import isn't in the history any more.");
+    if (!deliverySetup.deliver_to) return Promise.reject("Set the finished photos folder (e.g. \\\\NAS\\Picture\\MyPhoto) under Deliver first.");
+    return wait(600).then(function () {
+      return { shoots: job.folders.map(function (f) { return demoPlan(job.record, f); }), errors: [] };
+    });
+  }
+  function deliverDemo(id, index, confirmed) {
+    var job = deliveryFolders(id, index);
+    if (!job || running) return Promise.reject("Wait for the import to finish before delivering.");
+    return wait(1500).then(function () {
+      var shoots = job.folders.filter(function (folder) {
+        return confirmed.some(function (c) { return c.shoot === join(job.record.nas_root, folder); });
+      }).map(function (folder) {
+        var r = demoPlan(job.record, folder);
+        r.plan_only = false;
+        r.photos.forEach(function (p) { if (p.action === "new") { p.action = "delivered"; r.delivered++; } delete p.thumbnail; });
+        deliveryStates[folder] = { count: demoPhotos.length, last_delivered: new Date().toISOString() };
+        return r;
+      });
+      return { shoots: shoots, rescanning: !!deliverySetup.library_id, warnings: [], errors: [] };
+    });
+  }
+  function demoDeliveryStates() {
+    return catalogStates().map(function (c) {
+      var record = importById(c.import_id), catalog = catalogOf(record.shoots[c.shoots[0]]);
+      var folders = catalog && catalog.trip ? catalog.members : [record.shoots[c.shoots[0]]];
+      var count = 0, last = null;
+      folders.forEach(function (f) { var s = deliveryStates[f]; if (s) { count += s.count; if (!last || s.last_delivered > last) last = s.last_delivered; } });
+      return { import_id: c.import_id, shoot: c.shoots[0], count: count, last_delivered: last };
+    });
+  }
+
   function openInLightroom(importId, shoot, trip) {
     var record = importById(importId);
     if (!record) return Promise.reject("That import isn't in the history any more.");
@@ -577,7 +641,7 @@
       case "get_ledger":
         return Promise.resolve(copy(ledger));
       case "get_settings":
-        return Promise.resolve({ nas_root: nas.root, lightroom: copy(lightroom) });
+        return Promise.resolve({ nas_root: nas.root, lightroom: copy(lightroom), deliver_to: deliverySetup.deliver_to, folded: folded.slice() });
       case "nas_status":
         return Promise.resolve(copy(nas));
       case "check_nas":
@@ -611,6 +675,17 @@
         return finishCatalog(args.importId, args.shoot);
       case "lightroom_catalogs":
         return Promise.resolve(copy(catalogStates()));
+      case "plan_delivery": return planDemo(args.importId, args.shoot);
+      case "deliver": return deliverDemo(args.importId, args.shoot, args.confirmed);
+      case "delivery_states": return Promise.resolve(copy(demoDeliveryStates()));
+      case "get_delivery_settings": return Promise.resolve(copy(deliverySetup));
+      case "save_delivery_settings":
+        var on = !!args.settings.url;
+        deliverySetup = { deliver_to: args.settings.deliver_to, url: args.settings.url, has_key: on, library_id: on ? args.settings.library_id || "demo-library" : "", libraries: on ? [copy(demoLibrary)] : [] };
+        return wait(300, copy(deliverySetup));
+      case "save_folded":
+        folded = args.folded.slice();
+        return Promise.resolve(null);
       default:
         return Promise.reject("The demo doesn't have the command " + command + ".");
     }

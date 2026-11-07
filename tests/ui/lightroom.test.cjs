@@ -258,6 +258,20 @@ test('the menu command adds what arrived later and says when nothing is new', ()
   `);
 });
 
+test('Lightroom loads the plug-in at startup, so opening a catalog adds new photos', () => {
+  const L = lauxlib.luaL_newstate();
+  lualib.luaL_openlibs(L);
+  // Without LrForceInitPlugin, Lightroom runs Init.lua only once a plug-in feature is used.
+  const code = source('Info.lua').replace(/^return /m, 'info = ') + String.raw`
+    assert(info.LrForceInitPlugin == true, 'LrForceInitPlugin')
+    assert(info.LrInitPlugin == 'Init.lua')
+  `;
+  const status = lauxlib.luaL_dostring(L, to_luastring(code));
+  const error = status === lua.LUA_OK ? null : lua.lua_tojsstring(L, -1);
+  lua.lua_close(L);
+  assert.equal(error, null);
+});
+
 test('Plug-in Manager lists your develop and metadata presets', () => {
   const L = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(L);

@@ -713,8 +713,102 @@ fn launch_lightroom(exe: &Path, lrcat: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The completed import's shoot folders on the NAS.
-fn import_folders(state: &AppState, import_id: NaiveDateTime) -> Result<Vec<PathBuf>, String> {
+/// Where an import's shoot folder is on the NAS now.
+#[derive(Debug, PartialEq)]
+pub(super) enum Located {
+    Found(PathBuf),
+    /// The photo share itself can't be reached.
+    Offline(String),
+    /// The share is there but the folder isn't, and it can't be found again.
+    Missing(String),
+}
+
+impl Located {
+    pub(super) fn into_result(self) -> Result<PathBuf, String> {
+        match self {
+            Located::Found(folder) => Ok(folder),
+            Located::Offline(e) | Located::Missing(e) => Err(e),
+        }
+    }
+}
+
+/// Finds a shoot folder from import history. A folder renamed on the NAS (or one an
+/// older version recorded but never created, because its files were already in another
+/// folder for the date) is found again when it's the only folder for that date.
+pub(super) fn locate(nas_root: &Path, relative: &Path) -> Located {
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Located::Missing("Invalid shoot path in import history.".into());
+    }
+    let usable = |p: &Path| p.to_str().is_some_and(|s| !s.contains(['\r', '\n']));
+    let folder = nas_root.join(relative);
+    if folder.is_dir() {
+        return if usable(&folder) {
+            Located::Found(folder)
+        } else {
+            Located::Missing(format!("{} can't be used in a catalog.", folder.display()))
+        };
+    }
+    if !nas_root.is_dir() {
+        return Located::Offline(format!(
+            "Reconnect the photo share: {} is unavailable.",
+            nas_root.display()
+        ));
+    }
+    let gone = format!(
+        "{} isn't on the NAS any more. It may have been renamed or deleted.",
+        relative.display()
+    );
+    let name = folder
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let Some(day) = name
+        .get(..10)
+        .filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok())
+    else {
+        return Located::Missing(gone);
+    };
+    let Some(parent) = folder.parent() else {
+        return Located::Missing(gone);
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Located::Missing(gone);
+    };
+    let mut same_day: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n == day
+                || n.strip_prefix(day)
+                    .is_some_and(|rest| rest.starts_with('_'))
+        })
+        .map(|e| e.path())
+        .collect();
+    same_day.sort();
+    match &same_day[..] {
+        [only] if usable(only) => Located::Found(only.clone()),
+        [] | [_] => Located::Missing(gone),
+        several => Located::Missing(format!(
+            "{} isn't on the NAS any more, and {} has several folders for {day} ({}), so Card Intake can't tell which one it is now.",
+            relative.display(),
+            parent.display(),
+            several
+                .iter()
+                .filter_map(|p| p.file_name())
+                .map(|n| n.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Each shoot folder of a completed import, in history order.
+fn record_folders(state: &AppState, import_id: NaiveDateTime) -> Result<Vec<Located>, String> {
     let record = state
         .ledger
         .lock()
@@ -724,27 +818,35 @@ fn import_folders(state: &AppState, import_id: NaiveDateTime) -> Result<Vec<Path
         .find(|r| r.started_at == import_id && r.status == ImportStatus::Complete)
         .cloned()
         .ok_or("Choose a completed import from the history.")?;
-    let mut folders = Vec::new();
-    for relative in &record.shoots {
-        if relative
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-        {
-            return Err("Invalid shoot path in import history.".into());
-        }
-        let folder = record.nas_root.join(relative);
-        if !folder.is_dir() || folder.to_str().is_none_or(|s| s.contains(['\r', '\n'])) {
-            return Err(format!(
-                "Reconnect the photo share: {} is unavailable.",
-                folder.display()
-            ));
-        }
-        folders.push(folder);
-    }
-    if folders.is_empty() {
+    if record.shoots.is_empty() {
         return Err("This import has no shoot folders.".into());
     }
-    Ok(folders)
+    Ok(record
+        .shoots
+        .iter()
+        .map(|relative| locate(&record.nas_root, relative))
+        .collect())
+}
+
+/// One shoot folder of a completed import. Other shoots of the import don't matter.
+pub(super) fn import_folder(
+    state: &AppState,
+    import_id: NaiveDateTime,
+    shoot: usize,
+) -> Result<PathBuf, String> {
+    record_folders(state, import_id)?
+        .into_iter()
+        .nth(shoot)
+        .ok_or("Shoot not found")?
+        .into_result()
+}
+
+/// All of a completed import's shoot folders, for a new trip holding them all.
+fn import_folders(state: &AppState, import_id: NaiveDateTime) -> Result<Vec<PathBuf>, String> {
+    record_folders(state, import_id)?
+        .into_iter()
+        .map(Located::into_result)
+        .collect()
 }
 
 fn catalog_root(settings: &LightroomSettings) -> Result<PathBuf, String> {
@@ -770,7 +872,11 @@ pub async fn open_in_lightroom(
         if state.imports.is_active() {
             return Err("Wait for the import to finish before opening Lightroom.".into());
         }
-        let folders = import_folders(&state, import_id)?;
+        // A trip needs every shoot of the import; one shoot needs only its own folder.
+        let folders = match trip {
+            Some(_) => import_folders(&state, import_id)?,
+            None => vec![import_folder(&state, import_id, shoot.unwrap_or(0))?],
+        };
         let setup = setup(&state)?;
         let settings = setup.settings;
         let exe = settings
@@ -782,9 +888,8 @@ pub async fn open_in_lightroom(
         let launch = match trip {
             Some(name) => prepare_trip(&settings, &root, &folders, &name)?,
             None => {
-                let folder = folders.get(shoot.unwrap_or(0)).ok_or("Shoot not found")?;
-                let catalog = Catalog::for_shoot(&root, folder)?;
-                prepare(&settings, &catalog, std::slice::from_ref(folder))?
+                let catalog = Catalog::for_shoot(&root, &folders[0])?;
+                prepare(&settings, &catalog, &folders)?
             }
         };
         launch_lightroom(&exe, &launch.catalog)?;
@@ -802,10 +907,9 @@ pub async fn finish_catalog(
 ) -> Result<Finished, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let folders = import_folders(&state, import_id)?;
+        let folder = import_folder(&state, import_id, shoot)?;
         let root = catalog_root(&resolved(&state)?)?;
-        let folder = folders.get(shoot).ok_or("Shoot not found")?;
-        finish(&Catalog::for_shoot(&root, folder)?)
+        finish(&Catalog::for_shoot(&root, &folder)?)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -819,8 +923,72 @@ pub struct CatalogState {
     shoots: Vec<usize>,
     name: String,
     trip: bool,
-    /// "open" in Lightroom, "local", "nas" (finished) or "none" (not created yet).
+    /// "open" in Lightroom, "local", "nas" (finished), "none" (not created yet) or
+    /// "missing" (the shoot folder is gone from the NAS).
     state: &'static str,
+    /// Why a "missing" shoot can't be opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+pub(super) struct DeliveryTarget {
+    pub folders: Vec<PathBuf>,
+    pub catalog: Option<PathBuf>,
+}
+
+/// Read-only resolution, shared by Deliver and the CLI plan. A trip's own handoff
+/// is authoritative, including shoots imported on other cards or computers.
+pub(super) fn delivery_target(root: &Path, folder: &Path) -> Result<DeliveryTarget, String> {
+    let c = Catalog::for_shoot(root, folder)?;
+    let catalog = if c.lrcat().is_file() {
+        Some(c.lrcat())
+    } else {
+        c.nas_lrcat().is_file().then(|| c.nas_lrcat())
+    };
+    let folders = if c.trip {
+        let local = c.handoff();
+        let list = if local.is_file() {
+            local
+        } else {
+            c.nas_dir.join(format!("{}.card-intake.txt", c.name))
+        };
+        let text = fs::read_to_string(&list).map_err(|e| {
+            format!(
+                "Couldn't read the trip's shoot list {}: {e}",
+                list.display()
+            )
+        })?;
+        let mut folders = Vec::new();
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.starts_with('#'))
+        {
+            let path = PathBuf::from(line);
+            if !path.is_absolute()
+                || path.parent() != folder.parent()
+                || path.components().any(|p| matches!(p, Component::ParentDir))
+            {
+                return Err(
+                    "The trip's shoot list contains a folder outside this year and share.".into(),
+                );
+            }
+            if !folders.contains(&path) {
+                folders.push(path);
+            }
+        }
+        if folders.is_empty() {
+            return Err("The trip's shoot list is empty.".into());
+        }
+        folders
+    } else {
+        vec![folder.to_path_buf()]
+    };
+    Ok(DeliveryTarget { folders, catalog })
+}
+
+pub(super) fn delivery_root(state: &AppState) -> Result<PathBuf, String> {
+    catalog_root(&resolved(state)?)
 }
 
 /// Where each completed import's catalogs are, for the history table. An import whose
@@ -843,14 +1011,31 @@ pub async fn lightroom_catalogs(app: AppHandle) -> Result<Vec<CatalogState>, Str
         {
             let mine: &mut Vec<CatalogState> = &mut Vec::new();
             for (i, relative) in record.shoots.iter().enumerate() {
-                let folder = record.nas_root.join(relative);
+                let folder = match locate(&record.nas_root, relative) {
+                    Located::Found(folder) => folder,
+                    // Offline: show what this computer knows about the catalog.
+                    Located::Offline(_) => record.nas_root.join(relative),
+                    Located::Missing(note) => {
+                        mine.push(CatalogState {
+                            import_id: record.started_at,
+                            shoots: vec![i],
+                            name: relative
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                            trip: false,
+                            state: "missing",
+                            note: Some(note),
+                        });
+                        continue;
+                    }
+                };
                 let Ok(catalog) = Catalog::for_shoot(&root, &folder) else {
                     continue;
                 };
-                match mine
-                    .iter_mut()
-                    .find(|c| c.name == catalog.name && c.trip == catalog.trip)
-                {
+                match mine.iter_mut().find(|c| {
+                    c.state != "missing" && c.name == catalog.name && c.trip == catalog.trip
+                }) {
                     Some(same) => same.shoots.push(i),
                     None => mine.push(CatalogState {
                         import_id: record.started_at,
@@ -858,6 +1043,7 @@ pub async fn lightroom_catalogs(app: AppHandle) -> Result<Vec<CatalogState>, Str
                         state: catalog.state(),
                         name: catalog.name,
                         trip: catalog.trip,
+                        note: None,
                     }),
                 }
             }
@@ -916,6 +1102,65 @@ mod tests {
     }
 
     #[test]
+    fn history_finds_a_shoot_folder_that_was_renamed_or_never_created() {
+        let f = fixture();
+        let video = f.shoot("2026-11-03_video-test");
+        let tokyo = f.shoot("2026-11-06_夜景");
+        let rel = |s: &str| PathBuf::from("2026").join(s);
+
+        // Still there: used as is.
+        assert_eq!(
+            locate(&f.share, &rel("2026-11-06_夜景")),
+            Located::Found(tokyo.clone())
+        );
+        // Recorded as 2026-11-03, but its files were already in 2026-11-03_video-test.
+        assert_eq!(
+            locate(&f.share, &rel("2026-11-03")),
+            Located::Found(video.clone())
+        );
+        // A titled folder renamed on the NAS.
+        assert_eq!(
+            locate(&f.share, &rel("2026-11-06_Night")),
+            Located::Found(tokyo)
+        );
+        // Another day's folder never counts.
+        assert!(matches!(
+            locate(&f.share, &rel("2026-11-04")),
+            Located::Missing(m) if m.contains("isn't on the NAS any more")
+        ));
+        // 2026-11-030 isn't the same day.
+        f.shoot("2026-11-030");
+        assert!(matches!(
+            locate(&f.share, &rel("2026-11-04_x")),
+            Located::Missing(_)
+        ));
+        // Two folders for the day: no guessing.
+        f.shoot("2026-11-03_Kyoto");
+        assert!(matches!(
+            locate(&f.share, &rel("2026-11-03")),
+            Located::Missing(m) if m.contains("2026-11-03_Kyoto, 2026-11-03_video-test")
+        ));
+        // Undated names aren't matched by day.
+        assert!(matches!(
+            locate(&f.share, &rel("Holiday")),
+            Located::Missing(_)
+        ));
+        assert!(matches!(
+            locate(&f.share, Path::new("../2026/2026-11-03_video-test")),
+            Located::Missing(m) if m.starts_with("Invalid")
+        ));
+        // The share itself is gone: say so, and don't call the folder missing.
+        assert!(matches!(
+            locate(&f.share.join("offline"), &rel("2026-11-03_video-test")),
+            Located::Offline(m) if m.starts_with("Reconnect the photo share")
+        ));
+        assert_eq!(
+            locate(&f.share, &rel("2026-11-03_video-test")).into_result(),
+            Ok(video)
+        );
+    }
+
+    #[test]
     fn a_shoot_gets_its_own_catalog_from_the_template_and_keeps_its_edits() {
         let f = fixture();
         let folder = f.shoot("2026-11-07_東京");
@@ -935,6 +1180,41 @@ mod tests {
         assert_eq!(fs::read(&again.catalog).unwrap(), b"user edits");
         assert_eq!(catalog.state(), "open");
         assert_eq!(listed(&catalog).len(), 1);
+    }
+
+    #[test]
+    fn deliver_resolves_open_and_finished_catalogs_and_the_whole_trip_list() {
+        let f = fixture();
+        let a = f.shoot("2026-11-03_A");
+        let b = f.shoot("2026-11-05_B");
+        let c = f.shoot("2026-11-07_C");
+        assert!(delivery_target(&f.root, &a).unwrap().catalog.is_none());
+        prepare_trip(
+            &f.settings,
+            &f.root,
+            &[a.clone(), b.clone(), c.clone()],
+            "Japan",
+        )
+        .unwrap();
+        let catalog = Catalog::for_shoot(&f.root, &a).unwrap();
+        fs::write(catalog.lrcat().with_extension("lrcat.lock"), b"open").unwrap();
+        let target = delivery_target(&f.root, &b).unwrap();
+        assert_eq!(target.folders, [a.clone(), b.clone(), c.clone()]);
+        assert_eq!(target.catalog, Some(catalog.lrcat()));
+        // Deliver can resolve the NAS copy and NAS handoff without reopening it.
+        fs::create_dir_all(&catalog.nas_dir).unwrap();
+        fs::copy(catalog.lrcat(), catalog.nas_lrcat()).unwrap();
+        fs::copy(
+            catalog.handoff(),
+            catalog
+                .nas_dir
+                .join(format!("{}.card-intake.txt", catalog.name)),
+        )
+        .unwrap();
+        fs::remove_dir_all(&catalog.dir).unwrap();
+        let target = delivery_target(&f.root, &b).unwrap();
+        assert_eq!(target.folders, [a, b, c]);
+        assert_eq!(target.catalog, Some(catalog.nas_lrcat()));
     }
 
     #[test]

@@ -4,7 +4,7 @@ Import camera cards straight to a NAS, one folder per shoot, and open each shoot
 
 Built for this workflow: Sony ARW → NAS over 10 GbE → Lightroom Classic (+ DxO PureRAW, Pixel Cake) → finished JPEGs in Immich.
 
-> Status: the desktop app imports real cards to a network share, groups shoots by capture date, and verifies copies with xxHash64. It copies four files at once, includes photo XMP and Sony clip XML sidecars, and shows progress with speed, time left, and files already on the NAS. Stopped imports can resume after an app restart. Windows supports a safe ejection attempt after verification. Each shoot (or trip) gets its own Lightroom catalog, which a plug-in Card Intake installs fills from the NAS, and **Finish** stores it on the NAS. Card scanning, camera metadata, shared shutter history, CFexpress health and serial numbers, and NAS checks use real data. The NAS service remains a draft. Real NAS transfers, physical ejection, and the Lightroom plug-in still need end-to-end validation with configured hardware and Lightroom.
+> Status: the desktop app imports real cards to a network share, groups shoots by capture date, and verifies copies with xxHash64. It copies four files at once, includes photo XMP and Sony clip XML sidecars, and shows progress with speed, time left, and files already on the NAS. Stopped imports can resume after an app restart. Windows supports a safe ejection attempt after verification. Each shoot (or trip) gets its own Lightroom catalog, which a plug-in Card Intake installs fills from the NAS, and **Finish** stores it on the NAS. **Deliver** shows the finished JPEGs that are new, and once you confirm, copies them with current Lightroom stars into a folder of finished photos (such as `MyPhoto\2026-11-06_夜景`) and can ask Immich to rescan. Card scanning, camera metadata, shared shutter history, CFexpress health and serial numbers, and NAS checks use real data. The NAS service remains a draft. Real NAS transfers, physical ejection, and the Lightroom plug-in still need end-to-end validation with configured hardware and Lightroom.
 
 ## Card health and identity
 
@@ -173,7 +173,8 @@ The example refuses destinations outside the system temporary directory and veri
 - **Import a card** to `\\NAS\photos\2026\2026-11-02_Yosemite\`, grouped by capture date, with optional xxHash64 read-back verification (enabled by default).
 - **Track cards and cameras**: camera serial number and shutter count history from EXIF, shared through the NAS; CFexpress health (data written, life used, power cycles) and serial number from the card itself; for SD cards, this app's own counts.
 - **Open in Lightroom**: one catalog per shoot, or a trip catalog for several shoots, made from a closed template on this computer. The Card Intake plug-in adds new raw photos and DxO DNGs in place from the NAS whenever the catalog opens, with your presets, and builds Smart Previews. **Finish** stores a closed catalog on the NAS; opening the shoot again brings it back.
-- **Planned — NAS service**: sort files from Pixel Cake into the right `_final` folder, ask Immich to rescan, and clean up `_work` when a shoot is finished.
+- **Deliver**: export JPEGs from Lightroom Classic into any folder inside the shoot; retouch portraits in PixCake (Pixel Cake) if needed. Press **Deliver** in Recent imports: it shows thumbnails of the finished JPEGs that are new, and after you confirm, copies them with their current Lightroom stars into the shoot's folder among your finished photos, e.g. `\\NAS\Picture\MyPhoto\2026-11-06_夜景`, then asks Immich to rescan. A trip's button covers every shoot in that trip's saved list, one folder per shoot. Deliver works before a catalog is created, while it is open, and after Finish; it is separate from Finish.
+- **Recent imports** shows imports whose only catalog is the same shoot or trip (a second card into the same shoot, say) as one row with their totals.
 
 ## Folder layout on the NAS
 
@@ -184,17 +185,30 @@ The example refuses destinations outside the system temporary directory and veri
       DSC03518.ARW, .xmp          originals + Lightroom edits
       DSC03518_DxO.dng            DxO PureRAW output, next to its ARW
       video\                     original clips + Sony XML sidecars
-      _work\                      files handed to Pixel Cake (temporary)
-      _final\                     finished JPEGs (the only thing Immich shows)
+      topix\                     Lightroom JPEGs (choose any export folder names)
+      final\                     PixCake JPEGs (FINAL or any other name works too)
+      .card-intake-delivered.json the names Deliver gave each photo, and when
       _catalog\                   the shoot's Lightroom catalog once finished, or trip.txt naming its trip
     _trips\
       2026-11-03_Japan\           a finished trip catalog holding several shoots
-  _inbox\                         Pixel Cake exports here; the NAS service sorts it
+
+\\NAS\Picture\MyPhoto\              finished photos only: Immich's external library
+  2026-11-02_Yosemite\             one folder per shoot, filled by Deliver
 ```
 
-Immich external library exclusion patterns: `**/*.ARW`, `**/*.dng`, `**/*.DNG`, `**/_work/**`, `**/_inbox/**`, `**/_catalog/**`, `**/_trips/**`.
+Deliver looks through the whole shoot, including export folders named freely. It skips `_catalog`, `video`, hidden/system folders, `@eaDir`, `#recycle` and `.lrdata` folders. It recognises Lightroom and PixCake from each JPEG's metadata. PixCake replaces its Lightroom twin (DocumentID first, then the stem with PixCake's `_(N)` removed); the newest version wins. Camera JPEGs and unrecognised JPEGs are skipped, and the confirmation says why. Raws are never delivered. Names lose PixCake's `_(N)` and DxO's `-DxO_…` suffix, use `.jpg`, and get `-2`, `-3` only when two photos would share a name. The shoot's `.card-intake-delivered.json` keeps each photo's name across deliveries.
+
+Nothing in the finished photos folder is ever replaced or removed, whoever put it there. A name that's already there is skipped, so pressing Deliver again only offers what's new, and says so when nothing is. A photo you deleted from the finished photos folder is offered again under its old name. The confirmation lists exactly what will be copied; if the shoot changed meanwhile, Deliver asks you to check again instead of copying something else.
+
+Copies are made in a hidden `.card-intake-delivering` folder inside the shoot, read back with xxHash64 and given their stars. A new folder is then moved into the finished photos folder in one rename, so Immich never sees half of it; into a folder that's already there (such as one you filled by hand), each file is moved on its own. Moves never replace anything: if a file with the same name appears meanwhile, the copy is dropped. The shoot and the finished photos folder must be on the same share for these moves (as `\\NAS\Picture\Sony Transfer` and `\\NAS\Picture\MyPhoto` are); otherwise each file is copied beside its final name under a hidden name, checked and renamed. Current stars come from a temporary copy of the Lightroom catalog and its WAL; the original catalog is never opened. Without a usable catalog match, the raw's XMP sidecar comes next, then the DxO DNG's embedded rating, then the exported JPEG's own stars. Only the delivered copy is edited. Last delivery shows each photo's source, stars and rating source, skipped JPEGs, warnings and errors.
 
 Lightroom Classic can't open catalogs on a network drive, so catalogs stay on this computer while you edit: `<catalog folder>\2026\2026-11-06_Yosemite\2026-11-06_Yosemite.lrcat`, or `<catalog folder>\2026\_trips\2026-11-03_Japan\` for a trip. **Finish** (in Recent imports, once Lightroom has closed the catalog) copies the catalog, its Smart Previews, its AI mask data (`.lrcat-data`) and its list of shoot folders to `_catalog` (or `_trips`), reads every copied file back to check it, and then removes the local copy; Lightroom's standard previews are rebuilt when needed, and its backups stay on this computer. **Reopen** copies the catalog back.
+
+### Deliver and Immich
+
+Under **Deliver → Finished photos folder and Immich**, choose the finished photos folder (for example `\\NAS\Picture\MyPhoto`, the folder Immich's external library watches). Optionally enter the Immich URL and an **admin API key** with **`library.read` + `library.update`** permissions (Immich's library endpoints are admin-only), then choose the external library to rescan. A password field accepts a new key; empty keeps the saved key, which is never sent back to the page. Clearing the URL and saving disconnects Immich. The key is kept only in this computer's `settings.json`.
+
+After a delivery that copied something, the chosen library is asked to rescan once, including for a trip. A rescan failure is reported without failing the delivery. Card Intake never changes the library's settings. Without Immich, Deliver still copies the JPEGs.
 
 ## Repo layout
 
@@ -221,7 +235,7 @@ cargo run -p card_intake_desktop
 cargo build --release -p card_intake_desktop
 ```
 
-ExifTool is optional for copying, but needed for shutter counts and shooting-settings ratings. Install ExifTool for Windows with its companion support folder, then put `exiftool.exe` on `PATH` or set `$env:CARD_INTAKE_EXIFTOOL` to its full path. The shell fetch script below is for macOS/Linux.
+ExifTool is optional for importing copies, but needed for Deliver, shutter counts and shooting-settings ratings. Install ExifTool for Windows with its companion support folder, then put `exiftool.exe` on `PATH` or set `$env:CARD_INTAKE_EXIFTOOL` to its full path. The shell fetch script below is for macOS/Linux.
 
 ```sh
 scripts/fetch-exiftool.sh           # once: ExifTool, needed for shutter counts
@@ -237,6 +251,8 @@ cargo run -p card_intake_desktop -- --report /Volumes/Untitled     # what the ap
 cargo run -p card_intake_desktop -- --health /Volumes/Untitled     # the card's details and health log (Windows may ask for admin rights)
 cargo run -p card_intake_desktop -- --check-nas /Volumes/photos    # the NAS folder check
 cargo run -p card_intake_desktop -- --shutter /Volumes/photos/2026 # shutter counts of every photo in a folder
+cargo run -p card_intake_desktop -- --deliver-plan /Volumes/photos/2026/2026-11-06_夜景 /Volumes/Picture/MyPhoto [catalog.lrcat] # what Deliver would add, as JSON; reads nothing but settings, which supply the folder and catalog if omitted
+cargo run -p card_intake_core --example deliver_temp -- <temp-shoot> <temp-finished-photos> <exiftool> [catalog.lrcat] # a real delivery, restricted to system temp
 cargo run -p card_intake_core --example card_storage -- E:\         # Windows: the card's bus, reader, details, serial and NVMe health log (through a JMicron bridge only when run as admin)
 cargo run -p card_intake_core --example scan_card -- /Volumes/Untitled
 cargo run -p card_intake_core --example count_photos -- /Volumes/photos /Volumes/old-Nikon  # counts photos outside the share
@@ -266,7 +282,7 @@ In Container Manager, create a project from `docker/compose.yaml` and set the ph
 
 1. In the Lightroom Classic version you use, create an **empty catalog**, set its catalog settings the way you want every shoot's (for example **Automatically write changes into XMP**), and close it. Card Intake refuses a template Lightroom still has open.
 2. In Card Intake, under **Lightroom**, open **Catalog template, folders and Lightroom**, enter the template path, and save. Lightroom Classic is found in its usual install folder. Catalogs default to `Pictures\Lightroom\Card Intake`; any local folder works. To have your develop presets and profiles in every catalog, enter their folder under **Presets and profiles to install**: Card Intake copies every `.xmp` in it to Lightroom's own preset folder (`%APPDATA%\Adobe\CameraRaw\Settings\Card Intake`), and updates changed ones.
-3. Card Intake installs its plug-in in Lightroom's Modules folder (`%APPDATA%\Adobe\Lightroom\Modules\CardIntake.lrplugin`), which Lightroom loads by itself: restart Lightroom once. In **File → Plug-in Manager → Card Intake**, choose the develop preset for raw photos, the one for DxO DNGs, and the metadata preset. A copy older builds asked you to add by hand is removed.
+3. Card Intake installs its plug-in in Lightroom's Modules folder (`%APPDATA%\Adobe\Lightroom\Modules\CardIntake.lrplugin`), which Lightroom loads by itself: restart Lightroom once. The plug-in asks Lightroom to start it at launch (`LrForceInitPlugin`); otherwise Lightroom would wait until a plug-in feature is used, such as Plug-in Manager, before adding new photos. In **File → Plug-in Manager → Card Intake**, choose the develop preset for raw photos, the one for DxO DNGs, and the metadata preset. A copy older builds asked you to add by hand is removed.
 4. After an import, use **Open in Lightroom** beside a shoot, or name a trip and use **Open as a trip** for all of the import's shoots (`2026-11-03_Japan`, after the first day). Only shoots without a catalog can join a trip; once in one, opening any of its shoots opens the trip. During an import you can press **Open in Lightroom when done** (and pick the first shoot or a trip), and Lightroom opens as soon as the import is verified. Recent imports shows each catalog: **On this PC** with **Open** and **Finish**, **Open in Lightroom**, or **Finished · on NAS** with **Reopen**.
 
 When a catalog Card Intake made opens, the plug-in reads `<catalog>.card-intake.txt` next to it, which lists its shoot folders, and adds every raw photo and DxO PureRAW DNG in them that isn't in the catalog yet, in place, with the chosen presets; JPEG, HEIF and video stay out. It then builds Smart Previews for them. A DNG named after its raw (`DSC03518_DxO.dng`, `DSC03518_DxO_DeepPRIMEXD2s.dng`) is stacked on top of the raw and takes its rating, flag and colour label. The plug-in makes no collections or keywords. Lightroom restarts when it switches catalogs, so this runs for every catalog you open; for one already open, when a second card or DxO's DNGs arrive, use **Library → Plug-in Extras → Add new files from NAS**. Nothing runs in the background. A share that isn't connected, or a file Lightroom refuses, is reported in a Lightroom dialog.

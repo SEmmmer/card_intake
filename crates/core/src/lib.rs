@@ -2,6 +2,7 @@
 
 pub mod cameras;
 pub mod card_details;
+pub mod deliver;
 pub mod destinations;
 pub mod eject;
 pub mod exif;

@@ -137,7 +137,13 @@ pub async fn start_import(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ImportResult, String> {
-    let active = state.imports.begin()?;
+    let active = {
+        let _gate = state.activity_gate.lock().map_err(|e| e.to_string())?;
+        if state.delivering.load(Ordering::SeqCst) {
+            return Err("Wait for the delivery to finish before importing.".into());
+        }
+        state.imports.begin()?
+    };
     let job = core_request(request, &state)?;
     job.save(&state.pending_path)?;
     run_import(job, active, on_progress, app).await

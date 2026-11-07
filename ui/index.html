@@ -378,6 +378,30 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .lr-setup summary { cursor: pointer; font-weight: 600; }
 .lr-setup label { margin-top: 12px; }
 .lr-setup input { width: 100%; box-sizing: border-box; }
+.lr-setup select { width: 100%; box-sizing: border-box; padding: 8px; font: inherit; }
+.delivery-report { padding: 14px 18px; margin-top: 12px; overflow-wrap: anywhere; }
+.delivery-report ul { padding-left: 20px; }
+.item-head .fold { flex: none; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 12px; line-height: 1; cursor: pointer; }
+.item-head .fold:hover { color: var(--ink); border-color: var(--muted); }
+.item-head .fold + .item-name { margin-right: auto; }
+.item.folded { padding-top: 10px; padding-bottom: 10px; }
+.item.folded .item-name { font-size: 17px; }
+.overlay { position: fixed; inset: 0; background: rgba(10, 14, 20, 0.55); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 30; }
+.overlay[hidden] { display: none; }
+.dialog { background: var(--surface); color: var(--ink); border-radius: var(--radius); box-shadow: 0 20px 60px -20px var(--shadow); width: min(920px, 100%); max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.dialog h2 { font-family: var(--font-display); font-size: 24px; margin: 0; padding: 18px 22px 4px; }
+.dialog-body { overflow: auto; padding: 0 22px 12px; }
+.dialog-body .dest { margin: 12px 0 8px; overflow-wrap: anywhere; }
+.dialog-body .note { color: var(--muted); font-size: 13px; margin: 8px 0; }
+.dialog-body .warn { color: var(--warn); }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+.thumb { margin: 0; }
+.thumb img, .thumb .noimg { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--sunken); border-radius: 6px; }
+.thumb .noimg { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+.thumb figcaption { font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+.thumb figcaption small { display: block; color: var(--muted); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 22px 18px; border-top: 1px solid var(--line); }
+.chip.merged { margin-left: 6px; }
 .lr-setup code, #lr-status { overflow-wrap: anywhere; }
 </style>
 </head>
@@ -446,6 +470,20 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       <p class="nas-note" id="lr-status" role="status"></p>
     </details>
     </section>
+    <section aria-labelledby="deliver-h">
+      <div class="sec-head"><h2 class="sec-title" id="deliver-h">Deliver</h2><span class="muted" id="deliver-note">Set up once</span></div>
+      <details class="list nas-panel lr-setup" id="deliver-setup">
+        <summary>Finished photos folder and Immich</summary>
+        <p class="nas-note">Deliver copies each shoot’s finished JPEGs into its own folder here, such as <code>MyPhoto\2026-11-06_夜景</code>, after you’ve checked them. Files already there are never replaced or removed.</p>
+        <label for="deliver-to">Finished photos folder</label><input id="deliver-to" type="text" spellcheck="false" placeholder="\\NAS\Picture\MyPhoto">
+        <label for="immich-url">Immich URL (optional)</label><input id="immich-url" type="url" spellcheck="false" placeholder="http://nas:2283">
+        <label for="immich-key">API key</label><input id="immich-key" type="password" autocomplete="new-password" placeholder="Admin API key">
+        <label for="immich-library">External library to rescan</label><select id="immich-library"><option value="">Save to list libraries</option></select>
+        <p><button type="button" class="btn-small" id="deliver-save">Save</button></p>
+        <p class="nas-note">With Immich set up, Card Intake asks the library that watches the finished photos folder to rescan after each delivery. Use an admin API key with <code>library.read</code> and <code>library.update</code> permissions. Clear the URL and save to disconnect Immich.</p>
+        <p class="nas-note" id="deliver-status" role="status"></p>
+      </details>
+    </section>
   </aside>
 
   <section class="full" aria-labelledby="hist-h">
@@ -453,7 +491,16 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       <h2 class="sec-title" id="hist-h">Recent imports</h2>
     </div>
     <div id="history" class="history-empty"><b>No imports yet.</b> Completed, stopped and failed imports appear here.</div>
+    <details class="list delivery-report" id="delivery-report" hidden><summary>Last delivery</summary><div id="delivery-details"></div></details>
   </section>
+
+  <div class="overlay" id="deliver-dialog" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="deliver-title">
+      <h2 id="deliver-title">Deliver</h2>
+      <div class="dialog-body" id="deliver-body"></div>
+      <div class="dialog-actions"><button type="button" class="btn-quiet" id="deliver-cancel">Cancel</button><button type="button" class="btn-small" id="deliver-confirm">Deliver</button></div>
+    </div>
+  </div>
 
   <section class="full notes" aria-label="Where the numbers come from">
     <div>
@@ -506,6 +553,11 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     lastImportId: null,    // highlighted in the history
     lr: null,              // Lightroom setup
     catalogs: {},          // import start time -> where its catalog is
+    deliveries: {},        // import start time + shoot index -> delivery manifest summary
+    delivering: null,      // import start time + shoot index while Deliver checks, waits for you or copies
+    deliveryPlan: null,    // what the confirmation shows
+    delivery: null,        // Deliver settings
+    folded: {},            // folded cameras and cards, remembered in settings
 
     nasEdited: false,      // the user typed in the path box; don't overwrite it
     nasCheck: null,        // last check result
@@ -541,6 +593,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     return b >= 1e12 ? (b / 1e12).toFixed(2) + " TB" : (b / 1e9).toFixed(1) + " GB";
   }
   function parseLocal(iso) {
+    if (/[zZ]$|[+-]\d\d:\d\d$/.test(iso || "")) { var zoned = new Date(iso); return isNaN(zoned.getTime()) ? null : zoned; }
     // "2026-11-06T17:21:04" (no zone) is the camera's local time.
     var m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2}))?/.exec(iso || "");
     if (!m) return null;
@@ -1351,7 +1404,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       $("#estimate").textContent = "Tick at least one shoot to import it.";
       return;
     }
-    btn.disabled = !state.nas || !state.nas.connected || state.nas.network !== true || state.healthBusy || state.nasBusy || state.nasEdited;
+    btn.disabled = !state.nas || !state.nas.connected || state.nas.network !== true || state.healthBusy || state.nasBusy || state.nasEdited || !!state.delivering;
     var what = [];
     if (t.photos) what.push(plural(t.photos, "photo", "photos"));
     if (t.videos) what.push(plural(t.videos, "clip", "clips"));
@@ -1365,6 +1418,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     $("#estimate").textContent = state.nasEdited ? "Save the NAS path before importing."
       : state.nasBusy ? "Waiting for the NAS check to finish…"
       : state.healthBusy ? "Waiting for the card health reading…"
+      : state.delivering ? "Waiting for the delivery to finish…"
       : btn.disabled ? "Connect and save a network photo share before importing."
       : estimate || "Matching XMP and clip XML sidecars are included.";
   }
@@ -1469,7 +1523,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   }
 
   function startImport() {
-    if ($("#start").disabled || (state.run && state.run.active)) return;
+    if ($("#start").disabled || state.delivering || (state.run && state.run.active)) return;
     // Resuming after a stop repeats the same request; files already copied are checked and skipped.
     var request = state.run && state.run.request ? state.run.request : importRequest();
     var run = state.run = { active: true, request: request, progress: null, result: null, error: null, stopping: false, phase: null, arm: null };
@@ -1483,6 +1537,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     };
     renderDesk();
     setNasBusy(false);
+    renderHistory();
     invoke("start_import", { request: request, onProgress: channel }).then(function (result) { run.result = result; })
       .catch(function (e) { run.error = String(e); })
       .finally(function () {
@@ -1494,6 +1549,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
           else toast("Lightroom wasn't opened: the import didn't finish.");
         }
         setNasBusy(false);
+        renderHistory();
         refreshLedger().then(refreshCatalogs).catch(function (e) { toast("Couldn't refresh import history: " + e); });
         refreshNas().catch(function (e) { console.error(e); });
         invoke("get_pending_import").then(function (p) { state.pending = p; }).catch(function () {});
@@ -1688,13 +1744,67 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         return '<button type="button" class="btn-quiet' + (kind ? " " + kind : "") + '" data-' + attr + '="' + key + '"' + (title ? ' title="' + esc(title) + '"' : "") + '>' + label + '</button>';
       };
       var name = cats.length > 1 || c.trip ? '<span class="cat-name">' + esc(c.trip ? "Trip " + c.name : c.name) + '</span>' : "";
+      // The shoot folder is gone from the NAS: nothing to open or deliver.
+      if (c.state === "missing") return '<span class="cat-cell">' + name + '<span class="chip warn" title="' + esc(c.note || "") + '">Folder missing</span></span>';
       var body = c.state === "open" ? '<span class="chip live">Open in Lightroom</span>'
         : c.state === "local" ? '<span class="chip live">On this PC</span>' + button("hopen", "Open") +
           button("hfinish", "Finish", "Copy the catalog and its Smart Previews to the NAS, then remove it from this computer", "go")
         : c.state === "nas" ? '<span class="chip">Finished · on NAS</span>' + button("hopen", "Reopen")
         : '<span class="chip">Not created</span>' + button("hopen", "Open");
+      var delivery = state.deliveries[r.started_at + ":" + c.shoots[0]];
+      var running = state.delivering === r.started_at + ":" + c.shoots[0];
+      body += '<button type="button" class="btn-quiet go" data-deliver="' + key + '"' +
+        (state.delivering || (state.run && state.run.active) ? ' disabled' : '') +
+        ' title="Shows the finished JPEGs that are new, then copies them to the finished photos folder with current Lightroom stars">' + (running ? "Delivering…" : "Deliver") + '</button>';
+      if (delivery && delivery.last_delivered) body += '<span class="chip ok">Delivered ' + fmt(delivery.count) + ' · ' + esc(whenLabel(delivery.last_delivered)) + '</span>';
+      if (delivery && delivery.error) body += '<span class="chip warn" title="' + esc(delivery.error) + '">Delivery unavailable</span>';
       return '<span class="cat-cell">' + name + body + '</span>';
     }).join("") + '</div>';
+  }
+
+  // Imports whose only catalog is the same shoot or trip share one row, e.g. a second
+  // card into the same shoot. An import spanning several catalogs keeps its own row.
+  function historyRows(records) {
+    var rows = [], byCatalog = {};
+    records.forEach(function (r, i) {
+      var cats = r.status === "complete" ? state.catalogs[r.started_at] || [] : [];
+      var key = cats.length === 1 && cats[0].state !== "missing" ? (cats[0].trip ? "trip:" : "shoot:") + cats[0].name : null;
+      if (key && byCatalog[key]) { byCatalog[key].push({ r: r, i: i }); return; }
+      var members = [{ r: r, i: i }];
+      if (key) byCatalog[key] = members;
+      rows.push(members);
+    });
+    return rows;
+  }
+
+  function uniq(list) { return list.filter(function (x, i) { return x && list.indexOf(x) === i; }); }
+
+  // One row: the newest import's date and catalog buttons, with the imports' totals.
+  function historyRow(members) {
+    var r = members[0].r, i = members[0].i, all = members.map(function (m) { return m.r; });
+    var sum = function (f) { return all.reduce(function (n, x) { return n + (f(x) || 0); }, 0); };
+    var shoots = uniq([].concat.apply([], all.map(function (x) { return x.shoots.map(baseName); })));
+    var folder = shoots.length
+      ? '<code>' + esc(shoots[0]) + '</code>' + (shoots.length > 1 ? ' <span class="muted">+' + (shoots.length - 1) + ' more</span>' : "")
+      : '<span class="muted">—</span>';
+    var photosN = sum(function (x) { return x.photos; }), videosN = sum(function (x) { return x.videos; });
+    var photos = photosN || videosN ? fmt(photosN) + (videosN ? ' <span class="muted">+ ' + fmt(videosN) + ' clips</span>' : "") : fmt(sum(function (x) { return x.total_files; }));
+    // Overall speed: the bytes copied over the time spent copying them.
+    var timed = all.filter(function (x) { return x.average_bytes_per_sec && x.completed_bytes; });
+    var seconds = timed.reduce(function (n, x) { return n + x.completed_bytes / x.average_bytes_per_sec; }, 0);
+    var speed = all.length === 1 ? r.average_bytes_per_sec
+      : seconds ? timed.reduce(function (n, x) { return n + x.completed_bytes; }, 0) / seconds : 0;
+    var problem = all.filter(function (x) { return x.status !== "complete" || x.total_files - x.verified_files; })[0];
+    var merged = all.length > 1
+      ? ' <span class="chip merged" title="' + esc(all.map(function (x) { return whenLabel(x.finished_at) + " · " + importCard(x) + " · " + plural(x.photos || x.total_files, "photo", "photos"); }).join("\n")) + '">' + all.length + ' imports</span>'
+      : "";
+    var fresh = all.some(function (x) { return x.started_at === state.lastImportId; });
+    return '<tr' + (fresh ? ' class="fresh"' : "") + '>' +
+      '<td class="when-cell">' + esc(whenLabel(r.finished_at)) + merged + '</td><td>' + esc(uniq(all.map(importCard)).join(", ")) + '</td>' +
+      '<td class="cam-cell">' + esc(uniq(all.map(function (x) { return x.camera; })).join(", ") || "—") + '</td>' +
+      '<td class="r">' + photos + '</td><td class="r">' + esc(gbOf(sum(function (x) { return x.total_bytes; }))) + '</td>' +
+      '<td class="r">' + (speed ? fmt(speed / 1e6) + " MB/s" : "—") + '</td>' +
+      '<td>' + checkChip(problem || r) + '</td><td class="folder-cell">' + folder + '</td><td>' + catalogCell(r, i) + '</td></tr>';
   }
 
   function renderHistory() {
@@ -1707,17 +1817,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     box.className = "table-wrap";
     box.innerHTML = '<table><thead><tr><th>Date</th><th>Card</th><th>Camera</th><th class="r">Photos</th><th class="r">Size</th><th class="r">Speed</th>' +
       '<th>Check</th><th>Folder</th><th>Lightroom catalog</th></tr></thead><tbody>' +
-      records.map(function (r, i) {
-        var folder = r.shoots.length
-          ? '<code>' + esc(baseName(r.shoots[0])) + '</code>' + (r.shoots.length > 1 ? ' <span class="muted">+' + (r.shoots.length - 1) + ' more</span>' : "")
-          : '<span class="muted">—</span>';
-        var photos = r.photos || r.videos ? fmt(r.photos) + (r.videos ? ' <span class="muted">+ ' + fmt(r.videos) + ' clips</span>' : "") : fmt(r.total_files);
-        return '<tr' + (r.started_at === state.lastImportId ? ' class="fresh"' : "") + '>' +
-          '<td class="when-cell">' + esc(whenLabel(r.finished_at)) + '</td><td>' + esc(importCard(r)) + '</td><td class="cam-cell">' + esc(r.camera || "—") + '</td>' +
-          '<td class="r">' + photos + '</td><td class="r">' + esc(gbOf(r.total_bytes)) + '</td>' +
-          '<td class="r">' + (r.average_bytes_per_sec ? fmt(r.average_bytes_per_sec / 1e6) + " MB/s" : "—") + '</td>' +
-          '<td>' + checkChip(r) + '</td><td class="folder-cell">' + folder + '</td><td>' + catalogCell(r, i) + '</td></tr>';
-      }).join("") + '</tbody></table>';
+      historyRows(records).map(historyRow).join("") + '</tbody></table>';
     box.querySelectorAll("[data-hopen]").forEach(function (b) {
       var k = b.dataset.hopen.split(":");
       b.addEventListener("click", function () { openLightroom(records[Number(k[0])], Number(k[1]), null, b); });
@@ -1726,6 +1826,174 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       var k = b.dataset.hfinish.split(":");
       b.addEventListener("click", function () { finishCatalog(records[Number(k[0])], Number(k[1]), b); });
     });
+    box.querySelectorAll("[data-deliver]").forEach(function (b) {
+      var k = b.dataset.deliver.split(":");
+      b.addEventListener("click", function () { deliverPhotos(records[Number(k[0])], Number(k[1])); });
+    });
+  }
+
+  function refreshDeliveries() {
+    return invoke("delivery_states").then(function (list) {
+      state.deliveries = {};
+      list.forEach(function (d) { state.deliveries[d.import_id + ":" + d.shoot] = d; });
+      renderHistory();
+    }).catch(function (e) { console.error(e); });
+  }
+
+  // Where a shoot's photos go, shortened to its last two folders: MyPhoto\2026-11-06_夜景.
+  function shortTarget(path) {
+    return String(path).split(/[\\/]+/).filter(Boolean).slice(-2).join("\\");
+  }
+
+  function deliveryCounts(shoots) {
+    var c = { photos: [], skipped: [], existing: 0, errors: 0, warnings: 0 };
+    shoots.forEach(function (s) {
+      c.photos = c.photos.concat(s.photos); c.skipped = c.skipped.concat(s.skipped);
+      c.existing += s.existing; c.errors += s.errors.length; c.warnings += s.warnings.length;
+    });
+    return c;
+  }
+
+  function starsLabel(p) { return p.stars ? "★★★★★".slice(0, p.stars) : "No stars"; }
+  function kindLabel(p) { return p.kind === "pixcake" ? "PixCake" : "Lightroom"; }
+
+  function skippedNotes(s) {
+    var count = function (reason) { return s.skipped.filter(function (p) { return p.reason === reason; }).length; };
+    var notes = [], n;
+    if (s.existing) notes.push(plural(s.existing, "photo is", "photos are") + " already there and will be left alone");
+    if ((n = count("replaced by PixCake"))) notes.push(plural(n, "Lightroom JPEG", "Lightroom JPEGs") + " replaced by PixCake");
+    if ((n = count("older version"))) notes.push(plural(n, "older version", "older versions"));
+    if ((n = count("camera JPEG"))) notes.push(plural(n, "camera JPEG", "camera JPEGs"));
+    if ((n = count("unrecognised"))) notes.push(plural(n, "JPEG", "JPEGs") + " from an app Card Intake doesn’t recognise");
+    return notes;
+  }
+
+  function deliverySummary(result) {
+    var shoots = result.shoots, c = deliveryCounts(shoots);
+    var done = c.photos.filter(function (p) { return p.action === "delivered"; });
+    var pixcake = done.filter(function (p) { return p.kind === "pixcake"; }).length, lr = done.length - pixcake;
+    var destination = shoots.length === 1 ? shortTarget(shoots[0].target) : shoots.length + " folders";
+    var text = done.length
+      ? "Delivered " + plural(done.length, "photo", "photos") + " to " + destination + ": " +
+        [pixcake ? pixcake + " from PixCake" : "", lr ? lr + " from Lightroom" : ""].filter(Boolean).join(", ") + "."
+      : "Nothing was delivered.";
+    var errors = (result.errors || []).length + c.errors, warnings = (result.warnings || []).length + c.warnings;
+    if (errors) text += " " + plural(errors, "problem", "problems") + "; see Last delivery.";
+    if (result.rescanning) text += " Immich is rescanning.";
+    if (warnings) text += " " + plural(warnings, "warning", "warnings") + "; see Last delivery.";
+    return text;
+  }
+
+  function showDelivery(result) {
+    var html = '<p>' + esc(deliverySummary(result)) + '</p>';
+    var action = { delivered: "delivered", exists: "already there, left alone", failed: "failed", "new": "not delivered" };
+    function messages(items) { return items.map(function (s) { return '<p class="warn">' + esc(s) + '</p>'; }).join(""); }
+    html += messages((result.errors || []).concat(result.warnings || []));
+    result.shoots.forEach(function (s) {
+      html += '<p><code>' + esc(s.target) + '</code> from <code>' + esc(s.shoot) + '</code></p>' + messages(s.errors.concat(s.warnings)) + '<ul>' +
+        s.photos.map(function (p) {
+          return '<li><code>' + esc(p.name) + '</code> ← ' + esc(p.source) + ' · ' + kindLabel(p) + ' · ' +
+            (p.stars == null ? 'stars as exported' : p.stars + ' stars') + ' (' + esc(p.stars_from === "none" ? "exported" : p.stars_from) + ') · ' + esc(action[p.action] || p.action) + '</li>';
+        }).join("") +
+        s.skipped.map(function (p) { return '<li>Skipped <code>' + esc(p.source) + '</code>: ' + esc(p.reason) + '</li>'; }).join("") + '</ul>';
+    });
+    $("#delivery-details").innerHTML = html; $("#delivery-report").hidden = false;
+  }
+
+  function nothingNew(plan) {
+    var c = deliveryCounts(plan.shoots);
+    var where = plan.shoots.length === 1 ? shortTarget(plan.shoots[0].target) : "their folders";
+    var text = c.existing
+      ? "Nothing new to deliver: " + (c.existing === 1 ? "the photo is" : "all " + c.existing + " photos are") + " already in " + where + ". Nothing was changed."
+      : plan.shoots.length
+        ? "No finished JPEGs to deliver" + (plan.shoots.length === 1 ? " in " + baseName(plan.shoots[0].shoot) : "") + ". Export them from Lightroom or PixCake into the shoot folder first."
+        : "";
+    return (text + " " + plan.errors.join(" ")).trim();
+  }
+
+  // Deliver, step 1: find what's new and show it. Nothing is copied until it's confirmed.
+  function deliverPhotos(record, shoot) {
+    if (state.delivering || (state.run && state.run.active)) return;
+    state.delivering = record.started_at + ":" + shoot; renderHistory(); updateSummary();
+    invoke("plan_delivery", { importId: record.started_at, shoot: shoot }).then(function (plan) {
+      var fresh = deliveryCounts(plan.shoots).photos.filter(function (p) { return p.action === "new"; });
+      if (!fresh.length) { toast(nothingNew(plan)); endDelivery(); return; }
+      state.deliveryPlan = { record: record, shoot: shoot, plan: plan };
+      showDeliverDialog(plan, fresh.length);
+    }).catch(function (e) {
+      if (/under Deliver/.test(String(e))) $("#deliver-setup").open = true;
+      toast(String(e)); endDelivery();
+    });
+  }
+
+  function showDeliverDialog(plan, count) {
+    $("#deliver-title").textContent = "Deliver " + plural(count, "photo", "photos") + "?";
+    var html = plan.errors.map(function (e) { return '<p class="note warn">' + esc(e) + '</p>'; }).join("");
+    plan.shoots.forEach(function (s) {
+      var mine = s.photos.filter(function (p) { return p.action === "new"; });
+      var notes = skippedNotes(s);
+      if (!mine.length) {
+        html += '<p class="note">' + esc(baseName(s.shoot) + ": nothing new" + (notes.length ? " (" + notes.join(", ") + ")" : "") + ".") + '</p>';
+        return;
+      }
+      html += '<p class="dest">To <code>' + esc(s.target) + '</code> · ' + (s.target_exists ? "adds to the folder that’s already there" : "a new folder") + '</p>' +
+        '<div class="thumbs">' + mine.map(function (p) {
+          return '<figure class="thumb">' + (p.thumbnail ? '<img src="' + esc(p.thumbnail) + '" alt="">' : '<div class="noimg">No preview</div>') +
+            '<figcaption>' + esc(p.name) + '<small>' + esc(starsLabel(p) + " · " + kindLabel(p)) + '</small></figcaption></figure>';
+        }).join("") + '</div>';
+      if (notes.length) html += '<p class="note">Skipped: ' + esc(notes.join(" · ")) + '.</p>';
+      html += s.warnings.map(function (w) { return '<p class="note warn">' + esc(w) + '</p>'; }).join("");
+    });
+    $("#deliver-body").innerHTML = html;
+    $("#deliver-confirm").textContent = "Deliver " + plural(count, "photo", "photos");
+    $("#deliver-dialog").hidden = false;
+    $("#deliver-confirm").focus();
+  }
+
+  function endDelivery() {
+    state.delivering = null; state.deliveryPlan = null;
+    renderHistory(); updateSummary();
+  }
+
+  function cancelDelivery() {
+    if (!state.deliveryPlan) return;
+    $("#deliver-dialog").hidden = true; $("#deliver-body").innerHTML = "";
+    endDelivery();
+  }
+
+  // Deliver, step 2: copy exactly what was shown. The app re-checks it first.
+  function confirmDelivery() {
+    var d = state.deliveryPlan;
+    if (!d) return;
+    $("#deliver-dialog").hidden = true; $("#deliver-body").innerHTML = "";
+    var confirmed = d.plan.shoots.map(function (s) {
+      return { shoot: s.shoot, photos: s.photos.filter(function (p) { return p.action === "new"; }).map(function (p) { return { name: p.name, source: p.source }; }) };
+    }).filter(function (s) { return s.photos.length; });
+    invoke("deliver", { importId: d.record.started_at, shoot: d.shoot, confirmed: confirmed }).then(function (result) {
+      showDelivery(result); toast(deliverySummary(result)); return refreshDeliveries();
+    }).catch(function (e) { toast(String(e)); }).finally(endDelivery);
+  }
+
+  function applyDeliverySetup(s) {
+    state.delivery = s;
+    $("#deliver-to").value = s.deliver_to || "";
+    $("#immich-url").value = s.url; $("#immich-key").value = "";
+    $("#immich-key").placeholder = s.has_key ? "Saved key — leave empty to keep it" : "Admin API key";
+    $("#immich-library").innerHTML = '<option value="">' + (s.libraries.length ? "Choose an external library" : "Save to list libraries") + '</option>' +
+      s.libraries.map(function (l) { return '<option value="' + esc(l.id) + '">' + esc(l.name + (l.importPaths && l.importPaths.length ? " · " + l.importPaths.join(", ") : "")) + '</option>'; }).join("");
+    $("#immich-library").value = s.library_id;
+    $("#deliver-note").textContent = !s.deliver_to ? "Set up once" : s.error ? "Check Immich" : s.url && s.library_id ? "Ready · Immich" : "Ready";
+    $("#deliver-status").textContent = s.error || "";
+  }
+
+  function saveDeliverySetup() {
+    var b = $("#deliver-save"); b.disabled = true;
+    var settings = { deliver_to: $("#deliver-to").value.trim(), url: $("#immich-url").value.trim(), api_key: $("#immich-key").value, library_id: $("#immich-library").value };
+    $("#immich-key").value = "";
+    invoke("save_delivery_settings", { settings: settings }).then(function (s) {
+      applyDeliverySetup(s);
+      $("#deliver-status").textContent = "Saved." + (s.url && !s.library_id ? " Choose the external library that watches the finished photos folder, then save." : "");
+    }).catch(function (e) { $("#deliver-status").textContent = String(e); }).finally(function () { b.disabled = false; });
   }
 
   /* ---------- Lightroom ---------- */
@@ -1750,6 +2018,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       list.forEach(function (c) { (state.catalogs[c.import_id] = state.catalogs[c.import_id] || []).push(c); });
       renderHistory();
       if (state.run && state.run.result && state.run.result.status === "complete" && !$("#done").hidden) renderDone();
+      return refreshDeliveries();
     }).catch(function (e) { console.error(e); });
   }
 
@@ -1828,6 +2097,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     box.querySelectorAll("[data-remove-card]").forEach(function (b) {
       b.addEventListener("click", function () { removeCard(b.dataset.removeCard, b); });
     });
+    bindFolds(box);
   }
 
   function cardItem(c) {
@@ -1856,11 +2126,34 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       facts = fact("Imports", fmt(imports.length)) + fact("Imported", bytesLabel(bytes)) +
         fact("Formats seen", c.hardware_serial ? fmt(c.formats) : null) + fact("Insertions", fmt(c.insertions));
     }
-    return '<article class="item' + (fresh ? " new" : "") + '"><div class="item-head"><span class="item-name">' + esc(name) + serial + '</span>' +
+    var key = "card:" + c.id, folded = !fresh && !!state.folded[key];
+    var head = '<div class="item-head">' + (fresh ? "" : foldButton(key)) + '<span class="item-name">' + esc(name) + serial + '</span>' +
       '<span class="chips">' + chips + '</span>' +
-      (fresh ? "" : '<button type="button" class="btn-quiet danger" data-remove-card="' + esc(c.id) + '" title="Removes this card from this computer. Its import history stays.">Remove</button>') + '</div>' +
+      (fresh ? "" : '<button type="button" class="btn-quiet danger" data-remove-card="' + esc(c.id) + '" title="Removes this card from this computer. Its import history stays.">Remove</button>') + '</div>';
+    if (folded) return '<article class="item folded">' + head + '</article>';
+    return '<article class="item' + (fresh ? " new" : "") + '">' + head +
       (fresh ? '<div class="register"><button type="button" class="btn-small" data-register-card="' + esc(c.id) + '">Register to My Cards</button></div>' : "") +
       (sub ? '<div class="item-sub">' + esc(sub) + '</div>' : "") + '<dl class="facts">' + facts + '</dl></article>';
+  }
+
+  // Each registered camera and card can be folded to its name; the app remembers it.
+  function foldButton(key) {
+    var folded = !!state.folded[key];
+    return '<button type="button" class="fold" data-fold="' + esc(key) + '" aria-expanded="' + !folded + '" title="' + (folded ? "Unfold" : "Fold") + '">' + (folded ? "▸" : "▾") + '</button>';
+  }
+
+  function bindFolds(box) {
+    box.querySelectorAll("[data-fold]").forEach(function (b) {
+      b.addEventListener("click", function () { toggleFold(b.dataset.fold); });
+    });
+  }
+
+  function toggleFold(key) {
+    if (state.folded[key]) delete state.folded[key]; else state.folded[key] = true;
+    renderCards(); renderCameras();
+    var again = document.querySelector('[data-fold="' + key.replace(/["\\]/g, "\\$&") + '"]');
+    if (again) again.focus();
+    if (invoke) invoke("save_folded", { folded: Object.keys(state.folded) }).catch(function (e) { toast("Couldn't remember that: " + e); });
   }
 
   function dateLabel(iso) {
@@ -1926,6 +2219,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     box.querySelectorAll("[data-remove-camera]").forEach(function (b) {
       b.addEventListener("click", function () { removeCamera(cams[Number(b.dataset.removeCamera)], b); });
     });
+    bindFolds(box);
   }
 
   // `newIndex`: the camera's place among the new cameras, or null for one of My Cameras.
@@ -1944,13 +2238,15 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       isNew ? "not saved until it’s registered" : null].filter(Boolean).join(" · ");
     var sn = c.serial ? '<span class="sn">SN ' + esc(c.serial) + '</span>'
       : isNew ? '<span class="sn"' + (c.internal_serial ? ' title="Internal serial number ' + esc(c.internal_serial) + '"' : "") + '>No SN in its photos</span>' : "";
+    var foldKey = "camera:" + (c.serial || c.internal_serial || c.model);
     // A new camera: its serial number, and Register below it.
     var head = isNew
       ? '<div class="item-head"><span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span>' +
         '<span class="chip new">New Camera</span></div><div class="item-id">' + sn + '</div>' +
         '<div class="register"><button type="button" class="btn-small" data-register-camera="' + newIndex + '">Register to My Cameras</button></div>'
-      : '<div class="item-head"><span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span>' + sn +
+      : '<div class="item-head">' + foldButton(foldKey) + '<span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span>' + sn +
         '<button type="button" class="btn-quiet danger" data-remove-camera="' + state.cameras.indexOf(c) + '" title="Removes this camera and its shutter history from every computer when they sync.">Remove</button></div>';
+    if (!isNew && state.folded[foldKey]) return '<article class="item folded">' + head + '</article>';
     var shutter = count != null
       ? '<div class="shutter"><div><span class="lbl">' + (c.has_mechanical_shutter === false ? "Electronic shutter count" : "Shutter count") +
         '</span><b>' + fmt(count) + '</b>' +
@@ -2008,9 +2304,18 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   $("#nas-save").addEventListener("click", saveNas);
   $("#lib-scan").addEventListener("click", scanLibrary);
   $("#lr-save").addEventListener("click", saveLightroom);
+  $("#deliver-save").addEventListener("click", saveDeliverySetup);
+  $("#deliver-confirm").addEventListener("click", confirmDelivery);
+  $("#deliver-cancel").addEventListener("click", cancelDelivery);
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !$("#deliver-dialog").hidden) cancelDelivery(); });
   if (invoke) {
     refreshPending().catch(function (e) { toast(String(e)); });
     invoke("get_lightroom_settings").then(applyLightroom).catch(function (e) { $("#lr-status").textContent = String(e); });
+    invoke("get_delivery_settings").then(applyDeliverySetup).catch(function (e) { $("#deliver-status").textContent = String(e); });
+    invoke("get_settings").then(function (s) {
+      (s.folded || []).forEach(function (k) { state.folded[k] = true; });
+      renderCards(); renderCameras();
+    }).catch(function (e) { console.error(e); });
     refreshNas().catch(function (e) { toast(String(e)); });
     refreshLedger().then(refreshCatalogs).catch(function (e) { toast(String(e)); });
     refreshCameras().catch(function (e) { console.error(e); });

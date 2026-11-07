@@ -1,6 +1,8 @@
 // Hide the console window in Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod delivery;
+mod immich;
 mod imports;
 mod library;
 mod lightroom;
@@ -48,6 +50,9 @@ struct AppState {
     /// app started. Never saved: registering a camera stores its readings.
     new_cameras: Mutex<ShutterDb>,
     library: library::LibraryControl,
+    delivering: Arc<std::sync::atomic::AtomicBool>,
+    /// Serialises starting an import with starting a delivery.
+    activity_gate: Mutex<()>,
 }
 
 impl AppState {
@@ -527,8 +532,31 @@ fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     state
         .settings
         .lock()
-        .map(|s| s.clone())
+        .map(|s| {
+            let mut safe = s.clone();
+            safe.immich.api_key.clear();
+            safe
+        })
         .map_err(|e| e.to_string())
+}
+
+/// Remembers which cameras and cards are folded in My Cameras and My Cards.
+#[tauri::command]
+fn save_folded(folded: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    let mut updated = settings.clone();
+    updated.folded = folded
+        .into_iter()
+        .filter(|k| !k.is_empty() && k.len() <= 200)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .take(1000)
+        .collect();
+    updated
+        .save(&state.settings_path)
+        .map_err(|e| format!("Couldn't save the settings: {e}"))?;
+    *settings = updated;
+    Ok(())
 }
 
 /// Saves the NAS path. An empty path goes back to the default.
@@ -842,8 +870,51 @@ fn run_cli(args: &[String]) -> Option<i32> {
                 }
             }
         }
+        ("--deliver-plan", Some(folder)) => {
+            let Some(tool) = find_exiftool(None) else {
+                eprintln!("Deliver needs ExifTool. Set CARD_INTAKE_EXIFTOOL to its full path.");
+                return Some(1);
+            };
+            // Saved settings are only read. The CLI exits before Tauri setup can open any
+            // settings, history or shutter database for writing.
+            #[cfg(windows)]
+            let config = std::env::var_os("APPDATA").map(PathBuf::from);
+            #[cfg(not(windows))]
+            let config = std::env::var_os("HOME")
+                .map(|p| PathBuf::from(p).join("Library/Application Support"));
+            let saved = config
+                .and_then(|c| {
+                    Settings::load(&c.join("io.github.semmmer.cardintake/settings.json")).ok()
+                })
+                .unwrap_or_default();
+            let Some(photos) = args.get(3).cloned().or(saved.deliver_to.clone()) else {
+                eprintln!(
+                    "usage: card_intake_desktop --deliver-plan <shoot> <finished photos folder> [catalog]"
+                );
+                return Some(2);
+            };
+            let shoot = Path::new(folder);
+            let target = Path::new(&photos).join(shoot.file_name().unwrap_or_default());
+            let catalog = args.get(4).map(PathBuf::from).or_else(|| {
+                let root = saved.lightroom.catalog_root.clone().or_else(|| {
+                    #[cfg(windows)]
+                    let home = std::env::var_os("USERPROFILE");
+                    #[cfg(not(windows))]
+                    let home = std::env::var_os("HOME");
+                    home.map(|p| PathBuf::from(p).join("Pictures/Lightroom/Card Intake"))
+                })?;
+                lightroom::delivery_target(&root, shoot).ok()?.catalog
+            });
+            match card_intake_core::deliver::plan(shoot, &tool, catalog.as_deref(), &target) {
+                Ok(result) => print(serde_json::to_string_pretty(&result)),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return Some(1);
+                }
+            }
+        }
         ("--check-nas", Some(path)) => print(serde_json::to_string_pretty(&nas::check_nas(path))),
-        ("--report" | "--health" | "--check-nas" | "--shutter", None) => {
+        ("--report" | "--health" | "--check-nas" | "--shutter" | "--deliver-plan", None) => {
             eprintln!("usage: card_intake_desktop {flag} <path>");
             return Some(2);
         }
@@ -891,6 +962,8 @@ fn main() {
                 shutter: Mutex::new(shutter),
                 new_cameras: Mutex::new(ShutterDb::default()),
                 library: library::LibraryControl::default(),
+                delivering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                activity_gate: Mutex::new(()),
             });
             Ok(())
         })
@@ -931,6 +1004,12 @@ fn main() {
             lightroom::open_in_lightroom,
             lightroom::finish_catalog,
             lightroom::lightroom_catalogs,
+            delivery::get_delivery_settings,
+            delivery::save_delivery_settings,
+            delivery::plan_delivery,
+            delivery::deliver,
+            save_folded,
+            delivery::delivery_states,
             imports::cancel_import
         ])
         .run(tauri::generate_context!())
