@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { lua, lauxlib, lualib, to_luastring } = require('fengari');
+const { JSDOM } = require('jsdom');
 
 const dir = path.join(__dirname, '../../lrplugin/CardIntake.lrplugin');
 const source = (name) => fs.readFileSync(path.join(dir, name), 'utf8');
@@ -43,7 +44,7 @@ catalog = {
     assert(inGate, 'addPhoto outside a write gate')
     if p == badPhoto then error('Unsupported file', 0) end
     if stack then assert(inCatalog[stack.path] == stack, 'stacked on a photo not in the catalog yet') end
-    local ph = photo(p)
+    local ph = photo(p, importMetadata and importMetadata[p])
     ph.stack, ph.position, ph.metaPreset, ph.devPreset = stack, position, meta, dev
     pending[p] = ph
     table.insert(added, ph)
@@ -58,16 +59,28 @@ catalog = {
     pending = {}
     return 'executed'
   end,
-  createSmartCollection = function(self, name, desc, parent, prior)
-    assert(inGate and prior == true); smart[name] = desc
-  end,
-  createKeyword = function(self, name, synonyms, export, parent, existing)
-    assert(inGate and export == false and existing == true); return { name = name }
-  end,
+  -- The plug-in makes no collections or keywords; these record any attempt.
+  createSmartCollection = function(self, name) smart[name] = true end,
+  createCollection = function(self, name) smart[name] = true end,
+  createKeyword = function(self, name) table.insert(keywords, name); return { name = name } end,
   buildSmartPreviews = function(self, photos) assert(not inGate); previews = photos end,
 }
 
 local modules = {
+  LrXml = {
+    parseXml = function(text)
+      local function wrap(node)
+        function node:name() return self.localName, self.namespace end
+        function node:text() return self.content end
+        function node:attributes() return self.attrs end
+        function node:childCount() return #self.children end
+        function node:childAtIndex(i) return self.children[i] end
+        for _, child in ipairs(node.children) do wrap(child) end
+        return node
+      end
+      return wrap(parseXml(text))
+    end,
+  },
   LrApplication = { activeCatalog = function() return catalog end },
   LrDialogs = {
     message = function(title, body) table.insert(dialogs, title .. ' | ' .. (body or '')) end,
@@ -109,6 +122,33 @@ function run(config, entry, verify) {
   lualib.luaL_openlibs(L);
   lua.lua_pushstring(L, to_luastring(source('Intake.lua')));
   lua.lua_setglobal(L, to_luastring('INTAKE'));
+  lua.lua_pushcfunction(L, state => {
+    const text = lua.lua_tojsstring(state, 1);
+    let doc;
+    try { doc = new JSDOM(text, { contentType: 'text/xml' }); }
+    catch { return lauxlib.luaL_error(state, to_luastring('Invalid XML')); }
+    const push = value => {
+      if (typeof value === 'string') lua.lua_pushstring(state, to_luastring(value));
+      else if (value === null) lua.lua_pushnil(state);
+      else {
+        lua.lua_newtable(state);
+        for (const [key, item] of Object.entries(value)) {
+          push(item);
+          if (Array.isArray(value)) lua.lua_rawseti(state, -2, Number(key) + 1);
+          else lua.lua_setfield(state, -2, to_luastring(key));
+        }
+      }
+    };
+    const node = n => ({
+      localName: n.localName || '', namespace: n.namespaceURI || '', content: n.textContent || '',
+      attrs: Array.from(n.attributes || [], a => ({ name: a.localName, namespace: a.namespaceURI || '', value: a.value })),
+      children: Array.from(n.childNodes, node)
+    });
+    push(node(doc.window.document.documentElement));
+    doc.window.close();
+    return 1;
+  });
+  lua.lua_setglobal(L, to_luastring('parseXml'));
   const code = [harness, config, source(entry), verify].join('\n');
   const status = lauxlib.luaL_dostring(L, to_luastring(code));
   const error = status === lua.LUA_OK ? null : lua.lua_tojsstring(L, -1);
@@ -125,14 +165,13 @@ test('opening the catalog adds new raws in place with the presets, and nothing e
     local p = added[1]
     assert(p.devPreset == 'DEV' and p.metaPreset == 'META' and p.stack == nil)
     assert(previews and #previews == 1 and previews[1] == p, 'smart previews')
-    local rule = smart['To edit'][1]
-    assert(rule.criteria == 'keywords' and rule.operation == 'noneOf' and rule.value == 'CardIntakeReplacedByDxO')
+    assert(next(smart) == nil, 'made a collection')
     assert(bezels[1] == 'Card Intake added 1 file', bezels[1])
     assert(#dialogs == 0, dialogs[1])
   `);
 });
 
-test('a DxO DNG is stacked on its raw, takes its rating, flag and label, and hides the raw', () => {
+test('a DxO DNG is stacked on its raw and takes its rating, flag and label', () => {
   run(String.raw`
     prefs.dngDevelopPreset = 'DNGDEV'
     listed = { 'DSC0001.ARW', 'DSC0001_DxO_DeepPRIMEXD2s.dng', 'DSC0007.ARW', 'DSC0007_DxO.dng', 'DSC0009_DxO.dng' }
@@ -142,13 +181,46 @@ test('a DxO DNG is stacked on its raw, takes its rating, flag and label, and hid
     local dng1, dng7, dng9 = added[2], added[3], added[4]
     assert(dng1.stack == raw1 and dng1.position == 'above' and dng1.devPreset == 'DNGDEV')
     assert(dng1.meta.rating == 3 and dng1.meta.pickStatus == 1 and dng1.meta.colorNameForLabel == 'red')
-    assert(raw1.keywords[1] == 'CardIntakeReplacedByDxO')
+    -- No keyword or collection: the stack is all there is.
+    assert(#raw1.keywords == 0 and #keywords == 0 and next(smart) == nil)
     -- A raw added in this run is in the catalog by the time its DNG is stacked on it.
-    assert(dng7.stack == added[1] and added[1].keywords[1] == 'CardIntakeReplacedByDxO')
+    assert(dng7.stack == added[1] and #added[1].keywords == 0)
     assert(dng7.meta.colorNameForLabel == 'none')
     -- A DNG without its raw is added on its own.
     assert(dng9.stack == nil)
     assert(#gates == 3 and #previews == 4)
+  `);
+});
+
+test('only newly added photos with Card Intake Pick requests become picks, preserving user flags', () => {
+  run(String.raw`
+    listed = { 'locked.ARW', 'locked.XMP', 'rejected.ARW', 'rejected.xmp', 'picked.NEF', 'picked.xmp',
+      'plain.ARW', 'plain.xmp', 'other.ARW', 'other.xmp', 'bad.ARW', 'bad.xmp', 'old.ARW', 'old.xmp',
+      'locked_DxO.dng' }
+    local ns = 'https://github.com/semmmer/card_intake/ns/1.0/'
+    local request = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:request="' .. ns .. '" request:Pick="True"/></rdf:RDF></x:xmpmeta>'
+    files[file('locked.XMP')] = request
+    files[file('rejected.xmp')] = request
+    files[file('picked.xmp')] = '<r xmlns:c="' .. ns .. '"><c:Pick>True</c:Pick></r>'
+    files[file('plain.xmp')] = '<r xmlns:c="' .. ns .. '" c:Pick="False"/>'
+    files[file('other.xmp')] = '<r xmlns:c="urn:unrelated" c:Pick="True"/>'
+    files[file('bad.xmp')] = '<broken'
+    files[file('old.xmp')] = request
+    old = have('old.ARW', { pickStatus = -1 })
+    importMetadata = {
+      [file('rejected.ARW')] = { pickStatus = -1 },
+      [file('picked.NEF')] = { pickStatus = 1 },
+    }
+  `, 'Init.lua', String.raw`
+    assert(inCatalog[file('locked.ARW')].meta.pickStatus == 1)
+    assert(inCatalog[file('rejected.ARW')].meta.pickStatus == -1)
+    assert(inCatalog[file('picked.NEF')].meta.pickStatus == 1)
+    for _, name in ipairs({ 'plain.ARW', 'other.ARW', 'bad.ARW' }) do
+      assert(inCatalog[file(name)].meta.pickStatus == 0, name)
+    end
+    assert(old.meta.pickStatus == -1)
+    assert(inCatalog[file('locked_DxO.dng')].meta.pickStatus == 1)
+    assert(#dialogs == 0, dialogs[1])
   `);
 });
 

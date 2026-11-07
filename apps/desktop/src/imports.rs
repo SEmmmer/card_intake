@@ -153,7 +153,8 @@ async fn run_import(
         let PendingImport { request, eject } = job;
         let mut last = Instant::now();
         let mut phase = "";
-        let mut result = import::import_card(&request, &active.cancel, |progress| {
+        let exiftool = app.state::<AppState>().exiftool.clone();
+        let mut result = import::import_card(&request, exiftool.as_deref(), &active.cancel, |progress| {
             if progress.phase != phase || progress.phase == "file_complete" || last.elapsed() >= Duration::from_millis(100) {
                 phase = progress.phase;
                 last = Instant::now();

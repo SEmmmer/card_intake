@@ -81,12 +81,15 @@ pub async fn scan_library(
 
         // Start from everything any computer has read so far.
         state.sync_shutter(&ShutterDb::default())?;
-        let known = state
-            .shutter
-            .lock()
-            .map_err(|e| e.to_string())?
-            .folders()
-            .map_err(|e| format!("Couldn't read the shutter counts: {e}"))?;
+        let (known, mine, mut history) = {
+            let store = state.shutter.lock().map_err(|e| e.to_string())?;
+            let read = |e: std::io::Error| format!("Couldn't read the shutter counts: {e}");
+            (
+                store.folders().map_err(read)?,
+                store.my_cameras().map_err(read)?,
+                store.load().map_err(read)?,
+            )
+        };
         send("listing", None);
         let folders = match shutter::list_library(&root, cancel) {
             Ok(folders) => folders,
@@ -118,13 +121,17 @@ pub async fn scan_library(
             |folder_result| {
                 match folder_result {
                     FolderResult::Read { folder, samples } => {
-                        for sample in &samples {
-                            batch.add(sample);
-                        }
+                        let (read, left_out) = history.read(&samples);
+                        history.merge(&read);
                         result.folders_read += 1;
                         result.photos_read += folder.photos.len();
-                        result.shutter_counts += samples.len();
-                        batch.folders.insert(folder.relative, folder.stamp);
+                        result.shutter_counts += samples.len() - left_out;
+                        // A folder with photos from a camera not in My Cameras is read
+                        // again next time, so they count once it's registered.
+                        if read.cameras.iter().all(|c| mine.owns_camera(c)) {
+                            batch.folders.insert(folder.relative, folder.stamp);
+                        }
+                        batch.merge(&read);
                     }
                     FolderResult::Failed { folder, error } => {
                         result.failed_count += 1;

@@ -44,6 +44,9 @@ struct AppState {
     pictures: Option<PathBuf>,
     /// This computer's copy of the shutter count database.
     shutter: Mutex<shutter::Store>,
+    /// Readings of cameras not in My Cameras, from cards and NAS photos read since the
+    /// app started. Never saved: registering a camera stores its readings.
+    new_cameras: Mutex<ShutterDb>,
     library: library::LibraryControl,
 }
 
@@ -63,32 +66,76 @@ impl AppState {
 
     /// Adds readings to this computer's database, then syncs it with the shared one
     /// in the photo share (when connected): only rows changed since the last sync go
-    /// either way.
+    /// either way. Readings of cameras not in My Cameras are kept in memory instead,
+    /// and stored once the camera is registered, here or on another computer.
     fn sync_shutter(&self, add: &ShutterDb) -> Result<CamerasResponse, String> {
+        self.update_shutter(add, &[]).map(|(response, _)| response)
+    }
+
+    fn update_shutter(
+        &self,
+        add: &ShutterDb,
+        samples: &[ShutterSample],
+    ) -> Result<(CamerasResponse, usize), String> {
         let mut store = self.shutter.lock().map_err(|e| e.to_string())?;
-        store
-            .add(add)
-            .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
+        let read = |e: std::io::Error| format!("Couldn't read the shutter counts: {e}");
+        let root = self.shared_root();
         let mut shared = SharedStatus::default();
-        if let Some(root) = self.shared_root() {
-            shared.path = Some(shutter::shared_path(&root).display().to_string());
-            match shutter::sync_shared(&root, &mut store) {
+        // Fetch other computers' history and removals before checking raw readings.
+        if let Some(root) = &root {
+            shared.path = Some(shutter::shared_path(root).display().to_string());
+            match shutter::sync_shared(root, &mut store) {
                 Ok(()) => shared.synced = true,
                 Err(e) => shared.error = Some(e.to_string()),
             }
         }
-        let read = |e: std::io::Error| format!("Couldn't read the shutter counts: {e}");
+        let mut new_cameras = self.new_cameras.lock().map_err(|e| e.to_string())?;
+        let mut readings = std::mem::take(&mut *new_cameras);
+        readings.merge(add);
+        store.retain_current(&mut readings).map_err(read)?;
+        let mut history = store.load().map_err(read)?;
+        history.merge(&readings);
+        let (mut raw, left_out) = history.read(samples);
+        store.retain_current(&mut raw).map_err(read)?;
+        readings.merge(&raw);
+        *new_cameras = readings.split_off_new(&store.my_cameras().map_err(read)?);
+        let changed = store
+            .add(&readings)
+            .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
+        if changed && let Some(root) = &root {
+            match shutter::sync_shared(root, &mut store) {
+                Ok(()) => shared.synced = true,
+                Err(e) => shared.error = Some(e.to_string()),
+            }
+        }
         shared.folders = store.folder_count().map_err(read)?;
-        Ok(CamerasResponse {
-            cameras: store.load().map_err(read)?.views(),
-            shared,
-        })
+        Ok((
+            CamerasResponse {
+                cameras: store.load().map_err(read)?.views(),
+                new_cameras: new_cameras.views(),
+                shared,
+            },
+            left_out,
+        ))
+    }
+
+    /// Whether a camera is in My Cameras.
+    fn is_my_camera(&self, model: &str, serial: Option<&str>, internal: Option<&str>) -> bool {
+        self.shutter
+            .lock()
+            .ok()
+            .and_then(|store| store.my_cameras().ok())
+            .is_some_and(|mine| mine.owns(model, serial, internal))
     }
 }
 
 #[derive(Serialize, Default)]
 struct CamerasResponse {
+    /// My Cameras, with their shutter count history.
     cameras: Vec<CameraView>,
+    /// Cameras whose photos were read but that aren't registered. Their readings are
+    /// kept only until the app closes.
+    new_cameras: Vec<CameraView>,
     shared: SharedStatus,
 }
 
@@ -143,6 +190,9 @@ struct CameraSummary {
     make: Option<String>,
     model: String,
     serial: Option<String>,
+    /// Sony's internal serial number, which identifies a body whose photos don't carry
+    /// the serial number.
+    internal_serial: Option<String>,
     firmware: Option<String>,
     lens: Option<String>,
     shutter_count: Option<u64>,
@@ -170,7 +220,9 @@ async fn list_cards() -> Result<Vec<CardVolume>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Reads a card (never writes to it), then remembers the card and camera.
+/// Reads a card (never writes to it), then remembers the card, and the camera when
+/// it's in My Cameras. A card seen for the first time is new: it's kept while the app
+/// runs, and saved once registered.
 #[tauri::command]
 async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardReport, String> {
     let exiftool = state.exiftool.clone();
@@ -191,13 +243,20 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
     if let (Some(key), Some(health)) = (&report.card_key, &report.health) {
         ledger.record_health(key, health.clone(), now);
     }
-    if let Some(camera) = &report.camera {
+    if let Some(camera) = &report.camera
+        && state.is_my_camera(
+            &camera.model,
+            camera.serial.as_deref(),
+            camera.internal_serial.as_deref(),
+        )
+    {
         ledger.record_camera(
             CameraSighting {
                 model: camera.model.clone(),
                 serial: camera.serial.clone(),
                 firmware: camera.firmware.clone(),
-                shutter_count: camera.shutter_count,
+                // This single-photo preview has not passed the history check.
+                shutter_count: None,
             },
             now,
         );
@@ -285,13 +344,104 @@ async fn read_card_shutter(
     })
     .await
     .map_err(|e| e.to_string())??;
-    let mut add = ShutterDb::default();
-    for sample in &samples {
-        add.add(sample);
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .update_shutter(&ShutterDb::default(), &samples)
+            .map(|(response, _)| response)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Adds a camera to My Cameras, with what was already read from its photos. The
+/// registration is shared through the photo share like the counts.
+#[tauri::command]
+async fn register_camera(
+    model: String,
+    serial: Option<String>,
+    internal_serial: Option<String>,
+    app: AppHandle,
+) -> Result<CamerasResponse, String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("A camera needs its model to be registered.".into());
     }
-    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().sync_shutter(&add))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state
+            .shutter
+            .lock()
+            .map_err(|e| e.to_string())?
+            .register(
+                &model,
+                serial.as_deref().filter(|s| !s.trim().is_empty()),
+                internal_serial.as_deref().filter(|s| !s.trim().is_empty()),
+            )
+            .map_err(|e| format!("Couldn't register the camera: {e}"))?;
+        // Moves the readings kept for it into the database.
+        state.sync_shutter(&ShutterDb::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Removes a camera and its history everywhere this database syncs.
+#[tauri::command]
+async fn remove_camera(
+    model: String,
+    serial: Option<String>,
+    internal_serial: Option<String>,
+    app: AppHandle,
+) -> Result<CamerasResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        {
+            let mut store = state.shutter.lock().map_err(|e| e.to_string())?;
+            store
+                .remove(&model, serial.as_deref(), internal_serial.as_deref())
+                .map_err(|e| format!("Couldn't remove the camera: {e}"))?;
+            let mut camera = shutter::MyCameras::default();
+            camera.add(&model, serial.as_deref(), internal_serial.as_deref());
+            state
+                .new_cameras
+                .lock()
+                .map_err(|e| e.to_string())?
+                .cameras
+                .retain(|c| !camera.owns_camera(c));
+        }
+        // The ledger's old camera previews aren't part of the shared history.
+        let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+        ledger
+            .cameras
+            .retain(|c| c.model != model || c.serial != serial);
+        state.save_ledger(&ledger)?;
+        drop(ledger);
+        state.sync_shutter(&ShutterDb::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Adds a card to My Cards, with what this app learned about it since it was inserted.
+#[tauri::command]
+fn register_card(card_key: String, state: State<'_, AppState>) -> Result<Ledger, String> {
+    let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+    if !ledger.register_card(&card_key) {
+        return Err("This card isn't known any more. Insert it again to register it.".into());
+    }
+    state.save_ledger(&ledger)?;
+    Ok(ledger.clone())
+}
+
+/// Removes this computer's card record. Its import results stay in the ledger.
+#[tauri::command]
+fn remove_card(card_key: String, state: State<'_, AppState>) -> Result<Ledger, String> {
+    let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+    let mut updated = ledger.clone();
+    updated.remove_card(&card_key);
+    state.save_ledger(&updated)?;
+    *ledger = updated;
+    Ok(ledger.clone())
 }
 
 /// Every camera's shutter count history, merged with the shared database when the
@@ -491,12 +641,14 @@ fn camera_summary(files: &[MediaFile], exiftool: Option<&Path>) -> Option<Camera
         .or_else(|| clip.and_then(|c| scan::sidecar_serial(&c.path)));
 
     let mut electronic_count = None;
+    let mut internal_serial = None;
     let (shutter_count, shutter_note) = match (newest_photo, exiftool) {
         (None, _) => (None, Some("No photos on this card to read it from.".into())),
         (Some(_), None) => (None, Some(exiftool_note())),
         (Some(photo), Some(tool)) => match exiftool::camera_details(tool, &photo.path) {
             Ok(details) => {
                 electronic_count = details.electronic_count;
+                internal_serial = details.internal_serial;
                 match details.shutter_count {
                     Some(count) => (Some(count), None),
                     None => (
@@ -515,6 +667,7 @@ fn camera_summary(files: &[MediaFile], exiftool: Option<&Path>) -> Option<Camera
         make: basic.make,
         model,
         serial,
+        internal_serial,
         firmware: basic.software.as_deref().map(exiftool::firmware_version),
         lens: basic.lens,
         shutter_count,
@@ -643,15 +796,18 @@ fn run_cli(args: &[String]) -> Option<i32> {
             match shutter_samples_parallel(&exiftool, &photos) {
                 Ok(samples) => {
                     let mut db = ShutterDb::default();
-                    for sample in &samples {
-                        db.add(sample);
-                    }
+                    let left_out = db.add_read(&samples);
                     eprintln!(
                         "{} photos, {} with a shutter count, read in {} ms",
                         photos.len(),
                         samples.len(),
                         started.elapsed().as_millis()
                     );
+                    if left_out > 0 {
+                        eprintln!(
+                            "{left_out} counts left out: they don't fit the camera's other photos"
+                        );
+                    }
                     print(serde_json::to_string_pretty(&db.views()));
                 }
                 Err(e) => {
@@ -707,6 +863,7 @@ fn main() {
                 local_data: app.path().app_local_data_dir()?,
                 pictures: app.path().picture_dir().ok(),
                 shutter: Mutex::new(shutter),
+                new_cameras: Mutex::new(ShutterDb::default()),
                 library: library::LibraryControl::default(),
             });
             Ok(())
@@ -734,6 +891,10 @@ fn main() {
             nas_status,
             read_card_shutter,
             get_cameras,
+            register_camera,
+            register_card,
+            remove_camera,
+            remove_card,
             library::scan_library,
             library::cancel_library_scan,
             imports::start_import,

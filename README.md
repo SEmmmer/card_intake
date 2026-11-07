@@ -28,8 +28,10 @@ Readings are saved with the card in this computer's card list.
 Under **Card details** the desk shows what every card and its reader reveal on insertion. A normal Windows user can read all of it, so the app never asks for admin rights here (`crates/core/src/card_details.rs`):
 
 - **Reader:** the name it gives itself over USB and its USB ID (e.g. `USB Storage (05E3:0764)`, a Genesys Logic chip). Also how it talks to Windows: UAS, or the older and slower bulk-only (BOT). Then its link speed (USB 2.0, 5 Gbps, 10 Gbps or faster), with a warning when it could run faster in another port or with another cable. In a reader with several slots, the slot the card is in.
-- **Card:** its exact size in bytes; the SD class that size belongs to (SDSC up to 2 GB, SDHC 2–32 GB, SDXC 32 GB–2 TB, SDUC beyond); and its lock switch, with a warning when it's on.
-- **Format:** the partition table (MBR, GPT, or none), where the partition starts and its type. The file system with its revision and cluster size. From the file system's own boot sector, whether it was closed cleanly (exFAT's VolumeDirty, FAT's clean-shutdown bit). Also whether its last writer met bad sectors (exFAT's MediaFailure, FAT's hard-error bit). A card that wasn't closed cleanly, or that flags bad sectors, gets a warning.
+- **Card:** the SD class its size belongs to (SDSC up to 2 GB, SDHC 2–32 GB, SDXC 32 GB–2 TB, SDUC beyond), and a warning when its lock switch is on.
+- **Format:** from the file system's own boot sector, a warning when it wasn't closed cleanly (exFAT's VolumeDirty, FAT's clean-shutdown bit) or when its last writer met bad sectors (exFAT's MediaFailure, FAT's hard-error bit).
+
+The app also reads the card's exact size, partition table and file system details, but doesn't show them. A CFexpress card with nothing to warn about has no Card details section.
 
 A card is taken for an SD card when it's in an SD host controller, or when a USB reader shows it as a removable medium behind no NVMe bridge. Its size must also be a whole number of 512 KiB steps, the unit SD cards count their capacity in; a CFexpress card's NVMe size isn't. For an SD card, **Card health** says it keeps no health log, instead of offering smartctl and an admin prompt.
 
@@ -46,13 +48,40 @@ A card formatted in a Nikon Z 9 is read like a Sony card, with two things that b
 
 The Z 9 takes CFexpress Type B and XQD cards. A CFexpress card in a Thunderbolt or USB4 reader that shows the card as an NVMe drive reports its own model, serial number and health log on insertion, without smartctl or admin rights. In a USB reader with a JMicron JMS583 bridge the app reads the same things itself, with admin rights; behind other USB bridges it is read with smartctl, like any card. An XQD card is not an NVMe drive and keeps no NVMe health log, so it is known by its volume ID only. The card's type name comes from its own model where the maker encodes it (Sony's `CEA…` is Type A, `CEB…` Type B); other makes are listed as **CFexpress**. Reading a real Z 9 card has not been tested here: the file handling, the serial-number identity and the health log follow the paths above, and `cargo run -p card_intake_core --example card_storage -- E:\` prints what Windows reports for the inserted card.
 
+## Nikon Zf
+
+The Zf is read like the Z 9 (same NEF, JPEG, HEIF and MOV/MP4 files, the whole `DCIM` tree), with its own folder name and shutter:
+
+- **Cards.** The Zf takes an SD card and a microSD card. Its default folder is `NCZ_F` (e.g. `DCIM/106NCZ_F`). SD cards in a USB reader show what [Card details](#card-details-any-card-sd-included) can read; they keep no health log.
+- **Shutter count.** The Zf has a mechanical shutter, an electronic front curtain and a silent electronic shutter, and its NEFs carry two counters: `MechanicalShutterCount` for the mechanical shutter and `ShutterCount` for every release. ExifTool's [Nikon tags](https://exiftool.org/TagNames/Nikon.html) describe the latter as including "both mechanical and electronic shutter activations". The app charts the mechanical count, against the 200,000 cycles Nikon says the Zf's shutter "has been tested to" ([Nikon USA, Z f](https://www.nikonusa.com/p/z-f/1761/overview)). The difference between the two counters is shown as **Electronic**: 15,557 on a Zf photo with 25,602 releases and 10,045 mechanical ones.
+
+  Checked against 16,539 Zf photos (firmware 3.01): `ShutterCount` is never below `MechanicalShutterCount`. Of 15,881 back-to-back releases, every one taken with the mechanical shutter, electronic front curtain or auto mode added 1 to the mechanical count. Every one taken with the electronic shutter (Nikon's `ShutterMode` 16; 390 of them) added nothing.
+
+Zf photos read by an earlier Card Intake have no electronic count in the shutter history. Read their folders again to add it:
+
+```sh
+cargo run -p card_intake_core --example count_photos -- --again \\NAS\photos "\\NAS\old\Nikon Transfer 2026 5"
+```
+
 ## Shutter counts
 
-The shutter count of every photo on an inserted card is read with ExifTool (in parallel, about a second for 200 raw files) and kept per camera, one count range per shooting day. **Read NAS photos** (under Cameras) reads every photo already on the share too, so the graph goes back to the first imported shoot; folders read before are skipped unless their photos change.
+The shutter count of every photo on an inserted card is read with ExifTool (in parallel, about a second for 200 raw files) and kept per camera, one count range per shooting day. **Read NAS photos** (under My Cameras) reads every photo already on the share too, so the graph goes back to the first imported shoot; folders read before are skipped unless their photos change.
+
+Only **My Cameras** keep a history. A camera whose photos are read for the first time (a camera borrowed or tried in a store, with your card in it) shows as **New Camera**, on the desk and at the top of the list, with **Register to My Cameras** below its serial number. Its counts are shown but not saved; registering it stores what was already read. A camera is known by its serial number, or by Sony's internal serial number when its photos don't carry the serial (the camera's **Write Serial Number** setting is off). Registration is shared through the NAS like the counts. A NAS folder holding photos from a camera that isn't registered is read again the next time, so those photos count once the camera is registered. Cards work the same way: a card the app hasn't seen is a **New Card** with **Register to My Cards**, kept while the app runs and saved in `ledger.json` once registered. Cards and cameras already in the history before registration existed are registered.
+
+Before readings are stored, each camera's photos from one card or folder are checked against each other **and its stored history**, before they become day ranges. A count never goes down, and can't rise faster than the body shoots (its top frame rate plus 10%, from `crates/core/src/cameras.rs`: Zf 30, α7R VI 30, Z 9 120, α9 III 120, EOS R3 195 frames a second; a model without its own rate gets the fastest listed). Whole-second EXIF times get one extra second's frame budget for bursts; there is no count allowance for clock changes. A clock adjustment can therefore leave out genuine readings, which is safer than permanently widening a day with a bad count.
+
+ExifTool guesses the maker-note layout for the α7R VI, α1 II and α7 V when it thinks the mechanical shutter was used. On the α7R VI, that guess has produced 4,194,304 and 1,024 on a day whose real counts were 2 to 30. Those models also need support from a different, nearby count in the read (within one second's frame budget: 33 for the α7R VI), or from a consistent stored range or nearby stored count. An isolated last photo cannot extend the history by hundreds simply because the time gap permits it, and repeated copies of one bogus constant don't support each other. A sparse read may identify a new camera without contributing any counts. These checks cannot identify a false number that fits all the available evidence; there is no reliable shutter-type tag for this model.
+
+Stored days constrain earlier and later readings using their low/high counts and first/last shot times. A stored high that contradicts the next day's low is not used as a checking bound, so a previously corrupted high doesn't make good new readings look bad. The graph still shows the stored ranges: day summaries alone cannot reliably distinguish corruption from a shutter-count reset after replacement. Existing bad ranges need a separate repair from the photos; this filter does not rewrite them or hide genuine resets.
+
+**Remove** appears on registered cameras and cards. Click it again within five seconds to confirm. Removing a camera deletes its shutter history and shares the removal through the NAS, including with computers that reconnect later. If seen again it is a **New Camera**. Registering it again starts a fresh history from readings collected after removal; old databases, pending batches and legacy JSON cannot bring its previous history back. Removing a card forgets its record on this computer only, including its old health readings and insertion totals; imports that mention it stay in **Recent imports**. A card still in the reader is seen afresh as a **New Card**.
 
 The history is a SQLite database in the photo share, `.card-intake/shutter.sqlite`, so every computer running Card Intake (Windows or Mac) reads and adds to the same history. Each computer keeps its own copy in the app data folder (`shutter.sqlite`) for when the share isn't connected. Every row records the write that last changed it, so a sync sends only this computer's rows changed since its last sync and fetches only the rows other computers changed since then; a history of many years syncs as fast as a day's. Merging is idempotent: the same photos read on two computers count once.
 
-The shared database never uses SQLite's WAL mode, which needs shared memory a network share doesn't provide, and writes to it also hold a lock file (`.card-intake/shutter.lock`), because SQLite's own locks aren't reliable on every network share. A damaged database, or one written by a newer Card Intake, is left untouched with a message. The JSON file older builds kept (`shutter-counts.json`, in the share and in app data) is merged in automatically, and again whenever an older build changes it.
+The shared database never uses SQLite's WAL mode, which needs shared memory a network share doesn't provide, and writes and schema migrations also hold a lock file (`.card-intake/shutter.lock`), because SQLite's own locks aren't reliable on every network share. A damaged database, or one written by a newer Card Intake, is left untouched with a message. The JSON file older builds kept (`shutter-counts.json`, in the share and in app data) is merged in automatically, and again whenever an older build changes it, but only into a camera's original registration.
+
+SQLite schema **2** upgrades schema 1 while preserving camera IDs, days, database IDs and write numbers. It retains a small removal row for each removed camera. Removing or re-registering advances that camera's generation; rows from older generations are ignored, while rows within one generation still merge by lowest/highest count. Concurrent generations have a stable tie-break, with removal winning equal generation numbers. **Update every computer sharing the database.** Schema 1 builds refuse schema 2 and cannot sync until updated; keeping version 1 would let them ignore removals and restore deleted history. Serial-less bodies of the same model are kept separate by their internal serial numbers.
 
 Photos kept outside the photo share — an old archive, for instance — can be added to the same history without moving or copying anything:
 
@@ -60,11 +89,11 @@ Photos kept outside the photo share — an old archive, for instance — can be 
 cargo run -p card_intake_core --example count_photos -- \\NAS\photos "\\NAS\old\Nikon Transfer 2026 5"
 ```
 
-The script reads each folder once with the app's own ExifTool pass, merges the counts into the share's `.card-intake/shutter.sqlite` the way the app syncs, and writes nothing to the photo folders. Folders whose photos haven't changed are skipped on later runs, and progress is saved every 20 seconds so an interrupted run keeps what it read. A folder outside the share is remembered in the same database under an `extra:` key, which the app itself never looks up.
+The script reads each folder once with the app's own ExifTool pass, merges the counts into the share's `.card-intake/shutter.sqlite` the way the app syncs, and writes nothing to the photo folders. Folders whose photos haven't changed are skipped on later runs (`--again` reads them anyway, for counts a newer Card Intake reads), and progress is saved every 20 seconds so an interrupted run keeps what it read. A folder outside the share is remembered in the same database under an `extra:` key, which the app itself never looks up.
 
-The main display is **Mechanical shutter count**, with a smaller **Electronic** count beside it (**Electronic shutter count** as the only figure on a body that has no mechanical shutter). The smaller figure appears when a file carries an explicit electronic counter; ExifTool 13.59 defines no `ElectronicShutterCount` tag, so it stays **Not reported** for the bodies checked here. Alternative `ShutterCount2/3` and `ImageCount` values are not treated as independent electronic counters. ExifTool identifies the α7R VI's `ShutterCount` as mechanical actuations in its [Sony tag definitions](https://github.com/exiftool/exiftool/blob/master/lib/Image/ExifTool/Sony.pm). Zero mechanical actuations is a valid reading. A body that has no mechanical shutter at all, such as the Nikon Z 9, writes 0 in that tag on every photo and keeps its real count in `ShutterCount`, so the app charts that instead ([see above](#nikon-z-9-cards)).
+The main display is **Mechanical shutter count**, with a smaller **Electronic** count beside it (**Electronic shutter count** as the only figure on a body that has no mechanical shutter). The smaller figure appears when a file carries an explicit electronic counter, or, on a Nikon that writes both `ShutterCount` and `MechanicalShutterCount`, their difference ([the Zf](#nikon-zf)). ExifTool 13.59 defines no `ElectronicShutterCount` tag, so it stays **Not reported** for the Sony bodies checked here. Alternative `ShutterCount2/3` and `ImageCount` values are not treated as independent electronic counters. ExifTool identifies the α7R VI's `ShutterCount` as mechanical actuations in its [Sony tag definitions](https://github.com/exiftool/exiftool/blob/master/lib/Image/ExifTool/Sony.pm). Zero mechanical actuations is a valid reading. A body that has no mechanical shutter at all, such as the Nikon Z 9, writes 0 in that tag on every photo and keeps its real count in `ShutterCount`, so the app charts that instead ([see above](#nikon-z-9-cards)).
 
-Manufacturer ratings remain separate from unconfirmed reference values (`crates/core/src/cameras.rs`). The user-suggested **500,000** value for α7R VI is displayed as an **unconfirmed life expectancy reference**. It was not confirmed in [Sony's ILCE-7RM6 specifications](https://www.sony.com/electronics/support/e-mount-body-ilce-7-series/ilce-7rm6/specifications) or the Japanese feature pages checked on 2026-11-07. Schema version 2 preserves existing shutter history and re-reads old folder snapshots once to collect any electronic counters.
+Manufacturer ratings remain separate from unconfirmed reference values (`crates/core/src/cameras.rs`). The user-suggested **500,000** value for α7R VI is displayed as an **unconfirmed life expectancy reference**. It was not confirmed in [Sony's ILCE-7RM6 specifications](https://www.sony.com/electronics/support/e-mount-body-ilce-7-series/ilce-7rm6/specifications) or the Japanese feature pages checked on 2026-11-07. Legacy JSON format version 2 preserves existing shutter history and re-reads old folder snapshots once to collect any electronic counters; it is separate from the SQLite schema version above.
 
 ## NAS folder
 
@@ -94,6 +123,48 @@ Copies are staged in unique `.card-intake-*.part` files, flushed, and (when enab
 Automatic ejection requires verification. Windows must be able to lock the volume before dismounting and ejecting it. A busy reader, unsupported eject command or permission error is reported separately from the successful copy; use Explorer to eject in that case.
 
 The import engine is shared with the macOS app, but the new desktop workflow has been built and tested on Windows. Physical reader ejection and a real NAS transfer still need validation with your hardware.
+
+## Initial raw ratings
+
+Every import gives proprietary raw photos an initial Lightroom Classic star rating in a same-stem `.xmp` sidecar beside the destination raw. This is always on for photos. The scanner currently recognises ARW, NEF and NRW as proprietary raws; any proprietary photo format added to the scanner also uses this rule. DNG (including the DJI Osmo Pocket 3), JPEG, HEIF/HIF and videos are skipped. RAW+JPEG pairs are rated through the raw. The source raw is only read, and neither originals nor sidecars on the card are changed.
+
+The rules run in this order:
+
+1. **Locked in camera:** Sony/Nikon Protect is the source file's read-only attribute on Windows, write permission bits on Unix, or the immutable/Locked flags on macOS. It gives **5 stars** and a Card Intake **Pick request**, ahead of any camera rating. Destination permissions and EXIF protection tags are not used.
+2. **Camera rating:** an embedded XMP or EXIF/maker-note `Rating` of 1–5 is used. Zero, reject (-1) and missing ratings fall through.
+3. **Computed:** start at 5, subtract the ISO and shutter deductions, and clamp to 0–5.
+
+| Recorded ISO | Deduction |
+|---|---:|
+| ≤800 | 0 |
+| 801–3200 | 1 |
+| 3201–6400 | 2 |
+| 6401–12800 | 3 |
+| 12801–25600 | 4 |
+| ≥25601 | 5 |
+
+ISO comes from EXIF ISO/PhotographicSensitivity, with ISOSpeed or RecommendedExposureIndex for the 65535 overflow marker and higher sensitivities. No usable ISO means no ISO deduction and an `ISO not recorded` keyword.
+
+Safe shutter time is `1 / (focal length × crop factor)` seconds. Crop factor comes from ExifTool's `Composite:ScaleFactor35efl` and the recorded 35 mm equivalent focal length; it is never a user setting. Sony's `APS-CSizeCapture=On` supplies a 1.5× minimum when the composite misses crop capture. Full-frame α7R VI raws on a real card report 1.0×; real RAW samples from an α6000 and an α7C II in APS-C mode report about 1.487× (58/39 mm) and 1.5× (36/24 mm). Crop factors are not rounded from the metadata.
+
+An exposure equal to or faster than the safe time loses nothing. Slower exposures lose `floor(log2(exposure / safe time))` points, with a small floating-point tolerance at exact stops. Exposures of **1 second or longer** have no shutter deduction; ISO still counts. Missing or zero focal length, crop factor or exposure time skips this part and records why, with a `Shutter not checked` keyword.
+
+Metadata is read from source raws in batches of up to 256 through ExifTool's UTF-8 argument file while files are copying. Sidecars are updated after the copy workers finish, including their card sidecars and any requested verification. Identical raws already at the destination or in another shoot folder for the same date are rated there too. No second folder or second raw copy is needed. Missing ExifTool, unreadable metadata or an unsafe sidecar produces a warning and never fails the file import; importing again retries the rating step. Protection can still be honoured without ExifTool.
+
+An existing nonzero `xmp:Rating`, including a reject, is kept. A missing rating or zero is filled in. Existing develop settings, keywords, other namespaces, comments and packet padding are preserved. Card Intake adds keyword leaves under **Card Intake** using `dc:subject` (flat leaves plus the parent) and `lr:hierarchicalSubject` (`Card Intake|…`), without adding duplicates: `Locked in camera`, `Camera rating`, `Computed rating`, `High ISO -2`, `Slow shutter -1`, `Shutter not checked`, and `ISO not recorded`, as applicable. Deduction names use an ASCII hyphen-minus.
+
+The stable Card Intake XMP namespace is **`https://github.com/semmmer/card_intake/ns/1.0/`**, conventionally `ci`. Its properties are `RatingSource`, `SuggestedRating`, `ExistingRatingKept`, `Pick`, `Version` and `WrittenAt` (UTC); computed ratings also record `ISO`, `ISODeduction`, `ISOSkipped`, `ExposureTime` (seconds), `FocalLength` (mm), `CropFactor`, `SafeShutterSpeed` (seconds), `ShutterDeduction` and `ShutterSkipped` when applicable. The namespace URI identifies the schema; it need not be fetched. Sidecars use an XMP packet wrapper, `x:xmpmeta` and RDF. XML is parsed with DTDs disabled and only the relevant properties are patched. Unparseable or ambiguous packets are left untouched with a warning; updates are flushed to a temporary file in the same folder and renamed into place.
+
+Lightroom Classic reads the sidecar's rating and keywords for proprietary raws ([Adobe metadata documentation](https://helpx.adobe.com/lightroom-classic/desktop/organize-photos-in-lightroom-classic/metadata-basics-actions.html)). Pick flags need the plug-in: when it **adds a new photo**, it reads `ci:Pick="True"` by namespace and sets `pickStatus=1` only if the photo is unflagged. It preserves existing Picks, rejects and photos already in the catalog. A DxO DNG stacked later inherits its raw's Pick through the existing plug-in behavior. Metadata presets chosen in Lightroom can affect the imported metadata, so keep rating/keyword fields out of an import preset if you want the sidecar values.
+
+The import result and done panel report the locked/camera/computed counts, ratings kept and any warnings. For a local validation import without app settings, history or ejection, create an empty folder under the system temporary directory and run:
+
+```powershell
+$env:CARGO_TARGET_DIR = 'target\codex'
+cargo run -p card_intake_core --example rate_card -- E:\ <existing-temp-folder> <path-to-exiftool.exe>
+```
+
+The example refuses destinations outside the system temporary directory and verifies all copied raws. It leaves the card read-only and prints the result, including the 0–5 star distribution, as JSON.
 
 ## Workflow and next steps
 
@@ -148,7 +219,7 @@ cargo run -p card_intake_desktop
 cargo build --release -p card_intake_desktop
 ```
 
-ExifTool is optional for importing, but needed for shutter counts. Install ExifTool for Windows with its companion support folder, then put `exiftool.exe` on `PATH` or set `$env:CARD_INTAKE_EXIFTOOL` to its full path. The shell fetch script below is for macOS/Linux.
+ExifTool is optional for copying, but needed for shutter counts and shooting-settings ratings. Install ExifTool for Windows with its companion support folder, then put `exiftool.exe` on `PATH` or set `$env:CARD_INTAKE_EXIFTOOL` to its full path. The shell fetch script below is for macOS/Linux.
 
 ```sh
 scripts/fetch-exiftool.sh           # once: ExifTool, needed for shutter counts
@@ -171,7 +242,7 @@ cargo run -p card_intake_core --example count_photos -- /Volumes/photos /Volumes
 
 On Windows, use `E:\` instead of `/Volumes/Untitled` and `\\NAS\photos` instead of `/Volumes/photos`.
 
-The import tests use temporary card/share fixtures and cover verified copies, sidecars, date/video selection, conflicts, corrupt read-backs, cancellation, parallel workers, retries, files already under another shoot title, changed sources, saved resume requests, history, and rejection of local destinations. Lightroom tests cover shoot and trip catalogs, the rule that only shoots without a catalog join a trip, Finish and Reopen, and installing the plug-in and presets; they also run the actual Lua plug-in in Fengari with a mocked Lightroom SDK (presets, skipped and refused files, DxO DNG stacking, disconnected folders, a busy catalog, and other catalogs). The shutter database tests cover syncing between computers, the JSON import, and damaged or newer databases. UI tests run the real page with a mocked Tauri bridge and require Node.js:
+The import tests use temporary card/share fixtures and cover verified copies, sidecars, date/video selection, conflicts, corrupt read-backs, cancellation, parallel workers, retries, files already under another shoot title, changed sources, saved resume requests, history, and rejection of local destinations. Lightroom tests cover shoot and trip catalogs, the rule that only shoots without a catalog join a trip, Finish and Reopen, and installing the plug-in and presets; they also run the actual Lua plug-in in Fengari with a mocked Lightroom SDK (presets, skipped and refused files, DxO DNG stacking, disconnected folders, a busy catalog, and other catalogs). Shutter tests cover real α7R VI ranges, sparse and newest bad readings, stored-history checks, poisoned highs, visible resets, serial-less bodies, schema migration, synced removal and re-registration with stale computers, pending batches and JSON, and damaged or newer databases. UI tests run the real page with a mocked Tauri bridge, including removal confirmation, expiry, errors and preserved imports, and require Node.js:
 
 ```sh
 npm ci --prefix tests/ui
@@ -179,7 +250,7 @@ npm test --prefix tests/ui
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The NAS path is saved in `settings.json` in the app's config folder. Environment variables override it and the tool locations: `CARD_INTAKE_NAS`, `CARD_INTAKE_EXIFTOOL`, `CARD_INTAKE_SMARTCTL`. Cards, health readings and the most recent 100 import results are saved in `ledger.json`, and this computer's copy of the shutter count history in `shutter.sqlite`, in the app data folder (`%APPDATA%\io.github.semmmer.cardintake\` on Windows; `~/Library/Application Support/io.github.semmmer.cardintake/` on macOS). Older ledgers load with an empty import history.
+The NAS path is saved in `settings.json` in the app's config folder. Environment variables override it and the tool locations: `CARD_INTAKE_NAS`, `CARD_INTAKE_EXIFTOOL`, `CARD_INTAKE_SMARTCTL`. Registered cards (My Cards), their health readings and the most recent 100 import results are saved in `ledger.json`, and this computer's copy of the shutter count history in `shutter.sqlite`, in the app data folder (`%APPDATA%\io.github.semmmer.cardintake\` on Windows; `~/Library/Application Support/io.github.semmmer.cardintake/` on macOS). Older ledgers load with an empty import history.
 
 The Windows-specific code lives in `crates/core`. `cargo test --workspace` builds and tests the native desktop backend on Windows; tests do not eject physical cards or write to configured NAS shares.
 
@@ -196,6 +267,6 @@ In Container Manager, create a project from `docker/compose.yaml` and set the ph
 3. Card Intake installs its plug-in in Lightroom's Modules folder (`%APPDATA%\Adobe\Lightroom\Modules\CardIntake.lrplugin`), which Lightroom loads by itself: restart Lightroom once. In **File → Plug-in Manager → Card Intake**, choose the develop preset for raw photos, the one for DxO DNGs, and the metadata preset. A copy older builds asked you to add by hand is removed.
 4. After an import, use **Open in Lightroom** beside a shoot, or name a trip and use **Open as a trip** for all of the import's shoots (`2026-11-03_Japan`, after the first day). Only shoots without a catalog can join a trip; once in one, opening any of its shoots opens the trip. During an import you can press **Open in Lightroom when done** (and pick the first shoot or a trip), and Lightroom opens as soon as the import is verified. Recent imports shows each catalog: **On this PC** with **Open** and **Finish**, **Open in Lightroom**, or **Finished · on NAS** with **Reopen**.
 
-When a catalog Card Intake made opens, the plug-in reads `<catalog>.card-intake.txt` next to it, which lists its shoot folders, and adds every raw photo and DxO PureRAW DNG in them that isn't in the catalog yet, in place, with the chosen presets; JPEG, HEIF and video stay out. It then builds Smart Previews for them. A DNG named after its raw (`DSC03518_DxO.dng`, `DSC03518_DxO_DeepPRIMEXD2s.dng`) is stacked on top of the raw and takes its rating, flag and colour label. Lightroom's plug-in API can't remove a photo from a catalog, so the raw is tagged `CardIntakeReplacedByDxO` (a keyword that is never exported) and the catalog's **To edit** smart collection leaves tagged photos out: edit from there and each shot appears once. Lightroom restarts when it switches catalogs, so this runs for every catalog you open; for one already open, when a second card or DxO's DNGs arrive, use **Library → Plug-in Extras → Add new files from NAS**. Nothing runs in the background. A share that isn't connected, or a file Lightroom refuses, is reported in a Lightroom dialog.
+When a catalog Card Intake made opens, the plug-in reads `<catalog>.card-intake.txt` next to it, which lists its shoot folders, and adds every raw photo and DxO PureRAW DNG in them that isn't in the catalog yet, in place, with the chosen presets; JPEG, HEIF and video stay out. It then builds Smart Previews for them. A DNG named after its raw (`DSC03518_DxO.dng`, `DSC03518_DxO_DeepPRIMEXD2s.dng`) is stacked on top of the raw and takes its rating, flag and colour label. The plug-in makes no collections or keywords. Lightroom restarts when it switches catalogs, so this runs for every catalog you open; for one already open, when a second card or DxO's DNGs arrive, use **Library → Plug-in Extras → Add new files from NAS**. Nothing runs in the background. A share that isn't connected, or a file Lightroom refuses, is reported in a Lightroom dialog.
 
-The browser-only `prototype/card-intake.html` remains a design demonstration. Real imports, persistent resume, and Lightroom launching run in the desktop app, whose UI is `ui/index.html`.
+`prototype/card-intake.html` is a demo that opens in any browser: the app's own page (`ui/index.html`) with a stand-in backend (`prototype/demo-backend.js`) and sample cards, cameras, imports and catalogs. Nothing is read or written, and reloading starts over. After changing either file, run `node prototype/build-demo.cjs`; a UI test fails while the demo is out of date.

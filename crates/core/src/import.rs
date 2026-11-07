@@ -6,7 +6,7 @@
 //! the next ones are already being copied.
 
 use crate::scan::MediaKind;
-use crate::{destinations, naming, nas, scan, volume_info};
+use crate::{destinations, naming, nas, rating, scan, volume_info};
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -96,6 +96,8 @@ pub struct ImportResult {
     pub shoots: Vec<PathBuf>,
     pub error: Option<String>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub ratings: rating::RatingSummary,
     pub ejected: bool,
 }
 
@@ -188,6 +190,7 @@ struct Shared<P> {
     skipped_elsewhere: usize,
     found_in: BTreeSet<PathBuf>,
     warnings: Vec<String>,
+    rating_targets: Vec<(PathBuf, PathBuf)>,
     destination: PathBuf,
     completed_bytes: u64,
     completed_processed: u64,
@@ -327,15 +330,37 @@ impl<P: FnMut(ImportProgress)> Shared<P> {
 /// fixtures exercise the same copy engine in the tests below.
 pub fn import_card(
     request: &ImportRequest,
+    exiftool: Option<&Path>,
     cancel: &AtomicBool,
     progress: impl FnMut(ImportProgress) + Send,
 ) -> ImportResult {
-    run(request, true, cancel, progress)
+    run_with_exiftool(request, true, exiftool, cancel, progress)
 }
 
+/// The same import engine for a local destination, without app settings or history.
+pub fn import_to_folder(
+    request: &ImportRequest,
+    exiftool: Option<&Path>,
+    cancel: &AtomicBool,
+    progress: impl FnMut(ImportProgress) + Send,
+) -> ImportResult {
+    run_with_exiftool(request, false, exiftool, cancel, progress)
+}
+
+#[cfg(test)]
 fn run(
     request: &ImportRequest,
     require_network: bool,
+    cancel: &AtomicBool,
+    progress: impl FnMut(ImportProgress) + Send,
+) -> ImportResult {
+    run_with_exiftool(request, require_network, None, cancel, progress)
+}
+
+fn run_with_exiftool(
+    request: &ImportRequest,
+    require_network: bool,
+    exiftool: Option<&Path>,
     cancel: &AtomicBool,
     mut progress: impl FnMut(ImportProgress) + Send,
 ) -> ImportResult {
@@ -363,6 +388,7 @@ fn run(
         shoots: Vec::new(),
         error: None,
         warnings: Vec::new(),
+        ratings: rating::RatingSummary::default(),
         ejected: false,
     };
     progress(ImportProgress {
@@ -407,6 +433,7 @@ fn run(
                 skipped_elsewhere: 0,
                 found_in: BTreeSet::new(),
                 warnings: Vec::new(),
+                rating_targets: Vec::new(),
                 destination: plan.destination.clone(),
                 completed_bytes: 0,
                 completed_processed: 0,
@@ -417,15 +444,40 @@ fn run(
                 error: None,
             });
             let next = AtomicUsize::new(0);
-            std::thread::scope(|scope| {
+            let raw_sources: Vec<_> = plan
+                .entries
+                .iter()
+                .filter(|e| e.kind == Some(MediaKind::Photo) && scan::uses_raw_sidecar(&e.source))
+                .map(|e| e.source.clone())
+                .collect();
+            let readings = std::thread::scope(|scope| {
+                let metadata = scope.spawn(|| rating::read_settings(exiftool, &raw_sources));
                 for worker in 0..workers {
                     let (shared, next, stop, plan) = (&shared, &next, &stop, &plan);
                     scope.spawn(move || {
                         copy_files(worker, request, require_network, plan, next, stop, shared)
                     });
                 }
+                metadata.join().unwrap_or_else(|_| rating::Readings {
+                    warnings: vec![
+                        "Initial raw ratings couldn't be read; import again to retry.".into(),
+                    ],
+                    ..Default::default()
+                })
             });
-            let shared = shared.into_inner().unwrap_or_else(|e| e.into_inner());
+            let mut shared = shared.into_inner().unwrap_or_else(|e| e.into_inner());
+            shared.warnings.extend(readings.warnings);
+            apply_ratings(
+                &plan,
+                require_network,
+                &stop,
+                &readings.settings,
+                &mut shared,
+                &mut result.ratings,
+            );
+            if stop.user.load(Ordering::Relaxed) {
+                shared.error.get_or_insert_with(|| STOPPED.to_string());
+            }
             result.copied_files = shared.copied_files;
             result.skipped_files = shared.skipped_files;
             result.verified_files = shared.verified_files;
@@ -520,6 +572,21 @@ fn copy_files<P: FnMut(ImportProgress)>(
                     );
                 }
                 let destination = plan.destination.join(&entry.relative);
+                if entry.kind.is_none() {
+                    return sidecar_next_to(
+                        entry,
+                        destination.parent().unwrap(),
+                        &plan.root,
+                        request.verify,
+                        stop,
+                        &mut buffer,
+                        &mut update,
+                    )
+                    .map(|done| match done {
+                        Done::Elsewhere(_) => Done::Identical,
+                        other => other,
+                    });
+                }
                 if !entry.elsewhere.is_empty() && !destination.exists() {
                     for other in &entry.elsewhere {
                         update("checking_existing", 0, 0);
@@ -576,6 +643,81 @@ fn copy_files<P: FnMut(ImportProgress)>(
                 }
             }
         }
+        let main = &plan.entries[group[0]];
+        if main.kind == Some(MediaKind::Photo) && scan::uses_raw_sidecar(&main.source) {
+            let destination = main_elsewhere
+                .map(|folder| folder.join(main.relative.file_name().unwrap()))
+                .unwrap_or_else(|| plan.destination.join(&main.relative));
+            lock()
+                .rating_targets
+                .push((main.source.clone(), destination));
+        }
+    }
+}
+
+fn apply_ratings<P: FnMut(ImportProgress)>(
+    plan: &Plan,
+    require_network: bool,
+    stop: &Stop,
+    settings: &HashMap<PathBuf, rating::Settings>,
+    shared: &mut Shared<P>,
+    summary: &mut rating::RatingSummary,
+) {
+    // Read each folder once, including sidecars whose extension is upper-case.
+    let mut folders: HashMap<PathBuf, HashMap<String, PathBuf>> = HashMap::new();
+    let mut unread = 0;
+    for (source, raw) in std::mem::take(&mut shared.rating_targets) {
+        if stop.user.load(Ordering::Relaxed) {
+            break;
+        }
+        let outcome = (|| {
+            check_destination(&plan.destination, require_network)?;
+            if volume_info::volume_info(&plan.root).id != plan.card_id {
+                return Err("The card changed before its initial ratings were written.".into());
+            }
+            let locked = rating::locked_on_card(&source).map_err(|e| e.to_string())?;
+            let fallback = rating::Settings::default();
+            let Some(settings) = settings.get(&source).or(locked.then_some(&fallback)) else {
+                unread += 1;
+                return Ok(());
+            };
+            let initial = rating::initial_rating(settings, locked);
+            let folder = raw.parent().unwrap();
+            if !folders.contains_key(folder) {
+                let mut names = HashMap::new();
+                for item in fs::read_dir(folder).map_err(|e| e.to_string())? {
+                    let item = item.map_err(|e| e.to_string())?;
+                    let key = item.file_name().to_string_lossy().to_lowercase();
+                    if names.insert(key, item.path()).is_some() {
+                        return Err(format!("Ambiguous file names in {}.", folder.display()));
+                    }
+                }
+                folders.insert(folder.to_path_buf(), names);
+            }
+            let names = &folders[folder];
+            let raw = names
+                .get(&raw.file_name().unwrap().to_string_lossy().to_lowercase())
+                .unwrap_or(&raw);
+            let wanted = raw.with_extension("xmp");
+            let sidecar = names
+                .get(&wanted.file_name().unwrap().to_string_lossy().to_lowercase())
+                .unwrap_or(&wanted);
+            let relative = sidecar
+                .strip_prefix(&plan.destination)
+                .map_err(|e| e.to_string())?;
+            inspect_relative(&plan.destination, relative)?;
+            shared.emit("rating", relative);
+            let written = rating::write_sidecar(sidecar, &initial)?;
+            summary.record(&initial, written);
+            Ok(())
+        })();
+        if let Err(warning) = outcome {
+            shared.warnings.push(warning);
+        }
+    }
+    if unread > 0 {
+        let noun = if unread == 1 { "raw" } else { "raws" };
+        shared.warnings.push(format!("Initial ratings skipped for {unread} {noun} whose settings couldn't be read. Import again to retry."));
     }
 }
 
@@ -758,7 +900,7 @@ fn plan(request: &ImportRequest, require_network: bool) -> Result<Plan, String> 
     for entry in &entries {
         inspect_relative(&destination, &entry.relative)?;
         match fs::symlink_metadata(destination.join(&entry.relative)) {
-            Ok(meta) if meta.is_file() && meta.len() == entry.size => {}
+            Ok(meta) if meta.is_file() && (entry.kind.is_none() || meta.len() == entry.size) => {}
             Ok(_) => {
                 return Err(format!(
                     "{} already exists with a different size or type. Nothing was overwritten. Choose another shoot name.",
@@ -1352,7 +1494,7 @@ mod tests {
     #[test]
     fn rejects_invalid_requests_and_local_production_destinations() {
         let mut f = Fixture::new();
-        let result = import_card(&f.request, &AtomicBool::new(false), |_| {});
+        let result = import_card(&f.request, None, &AtomicBool::new(false), |_| {});
         assert_eq!(result.status, ImportStatus::Failed);
         assert!(result.error.unwrap().contains("network share"));
         f.request.expected_card_id = Some("not-this-card".into());
@@ -1561,8 +1703,158 @@ mod tests {
             fs::read(video.join("C0002M01.XML")).unwrap(),
             b"edited on the NAS"
         );
-        assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
+        assert_eq!(
+            result
+                .warnings
+                .iter()
+                .filter(|w| w.contains("differs from the card"))
+                .count(),
+            1,
+            "{:?}",
+            result.warnings
+        );
         assert!(!f.request.nas_root.join("2026/2026-11-06_Kyoto").exists());
         assert_eq!(result.shoots, [PathBuf::from("2026/2026-11-06_Tokyo-秋")]);
+    }
+
+    #[test]
+    fn generated_sidecars_do_not_conflict_on_same_or_different_title_reimports() {
+        let mut f = Fixture::new();
+        let source = f.request.root.join("DCIM/100SONY/DSC00001.ARW");
+        let original = fs::read(&source).unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let mut locked = permissions.clone();
+        locked.set_readonly(true);
+        fs::set_permissions(&source, locked).unwrap();
+        let first = f.run();
+        assert_eq!(first.status, ImportStatus::Complete, "{first:?}");
+        assert_eq!(
+            (
+                first.ratings.rated,
+                first.ratings.locked,
+                first.ratings.stars[5]
+            ),
+            (1, 1, 1)
+        );
+        assert!(!f.request.root.join("DCIM/100SONY/DSC00001.xmp").exists());
+        let sidecar = f.folder().join("DSC00001.xmp");
+        assert!(
+            fs::read_to_string(&sidecar)
+                .unwrap()
+                .contains("ci:Pick=\"True\"")
+        );
+        // The NAS file is writable: protection came from the card, not the copy.
+        assert!(
+            !fs::metadata(f.folder().join("DSC00001.ARW"))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+        let second = f.run();
+        assert_eq!(
+            (
+                second.status,
+                second.copied_files,
+                second.skipped_files,
+                second.ratings.kept
+            ),
+            (ImportStatus::Complete, 0, 1, 1)
+        );
+        f.request.shoots[0].name = "Another name".into();
+        let third = f.run();
+        assert_eq!(
+            (
+                third.status,
+                third.copied_files,
+                third.skipped_elsewhere,
+                third.ratings.kept
+            ),
+            (ImportStatus::Complete, 0, 1, 1)
+        );
+        assert!(
+            !f.request
+                .nas_root
+                .join("2026/2026-11-06_Another-name")
+                .exists()
+        );
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert!(f.parts().is_empty());
+        fs::set_permissions(&source, permissions).unwrap();
+    }
+
+    #[test]
+    fn changed_card_sidecars_are_kept_and_then_rated_after_copying() {
+        let f = Fixture::new();
+        let source = f.request.root.join("DCIM/100SONY/DSC00001.ARW");
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let mut locked = permissions.clone();
+        locked.set_readonly(true);
+        fs::set_permissions(&source, locked).unwrap();
+        let card_xmp = b"<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmp:Rating='3' xmlns:crs='http://ns.adobe.com/camera-raw-settings/1.0/' crs:Exposure2012='0.25'/></rdf:RDF>";
+        f.add("DCIM/100SONY/DSC00001.XMP", card_xmp);
+        let first = f.run();
+        assert_eq!(first.status, ImportStatus::Complete, "{first:?}");
+        assert_eq!((first.ratings.kept, first.ratings.stars[3]), (1, 1));
+        let sidecar = f.folder().join("DSC00001.XMP");
+        let text = fs::read_to_string(&sidecar).unwrap();
+        assert!(text.contains("xmp:Rating='3'"));
+        assert!(text.contains("crs:Exposure2012='0.25'"));
+        assert!(text.contains("ci:Pick=\"True\""));
+        assert_ne!(fs::metadata(&sidecar).unwrap().len(), card_xmp.len() as u64);
+        let retry = f.run();
+        assert_eq!(
+            (
+                retry.status,
+                retry.copied_files,
+                retry.skipped_files,
+                retry.ratings.kept
+            ),
+            (ImportStatus::Complete, 0, 2, 1)
+        );
+        assert_eq!(
+            fs::read(f.request.root.join("DCIM/100SONY/DSC00001.XMP")).unwrap(),
+            card_xmp
+        );
+        let text = fs::read_to_string(&sidecar).unwrap();
+        assert_eq!(text.matches("Card Intake|Locked in camera").count(), 1);
+        assert!(f.parts().is_empty());
+        fs::set_permissions(&source, permissions).unwrap();
+    }
+
+    #[test]
+    fn missing_or_broken_exiftool_never_fails_a_copy() {
+        for tool in [None, Some(Path::new("missing-exiftool"))] {
+            let f = Fixture::new();
+            let result =
+                run_with_exiftool(&f.request, false, tool, &AtomicBool::new(false), |_| {});
+            assert_eq!(result.status, ImportStatus::Complete, "{result:?}");
+            assert_eq!((result.copied_files, result.ratings.rated), (1, 0));
+            assert!(!result.warnings.is_empty());
+            assert!(!f.folder().join("DSC00001.xmp").exists());
+        }
+    }
+
+    #[test]
+    fn cancellation_during_ratings_keeps_completed_files_and_allows_retry() {
+        let f = Fixture::new();
+        let source = f.request.root.join("DCIM/100SONY/DSC00001.ARW");
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let mut locked = permissions.clone();
+        locked.set_readonly(true);
+        fs::set_permissions(&source, locked).unwrap();
+        let cancel = AtomicBool::new(false);
+        let result = run(&f.request, false, &cancel, |p| {
+            if p.phase == "rating" {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        });
+        assert_eq!(result.status, ImportStatus::Cancelled);
+        assert_eq!(result.copied_files, 1);
+        let retry = f.run();
+        assert_eq!(
+            (retry.status, retry.skipped_files, retry.ratings.rated),
+            (ImportStatus::Complete, 1, 1)
+        );
+        fs::set_permissions(source, permissions).unwrap();
     }
 }
