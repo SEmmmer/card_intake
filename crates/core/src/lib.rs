@@ -2,6 +2,7 @@
 
 pub mod cameras;
 pub mod card_details;
+pub mod deliver;
 pub mod destinations;
 pub mod eject;
 pub mod exif;
@@ -13,8 +14,10 @@ pub mod ledger;
 pub mod naming;
 pub mod nas;
 pub mod process;
+pub mod rating;
 pub mod scan;
 pub mod shutter;
 pub mod storage;
 pub mod volume_info;
 pub mod volumes;
+mod xmp;

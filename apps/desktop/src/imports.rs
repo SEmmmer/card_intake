@@ -137,7 +137,13 @@ pub async fn start_import(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ImportResult, String> {
-    let active = state.imports.begin()?;
+    let active = {
+        let _gate = state.activity_gate.lock().map_err(|e| e.to_string())?;
+        if state.delivering.load(Ordering::SeqCst) {
+            return Err("Wait for the delivery to finish before importing.".into());
+        }
+        state.imports.begin()?
+    };
     let job = core_request(request, &state)?;
     job.save(&state.pending_path)?;
     run_import(job, active, on_progress, app).await
@@ -153,7 +159,8 @@ async fn run_import(
         let PendingImport { request, eject } = job;
         let mut last = Instant::now();
         let mut phase = "";
-        let mut result = import::import_card(&request, &active.cancel, |progress| {
+        let exiftool = app.state::<AppState>().exiftool.clone();
+        let mut result = import::import_card(&request, exiftool.as_deref(), &active.cancel, |progress| {
             if progress.phase != phase || progress.phase == "file_complete" || last.elapsed() >= Duration::from_millis(100) {
                 phase = progress.phase;
                 last = Instant::now();

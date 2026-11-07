@@ -16,3 +16,5 @@ tauri = { workspace = true }
 walkdir = { workspace = true }
 tempfile = "3"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
+ureq = { version = "2.12", default-features = false, features = ["json", "tls"] }
+url = "2"

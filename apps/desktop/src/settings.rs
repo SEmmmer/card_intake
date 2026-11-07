@@ -11,6 +11,15 @@ pub struct Settings {
     pub nas_root: Option<String>,
     #[serde(default)]
     pub lightroom: crate::lightroom::LightroomSettings,
+    /// Where Deliver puts finished JPEGs, one folder per shoot, e.g.
+    /// `\\NAS\Picture\MyPhoto` (the folder Immich's external library watches).
+    #[serde(default)]
+    pub deliver_to: Option<String>,
+    #[serde(default)]
+    pub immich: crate::immich::ImmichSettings,
+    /// Cameras and cards shown folded, e.g. `camera:03506694` or `card:E2F0-8E6E`.
+    #[serde(default)]
+    pub folded: Vec<String>,
 }
 
 impl Settings {
@@ -51,5 +60,12 @@ mod tests {
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), settings);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn old_settings_load_without_immich() {
+        let s: Settings =
+            serde_json::from_str(r#"{"nas_root":"//NAS/photos","lightroom":{}}"#).unwrap();
+        assert_eq!(s.immich, crate::immich::ImmichSettings::default());
     }
 }

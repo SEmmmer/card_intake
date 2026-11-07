@@ -5,8 +5,7 @@ Card Intake writes <catalog>.card-intake.txt next to each catalog it makes, list
 the catalog's shoot folders. Raw originals in them are added in place, with the
 develop and metadata presets chosen in Plug-in Manager; JPEG, HEIF and video stay
 out. A DxO PureRAW DNG (DSC03518_DxO.dng) is stacked on top of its raw and takes
-over the raw's rating, flag and colour label. The raw gets a keyword that is never
-exported, so the "To edit" collection shows the DNG and hides the raw it replaced.
+over the raw's rating, flag and colour label.
 ]]
 local LrDialogs = import "LrDialogs"
 local LrFileUtils = import "LrFileUtils"
@@ -14,11 +13,31 @@ local LrPathUtils = import "LrPathUtils"
 local LrPrefs = import "LrPrefs"
 local LrProgressScope = import "LrProgressScope"
 local LrTasks = import "LrTasks"
+local LrXml = import "LrXml"
 
 local Intake = {}
 
-Intake.REPLACED = "CardIntakeReplacedByDxO"
-Intake.TO_EDIT = "To edit"
+Intake.NAMESPACE = "https://github.com/semmmer/card_intake/ns/1.0/"
+
+-- Only our namespace can request a Pick; Lightroom doesn't import flags from XMP.
+function Intake.pickRequested(text)
+  if not text then return false end
+  local ok, requested = LrTasks.pcall(function()
+    local function visit(node)
+      local name, namespace = node:name()
+      if namespace == Intake.NAMESPACE and name == "Pick" and node:text() == "True" then return true end
+      for _, attribute in pairs(node:attributes() or {}) do
+        if attribute.namespace == Intake.NAMESPACE and attribute.name == "Pick" and attribute.value == "True" then return true end
+      end
+      for i = 1, node:childCount() or 0 do
+        if visit(node:childAtIndex(i)) then return true end
+      end
+      return false
+    end
+    return visit(LrXml.parseXml(text))
+  end)
+  return ok and requested or false
+end
 
 local RAW = {
   arw = true, srf = true, sr2 = true, nef = true, nrw = true, cr2 = true, cr3 = true,
@@ -46,7 +65,7 @@ end
 
 -- Raw photos and DxO DNGs directly in the shoot folders.
 local function list(folders)
-  local raws, dngs = {}, {}
+  local raws, dngs, sidecars = {}, {}, {}
   for _, folder in ipairs(folders) do
     if LrFileUtils.exists(folder) ~= "directory" then
       error("Reconnect the photo share: " .. folder .. " isn't available.", 0)
@@ -54,6 +73,7 @@ local function list(folders)
     for path in LrFileUtils.files(folder) do
       local name = LrPathUtils.leafName(path)
       local ext = string.lower(LrPathUtils.extension(path) or "")
+      if ext == "xmp" then sidecars[string.lower(LrPathUtils.removeExtension(path))] = path end
       if RAW[ext] and name:sub(1, 2) ~= "._" then
         local base = Intake.dxoBase(name)
         if base then
@@ -66,7 +86,7 @@ local function list(folders)
   end
   table.sort(raws)
   table.sort(dngs, function(a, b) return a.path < b.path end)
-  return raws, dngs
+  return raws, dngs, sidecars
 end
 
 local function preset(uuid)
@@ -77,7 +97,7 @@ end
 -- Adds what's new in `folders`. Returns { added, failed, errors, photos }.
 function Intake.addNew(catalog, folders, progress)
   local prefs = LrPrefs.prefsForPlugin()
-  local raws, dngs = list(folders)
+  local raws, dngs, sidecars = list(folders)
   local rawForStem, newRaws, newDngs = {}, {}, {}
   for _, path in ipairs(raws) do
     rawForStem[string.lower(LrPathUtils.removeExtension(path))] = path
@@ -125,13 +145,19 @@ function Intake.addNew(catalog, folders, progress)
 
   -- Raws first: a DNG is stacked on its raw, which must already be in the catalog.
   write("Card Intake: add photos", function()
-    catalog:createSmartCollection(Intake.TO_EDIT, {
-      combine = "intersect",
-      { criteria = "keywords", operation = "noneOf", value = Intake.REPLACED, value2 = "" },
-    }, nil, true)
     for _, path in ipairs(newRaws) do
       if canceled() then break end
-      add(path, nil, prefs.developPreset)
+      local photo = add(path, nil, prefs.developPreset)
+      local sidecar = sidecars[string.lower(LrPathUtils.removeExtension(path))]
+      if photo and sidecar then
+        local ok, problem = LrTasks.pcall(function()
+          if Intake.pickRequested(LrFileUtils.readFile(sidecar)) then
+            local pick = photo:getRawMetadata("pickStatus")
+            if not pick or pick == 0 then photo:setRawMetadata("pickStatus", 1) end
+          end
+        end)
+        if not ok then fail(path, problem) end
+      end
       step(path)
     end
   end)
@@ -156,8 +182,7 @@ function Intake.addNew(catalog, folders, progress)
       pair.pick = pair.raw:getRawMetadata("pickStatus")
       pair.label = pair.raw:getRawMetadata("colorNameForLabel")
     end
-    write("Card Intake: hide raws replaced by DxO", function()
-      local keyword = catalog:createKeyword(Intake.REPLACED, {}, false, nil, true)
+    write("Card Intake: give DxO DNGs their raw's rating", function()
       for _, pair in ipairs(stacked) do
         local ok, problem = LrTasks.pcall(function()
           if pair.rating then pair.dng:setRawMetadata("rating", pair.rating) end
@@ -165,7 +190,6 @@ function Intake.addNew(catalog, folders, progress)
           if pair.label and pair.label ~= "" and pair.label ~= "none" then
             pair.dng:setRawMetadata("colorNameForLabel", pair.label)
           end
-          pair.raw:addKeyword(keyword)
         end)
         if not ok then fail(pair.dng:getRawMetadata("path"), problem) end
       end
