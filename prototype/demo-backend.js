@@ -523,6 +523,9 @@
     switch (command) {
       case "list_cards":
         return Promise.resolve(roots.map(function (r) { return { root: r, has_sony_video: r === CF }; }));
+      case "eject_card":
+        if (running) return Promise.reject("Wait for the import to finish, or stop it, before ejecting the card.");
+        return wait(700).then(function () { roots = roots.filter(function (r) { return r !== args.root; }); });
       case "read_card":
         if (roots.indexOf(args.root) < 0) return Promise.reject("The card isn't in the reader any more.");
         cardRecord(args.root);

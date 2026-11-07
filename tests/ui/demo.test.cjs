@@ -92,6 +92,11 @@ test('the demo shows a new SD card and a new camera, and registers and removes t
   assert.ok(remove.classList.contains('armed'));
   remove.click();
   await until(() => $('#desk-register-camera'), 'the camera to be new again');
+
+  // Ejecting F: leaves E: on screen.
+  $('#eject').click();
+  await until(() => $('#card-name') && $('#card-name').textContent === 'CEA-G240T', 'the other card after ejecting');
+  assert.equal($('.picker'), null);
   assert.deepEqual(errors, []);
 });
 

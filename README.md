@@ -122,6 +122,8 @@ Copies are staged in unique `.card-intake-*.part` files, flushed, and (when enab
 
 Automatic ejection requires verification. Windows must be able to lock the volume before dismounting and ejecting it. A busy reader, unsupported eject command or permission error is reported separately from the successful copy; use Explorer to eject in that case.
 
+**Eject** beside the card's name ejects it the same safe way at any time: before an import, after one, or without importing. It waits while an import runs or while the app reads the card's shutter counts or health, and it leaves a card alone if a different one has been put in that drive since the screen was drawn. On macOS it only asks you to eject the card yourself, for now.
+
 The import engine is shared with the macOS app, but the new desktop workflow has been built and tested on Windows. Physical reader ejection and a real NAS transfer still need validation with your hardware.
 
 ## Initial raw ratings

@@ -143,6 +143,7 @@ code, .mono { font-family: var(--font-mono); }
 .card-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
 .card-title h2 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 36px; line-height: 1; }
 .card-meta { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.card-title .eject { align-self: center; }
 .camera-tag { text-align: right; font-size: 13px; color: var(--muted); }
 .camera-tag b { display: block; font-family: var(--font-display); font-weight: 600; font-size: 21px; color: var(--ink); line-height: 1.2; }
 @media (max-width: 640px) {
@@ -999,6 +1000,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     switch (command) {
       case "list_cards":
         return Promise.resolve(roots.map(function (r) { return { root: r, has_sony_video: r === CF }; }));
+      case "eject_card":
+        if (running) return Promise.reject("Wait for the import to finish, or stop it, before ejecting the card.");
+        return wait(700).then(function () { roots = roots.filter(function (r) { return r !== args.root; }); });
       case "read_card":
         if (roots.indexOf(args.root) < 0) return Promise.reject("The card isn't in the reader any more.");
         cardRecord(args.root);
@@ -1142,6 +1146,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     nasCheck: null,        // last check result
     health: {},            // card root -> latest outcome this session
     healthBusy: false,
+    eject: null,           // { root, done }: ejecting the card on screen, or ejected
     polling: false,
     nasBusy: false
   };
@@ -1234,7 +1239,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
   function selectCard(root) {
     if (state.run && state.run.active) return;
-    state.current = root; state.report = null; state.error = null; state.loading = true; state.run = null;
+    state.current = root; state.report = null; state.error = null; state.loading = true; state.run = null; state.eject = null;
     renderDesk();
     invoke("read_card", { root: root }).then(function (report) {
       if (state.current !== root) return;
@@ -1379,11 +1384,13 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     state.shutterBusy = true;
     state.shutterNote = null;
     renderCameras();
+    renderEject();
     invoke("read_card_shutter", { root: root }).then(applyCameras).catch(function (e) {
       state.shutterNote = String(e);
     }).then(function () {
       state.shutterBusy = false;
       renderCameras();
+      renderEject();
     });
   }
 
@@ -1554,10 +1561,50 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     bindOptions();
     $("#start").addEventListener("click", startImport);
     $("#health-read").addEventListener("click", readHealth);
+    $("#eject").addEventListener("click", ejectCard);
     renderCardMeta();
     renderCameraTag();
     renderHealth();
     renderRun();
+    renderEject();
+  }
+
+  // Eject waits while the app reads from the card or copies it.
+  function renderEject() {
+    var b = $("#eject");
+    if (!b) return;
+    var r = state.run && state.run.result;
+    var ejected = !!(state.eject && state.eject.done) || !!(r && r.ejected);
+    b.disabled = ejected || !!state.eject || state.loading || state.shutterBusy || state.healthBusy || !!(state.run && state.run.active);
+    b.textContent = ejected ? "Ejected" : state.eject ? "Ejecting…" : "Eject";
+  }
+
+  function ejectCard() {
+    var root = state.current, report = state.report;
+    if (!root || !report || $("#eject").disabled) return;
+    var eject = state.eject = { root: root, done: false };
+    renderEject();
+    invoke("eject_card", { root: root, expectedId: report.volume.id || null }).then(function () {
+      state.roots = state.roots.filter(function (r) { return r !== root; });
+      toast("Ejected " + driveLabel(root) + ". You can take the card out.");
+      if (state.current !== root || state.eject !== eject) return;
+      var r = state.run && state.run.result;
+      if (r && r.status === "complete") {
+        // The import stays on screen, as after "Eject the card when done".
+        eject.done = true;
+        r.ejected = true;
+        renderDone();
+        renderEject();
+        return;
+      }
+      state.current = null; state.report = null; state.error = null; state.run = null; state.eject = null;
+      if (state.roots.length) selectCard(state.roots[0]);
+      else renderDesk();
+    }).catch(function (e) {
+      if (state.eject === eject) state.eject = null;
+      renderEject();
+      toast(String(e));
+    });
   }
 
   function bindPicker() {
@@ -1620,7 +1667,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     // Filled by renderCardMeta and renderCameraTag, which also offer to register them.
     var html = '<div class="sec"><div class="card-head">' + GLYPH +
       '<div><div class="eyebrow">' + esc(eyebrow) + '</div>' +
-      '<div class="card-title"><h2 id="card-name">' + esc(name) + '</h2>' + (chip ? '<span class="chip">' + esc(chip) + '</span>' : "") + '</div>' +
+      '<div class="card-title"><h2 id="card-name">' + esc(name) + '</h2>' + (chip ? '<span class="chip">' + esc(chip) + '</span>' : "") +
+        '<button type="button" class="btn-quiet eject" id="eject" title="Safely eject the card, as Eject in Explorer does">Eject</button></div>' +
       '<div class="card-meta" id="card-meta"></div></div>' +
       '<div class="camera-tag" id="camera-tag"></div></div>';
 
@@ -1796,6 +1844,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     state.healthBusy = true;
     updateSummary();
     renderHealth();
+    renderEject();
     invoke("read_card_health", { root: root }).then(function (outcome) {
       state.health[root] = outcome;
       // A card known by its serial number may take over the inserted card's record.
@@ -1806,6 +1855,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     }).then(function () {
       state.healthBusy = false;
       updateSummary();
+      renderEject();
       if (state.current === root) renderHealth();
     });
   }

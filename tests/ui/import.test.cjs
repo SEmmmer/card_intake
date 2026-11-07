@@ -89,6 +89,10 @@ async function app(t, network = true, options = {}) {
           if (options.ledgerAfterHealth) Object.assign(fixture.ledger, options.ledgerAfterHealth);
           return Promise.resolve(options.healthAnswer);
         case 'cancel_library_scan': return Promise.resolve();
+        case 'eject_card':
+          if (options.ejectError) return Promise.reject(options.ejectError);
+          fixture.roots = fixture.roots.filter(r => r.root !== args.root);
+          return Promise.resolve();
         case 'scan_library':
           fixture.libraryChannel = args.onProgress;
           return new Promise(resolve => { fixture.library = resolve; });
@@ -188,6 +192,51 @@ test('imports like the prototype: progress in the desk with the form locked, the
   a.$('#again').click();
   await settle();
   assert.match(a.$('#desk').textContent, /Insert a camera card/);
+});
+
+test('Eject ejects the card on screen, checking it is still the same card', async t => {
+  const a = await app(t);
+  const eject = a.$('#eject');
+  assert.equal(eject.textContent, 'Eject');
+  assert.equal(eject.disabled, false);
+  eject.click();
+  assert.equal(eject.textContent, 'Ejecting…');
+  assert.equal(eject.disabled, true);
+  await settle();
+  assert.deepEqual(a.last('eject_card'), { root: 'E:\\', expectedId: 'CARD-ID' });
+  assert.equal(a.$('#toast').textContent, 'Ejected drive E:. You can take the card out.');
+  assert.match(a.$('#desk').textContent, /Insert a camera card/);
+});
+
+test('Eject waits for an import; afterwards the done panel stays and says the card is ejected', async t => {
+  const a = await app(t);
+  a.$('#start').click();
+  assert.equal(a.$('#eject').disabled, true);
+  a.fixture.finish(result());
+  await settle();
+  assert.equal(a.$('#eject').disabled, false);
+  a.$('#eject').click();
+  await settle();
+  assert.match(a.$('#done').textContent, /Import complete.*The card has been ejected\./);
+  assert.equal(a.$('#eject').textContent, 'Ejected');
+  assert.equal(a.$('#eject').disabled, true);
+  // An import that ejected the card itself shows it the same way.
+  const b = await app(t);
+  b.$('#opt-eject').click();
+  b.$('#start').click();
+  b.fixture.finish(result({ ejected: true }));
+  await settle();
+  assert.equal(b.$('#eject').textContent, 'Ejected');
+});
+
+test('a failed eject says why, keeps the card on screen and can be tried again', async t => {
+  const a = await app(t, true, { ejectError: "Windows couldn't safely eject the card (Access is denied). Close other apps using it and eject it in Explorer." });
+  a.$('#eject').click();
+  await settle();
+  assert.match(a.$('#toast').textContent, /Close other apps using it/);
+  assert.equal(a.$('#eject').textContent, 'Eject');
+  assert.equal(a.$('#eject').disabled, false);
+  assert.match(a.$('#desk').textContent, /Shoots on this card/);
 });
 
 test('a date with a folder on the NAS keeps its title; another title skips what that folder already holds', async t => {

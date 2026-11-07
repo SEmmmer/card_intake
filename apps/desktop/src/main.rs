@@ -10,7 +10,7 @@ use card_intake_core::{
     cameras,
     card_details::{self, CardDetails},
     destinations::{self, DateDestination},
-    exif,
+    eject, exif,
     exiftool::{self, ShutterSample},
     grouping::{self, ShootGroup},
     health::{self, CardHealth, HealthOutcome},
@@ -218,6 +218,32 @@ async fn list_cards() -> Result<Vec<CardVolume>, String> {
     tauri::async_runtime::spawn_blocking(volumes::find_camera_cards)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Safely ejects the card on screen when you ask, as "Eject the card when done" does
+/// after an import. `expected_id` is the volume ID the screen shows: a card swapped in
+/// since then is left alone.
+#[tauri::command]
+async fn eject_card(
+    root: String,
+    expected_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if state.imports.is_active() {
+        return Err("Wait for the import to finish, or stop it, before ejecting the card.".into());
+    }
+    let root = PathBuf::from(root);
+    tauri::async_runtime::spawn_blocking(move || {
+        if expected_id.is_some() && volume_info::volume_info(&root).id != expected_id {
+            return Err(
+                "A different card is in that drive now, so it wasn't ejected. Eject it in Explorer."
+                    .to_string(),
+            );
+        }
+        eject::eject_card(&root)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Reads a card (never writes to it), then remembers the card, and the camera when
@@ -882,6 +908,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_cards,
+            eject_card,
             read_card,
             read_card_health,
             get_ledger,
