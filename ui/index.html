@@ -234,6 +234,11 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .bar { height: 8px; border-radius: 4px; background: var(--sunken); border: 1px solid var(--line); overflow: hidden; margin-top: 12px; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.1s linear; }
 .pline { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); margin-top: 10px; overflow-wrap: anywhere; }
+/* The NAS catching up behind a card read into this computer. */
+.nas-progress { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.nas-progress .prow { margin-top: 0; }
+.nas-progress .nas-pct { font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1; font-variant-numeric: tabular-nums; }
+.nas-progress .bar { margin-top: 8px; }
 
 /* Done */
 .stopped { margin: 0 0 12px; font-size: 14px; color: var(--warn); }
@@ -402,7 +407,35 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .thumb figcaption small { display: block; color: var(--muted); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 22px 18px; border-top: 1px solid var(--line); }
 .chip.merged { margin-left: 6px; }
-.lr-setup code, #lr-status { overflow-wrap: anywhere; }
+.lr-setup code, #lr-status, #offline-results, #backup-results { overflow-wrap: anywhere; }
+/* The fold button stays beside its name, however long the name is. */
+.item-title { display: flex; align-items: flex-start; gap: 8px; min-width: 0; margin-right: auto; }
+.item-title .item-name { min-width: 0; overflow-wrap: anywhere; }
+.item-title .fold { margin-top: 0; }
+.not-mine-list { border-top: 1px solid var(--line); padding: 10px 16px; }
+.not-mine-list .item-title { align-items: center; }
+.not-mine-label { font-size: 13.5px; color: var(--muted); }
+.not-mine-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 8px 0 0 34px; font-size: 13.5px; }
+.not-mine-item .actions { display: flex; gap: 8px; }
+#ownership-body fieldset { border: 0; padding: 0; margin: 0 0 20px; }
+#ownership-body legend { font-weight: 500; }
+#ownership-body label { display: inline-flex; gap: 6px; margin-right: 16px; align-items: center; }
+#ownership-error { margin: 0 22px 16px; }
+.nas-panel select { display: block; width: 100%; box-sizing: border-box; font: 500 14px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; margin-bottom: 8px; }
+.nas-panel select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.nas-panel #offline-results, .nas-panel #backup-drives, .nas-panel #backup-job { margin-bottom: 14px; }
+.drive { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-top: 10px; }
+.drive-name { font-weight: 600; }
+.drive-name small { font-weight: 400; color: var(--muted); font-family: var(--font-mono); margin-left: 6px; }
+.drive .nas-note { margin-top: 2px; }
+.btn-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.copy-job { margin-top: 12px; overflow-wrap: anywhere; }
+.copy-job .bar { margin-top: 8px; }
+.copy-job-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.copy-job-line { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+.copy-job-result { font-size: 13.5px; margin: 8px 0 0; }
+.copy-job-result.warn { color: var(--warn); }
+#send-job { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 0 0 12px; }
 </style>
 </head>
 <body>
@@ -435,6 +468,22 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       </div>
     </section>
 
+
+    <section aria-labelledby="offline-h">
+      <div class="sec-head"><h2 class="sec-title" id="offline-h">Offline copies</h2></div>
+      <div class="list nas-panel">
+        <label for="offline-path">Offline folder on this computer</label>
+        <div class="nas-row"><input id="offline-path" type="text" spellcheck="false"><button class="btn-quiet" id="offline-check" type="button">Check</button><button class="btn-small" id="offline-save" type="button">Save</button></div>
+        <div id="offline-results" role="status"></div>
+        <div id="backup-drives"></div>
+        <div class="copy-job" id="backup-job" aria-live="polite" hidden></div>
+        <label for="backup-picker">Add a backup drive</label>
+        <select id="backup-picker"><option value="">Choose a connected volume</option></select>
+        <div class="nas-row"><input id="backup-path" type="text" spellcheck="false" aria-label="Backup drive path" placeholder="E:\ or /Volumes/Backup"><button id="backup-init" type="button" class="btn-small">Check / Init</button></div>
+        <p class="nas-note">Checks the drive with a 64 MB test file, then remembers it. Photos stay inside its Card Intake folder.</p>
+        <div id="backup-results" role="status"></div>
+      </div>
+    </section>
 
     <section aria-labelledby="cards-h">
       <div class="sec-head">
@@ -490,6 +539,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     <div class="sec-head">
       <h2 class="sec-title" id="hist-h">Recent imports</h2>
     </div>
+    <div class="copy-job" id="send-job" aria-live="polite" hidden></div>
     <div id="history" class="history-empty"><b>No imports yet.</b> Completed, stopped and failed imports appear here.</div>
     <details class="list delivery-report" id="delivery-report" hidden><summary>Last delivery</summary><div id="delivery-details"></div></details>
   </section>
@@ -499,6 +549,15 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       <h2 id="deliver-title">Deliver</h2>
       <div class="dialog-body" id="deliver-body"></div>
       <div class="dialog-actions"><button type="button" class="btn-quiet" id="deliver-cancel">Cancel</button><button type="button" class="btn-small" id="deliver-confirm">Deliver</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="ownership-dialog" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ownership-title">
+      <h2 id="ownership-title">Before importing</h2>
+      <div class="dialog-body" id="ownership-body"></div>
+      <p class="health-note warn" id="ownership-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="btn-quiet" id="ownership-cancel">Cancel</button><button type="button" class="btn-small" id="ownership-import" disabled>Import</button></div>
     </div>
   </div>
 
@@ -543,8 +602,15 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     error: null,
     report: null,
     shoots: [],
-    opts: { verify: true, video: true, eject: false },
+    opts: { verify: true, video: true, eject: false, offline: false, backup: false },
     nas: null,
+    offline: { folder: "", drives: [], candidates: [] },
+    offlineEdited: false,
+    copyJob: null,
+    notMineCards: [],
+    notMineCameras: [],
+    settingsReady: false,
+    ownership: null,
     ledger: { cards: [], cameras: [], imports: [] },
     run: null,
     pending: null,         // the last import that didn't finish (saved by the app)
@@ -616,8 +682,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   function cleanName(v) { return v.replace(/[\\\/:*?"<>|]/g, "").replace(/[\u0000-\u001f]/g, "").trim().split(/\s+/).filter(Boolean).join("-").replace(/^\.+|\.+$/g, ""); }
   function folderName(sh) { var n = cleanName(sh.name); return n ? sh.date + "_" + n : sh.date; }
   function nasRoot() { return state.nas ? state.nas.root : ""; }
-  function sep() { return nasRoot().indexOf("\\") >= 0 ? "\\" : "/"; }
-  function shootPath(sh) { var s = sep(); return nasRoot().replace(/[\\/]+$/, "") + s + sh.date.slice(0, 4) + s + folderName(sh) + s; }
+  function sep() { return destinationRoot().indexOf("\\") >= 0 ? "\\" : "/"; }
+  function shootPath(sh) { var s = sep(); return destinationRoot().replace(/[\\/]+$/, "") + s + sh.date.slice(0, 4) + s + folderName(sh) + s; }
 
   var toastTimer = null;
   function toast(msg) {
@@ -636,9 +702,294 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     } catch (e) { toast(text); }
   }
 
+  /* ---------- Offline copies and ownership ---------- */
+  function nasReady() { return !!(state.nas && state.nas.connected && state.nas.network === true); }
+  function offlineRoot() {
+    if (state.run && state.run.request.offline && state.run.destination) return state.run.destination;
+    if (state.resumable && state.resumable.request.offline) return state.resumable.request.nas_root;
+    return state.offline.folder;
+  }
+  function destinationRoot() { return state.opts.offline ? offlineRoot() : nasRoot(); }
+  function destinationLabel() { return state.opts.offline ? "this computer" : "NAS"; }
+  function activeDestinations() { return state.report ? (state.opts.offline ? state.report.offline_destinations : state.report.destinations) || [] : []; }
+  function switchDestinations(keepNames) {
+    var byDate = {};
+    activeDestinations().forEach(function (d) { byDate[d.date] = d; });
+    state.shoots.forEach(function (s) {
+      var before = s.dest, next = byDate[s.date] || null;
+      if (!keepNames && (!s.name || (before && s.name === before.suggested_title))) s.name = next && next.suggested_title != null ? next.suggested_title : "";
+      s.dest = next;
+    });
+  }
+  function connectedBackups() { return (state.offline.drives || []).filter(function (d) { return !!d.root; }); }
+  function backupReason() {
+    if (!state.opts.offline) return "Choose Copy to this computer first.";
+    if (!state.opts.verify) return "Enable Check every file after copying first.";
+    if (!connectedBackups().length) return "Connect a remembered backup drive first.";
+    return "Every connected backup drive: " + connectedBackups().map(function (d) { return d.label; }).join(", ") + ".";
+  }
+  function updateOptionRules() {
+    if (!state.opts.verify) state.opts.eject = false;
+    var disabled = !state.opts.offline || !state.opts.verify || !connectedBackups().length;
+    if (disabled && !state.resumable && !(state.run && !state.run.active)) state.opts.backup = false;
+    if ($("#opt-backup")) {
+      $("#opt-backup").disabled = disabled;
+      $("#opt-backup").checked = state.opts.backup;
+      $("#opt-backup").parentElement.querySelector("span").textContent = backupReason();
+    }
+    if ($("#opt-eject")) { $("#opt-eject").disabled = !state.opts.verify; $("#opt-eject").checked = state.opts.eject; }
+    if ($("#opt-offline")) $("#opt-offline").disabled = state.opts.offline && !nasReady();
+  }
+  function isNotMineCard(key) { return state.notMineCards.some(function (c) { return c.key === key; }); }
+  function isNotMineCamera(cam) { return !!cam && hasCamera(state.notMineCameras, cam.model, cam.serial, cam.internal_serial); }
+  function cameraArgs(cam) { return { model: cam.model, serial: cam.serial || null, internalSerial: cam.internal_serial || null }; }
+  function applyNotMine(s) {
+    state.notMineCards = s.not_mine_cards || [];
+    state.notMineCameras = s.not_mine_cameras || [];
+    state.newCameras = state.newCameras.filter(function (c) { return !isNotMineCamera(c); });
+    if (state.report && isNotMineCamera(state.report.camera)) { state.report.camera.shutter_count = null; state.report.camera.electronic_count = null; }
+    renderCards(); renderCameras(); renderCardMeta(); renderCameraTag();
+  }
+  function beforeImport(proceed) {
+    var r = state.report, rec = ledgerCard(r.card_key), rows = [];
+    if ((!rec || rec.registered === false) && !isNotMineCard(r.card_key)) {
+      rows.push({ kind: "card", key: r.card_key, label: [r.card_key || r.volume.id, capLabel(r.volume.total_bytes), r.details && r.details.sd_class].filter(Boolean).join(" · ") });
+    }
+    if (r.camera && !isMyCamera(r.camera) && !isNotMineCamera(r.camera)) {
+      rows.push({ kind: "camera", camera: r.camera, label: [r.camera.model, r.camera.serial || r.camera.internal_serial].filter(Boolean).join(" · ") });
+    }
+    if (!rows.length) { proceed(); return; }
+    state.ownership = { rows: rows, proceed: proceed };
+    $("#ownership-body").innerHTML = rows.map(function (row, i) {
+      return '<fieldset><legend>This ' + row.kind + " isn't in My " + (row.kind === "card" ? "Cards" : "Cameras") + '</legend><p>' + esc(row.label) + '</p>' +
+        '<label><input type="radio" name="owner-' + i + '" value="register"> Register</label> <label><input type="radio" name="owner-' + i + '" value="not-mine"> Not mine</label></fieldset>';
+    }).join("");
+    $("#ownership-error").hidden = true;
+    $("#ownership-import").disabled = true;
+    $("#ownership-cancel").disabled = false;
+    $("#ownership-dialog").hidden = false;
+    $("#ownership-body").querySelectorAll("input").forEach(function (input) {
+      input.addEventListener("change", function () { $("#ownership-import").disabled = rows.some(function (_, i) { return !$("input[name='owner-" + i + "']:checked"); }); });
+    });
+    updateSummary();
+    $("#ownership-cancel").focus();
+  }
+  function cancelOwnership() {
+    if (!state.ownership || state.ownership.busy) return;
+    state.ownership = null; $("#ownership-dialog").hidden = true; updateSummary();
+    if ($("#start")) $("#start").focus();
+  }
+  function confirmOwnership() {
+    var dialog = state.ownership;
+    if (!dialog || dialog.busy || $("#ownership-import").disabled) return;
+    dialog.busy = true;
+    $("#ownership-import").disabled = true; $("#ownership-cancel").disabled = true;
+    $("#ownership-body").querySelectorAll("input").forEach(function (input) { input.disabled = true; });
+    var work = Promise.resolve();
+    dialog.rows.forEach(function (row, i) {
+      var choice = $("input[name='owner-" + i + "']:checked").value;
+      work = work.then(function () {
+        var register = choice === "register", args = row.kind === "card" ? { cardKey: row.key } : cameraArgs(row.camera);
+        return invoke(register ? "register_" + row.kind : "mark_not_mine_" + row.kind, args).then(function (res) {
+          if (!register) applyNotMine(res);
+          else if (row.kind === "camera") applyCameras(res);
+          else { state.ledger = res; renderCards(); renderCardMeta(); }
+        });
+      });
+    });
+    work.then(function () {
+      state.ownership = null; $("#ownership-dialog").hidden = true; dialog.proceed();
+    }).catch(function (error) {
+      dialog.busy = false;
+      $("#ownership-error").textContent = String(error); $("#ownership-error").hidden = false;
+      $("#ownership-import").disabled = false; $("#ownership-cancel").disabled = false;
+      $("#ownership-body").querySelectorAll("input").forEach(function (input) { input.disabled = false; });
+    });
+  }
+  function isFolded(key) { return key.indexOf("not-mine:") === 0 ? !state.folded["open:" + key] : !!state.folded[key]; }
+  function notMineList(kind) {
+    var items = kind === "cards" ? state.notMineCards : state.notMineCameras, key = "not-mine:" + kind;
+    return '<div class="not-mine-list"><div class="item-head"><span class="item-title">' + foldButton(key) + '<span class="not-mine-label">Not mine (' + items.length + ')</span></span></div>' +
+      (isFolded(key) ? "" : items.map(function (c, i) {
+        var text = kind === "cards" ? [c.model || c.key, capLabel(c.capacity_bytes), c.sd_class].filter(Boolean).join(" · ") : [c.model, c.serial || c.internal_serial].filter(Boolean).join(" · ");
+        return '<div class="not-mine-item"><span>' + esc(text) + '</span><span class="actions"><button type="button" class="btn-small" data-nm-register="' + i + '">Register</button><button type="button" class="btn-quiet" data-nm-forget="' + i + '">Forget</button></span></div>';
+      }).join("")) + '</div>';
+  }
+  function bindNotMine(box, kind) {
+    ["register", "forget"].forEach(function (action) {
+      box.querySelectorAll("[data-nm-" + action + "]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var item = (kind === "cards" ? state.notMineCards : state.notMineCameras)[Number(button.getAttribute("data-nm-" + action))];
+          var args = kind === "cards" ? { cardKey: item.key } : cameraArgs(item), singular = kind === "cards" ? "card" : "camera";
+          button.disabled = true;
+          invoke("forget_not_mine_" + singular, args).then(function (res) {
+            applyNotMine(res);
+            if (action === "register") {
+              if (singular === "card" && !ledgerCard(item.key)) { toast("Insert the card to register it."); return; }
+              return invoke("register_" + singular, args).then(function (registered) {
+                if (singular === "camera") applyCameras(registered);
+                else { state.ledger = registered; renderCards(); renderCardMeta(); }
+              });
+            }
+          }).catch(function (error) { button.disabled = false; toast(String(error)); });
+        });
+      });
+    });
+  }
+  function renderChecks(selector, check) {
+    $(selector).innerHTML = '<ul class="checks">' + (check.items || []).map(function (item) {
+      return '<li><span class="mark ' + esc(item.status) + '" aria-label="' + esc(item.status) + '">' + (MARKS[item.status] || "") + '</span><div><b>' + esc(item.title) + '</b><span class="detail">' + esc(item.detail) + '</span></div></li>';
+    }).join("") + '</ul>';
+  }
+  function refreshOffline() {
+    return invoke("get_offline_copies").then(function (res) {
+      state.offline = res;
+      state.offlineSeen = drivesSignature(res);
+      if (!state.offlineEdited) $("#offline-path").value = res.folder;
+      renderBackupDrives();
+      renderPicker();
+      if (state.report && !state.run) renderDesk();
+    });
+  }
+  // What plugging in or removing a drive changes: the volumes to pick, and where remembered drives are.
+  function drivesSignature(res) {
+    return JSON.stringify([(res.candidates || []).map(function (v) { return [v.root, v.label]; }),
+      (res.drives || []).map(function (d) { return [d.uuid, d.root, d.label]; })]);
+  }
+  // Polled like the card list, so a USB drive shows up in the picker once it's plugged in.
+  // Only what changed is redrawn, so typing on the desk isn't disturbed.
+  function pollOffline() {
+    if (state.offlinePolling) return;
+    state.offlinePolling = true;
+    invoke("get_offline_copies").then(function (res) {
+      var seen = drivesSignature(res);
+      if (seen === state.offlineSeen) return;
+      state.offlineSeen = seen;
+      state.offline.candidates = res.candidates;
+      state.offline.drives = res.drives;
+      renderBackupDrives();
+      renderPicker();
+      updateOptionRules();
+      updateSummary();
+    }).catch(function (e) { console.error(e); }).finally(function () { state.offlinePolling = false; });
+  }
+  function renderPicker() {
+    var picker = $("#backup-picker"), chosen = picker.value, candidates = state.offline.candidates || [];
+    picker.innerHTML = '<option value="">' + (candidates.length ? "Choose a connected volume" : "No other drive connected") + '</option>' +
+      candidates.map(function (v) { return '<option value="' + esc(v.root) + '">' + esc(v.label + " · " + v.root) + '</option>'; }).join("");
+    if (candidates.some(function (v) { return v.root === chosen; })) picker.value = chosen;
+  }
+  function renderBackupDrives() {
+    var box = $("#backup-drives");
+    box.innerHTML = (state.offline.drives || []).map(function (d) {
+      var busy = !!state.copyJob || !!state.delivering || !!(state.run && state.run.active);
+      return '<article class="drive"><div class="drive-name">' + esc(d.label) + '<small>' + esc(d.uuid.slice(0, 8)) + '</small></div><p class="nas-note">' + esc(d.root || "Not connected") +
+        (d.root ? ' · ' + esc((capLabel(d.free_bytes) || "?") + " free of " + (capLabel(d.total_bytes) || "?") + (d.filesystem ? " · " + d.filesystem : "")) : "") + '</p>' +
+        '<div class="btn-row"><button type="button" class="btn-small" data-backup="' + esc(d.uuid) + '"' + (!d.root || busy ? ' disabled' : '') + '>Back up now</button>' +
+        '<button type="button" class="btn-quiet" data-backup-eject="' + esc(d.uuid) + '"' + (!d.root || busy ? ' disabled' : '') + '>Eject</button>' +
+        '<button type="button" class="btn-quiet" data-backup-forget="' + esc(d.uuid) + '"' + (busy ? ' disabled' : '') + '>Forget</button></div></article>';
+    }).join("");
+    box.querySelectorAll("[data-backup]").forEach(function (b) { b.addEventListener("click", function () { copyJob("back_up_now", { uuid: b.dataset.backup }, "Backing up to " + backupDriveLabel(b.dataset.backup), "#backup-job"); }); });
+    ["eject", "forget"].forEach(function (action) {
+      box.querySelectorAll("[data-backup-" + action + "]").forEach(function (b) {
+        b.addEventListener("click", function () { b.disabled = true; invoke(action + "_backup", { uuid: b.getAttribute("data-backup-" + action) }).then(refreshOffline).catch(function (e) { b.disabled = false; toast(String(e)); }); });
+      });
+    });
+  }
+  function bindOfflinePanel() {
+    $("#offline-path").addEventListener("input", function () { state.offlineEdited = true; updateSummary(); });
+    ["check", "save"].forEach(function (action) {
+      $("#offline-" + action).addEventListener("click", function () {
+        var b = this; b.disabled = true;
+        invoke(action + "_offline_folder", { path: $("#offline-path").value }).then(function (check) {
+          renderChecks("#offline-results", check);
+          if (action === "save" && check.ok) { state.offlineEdited = false; return refreshOffline(); }
+        }).catch(function (e) { toast(String(e)); }).finally(function () { b.disabled = false; });
+      });
+    });
+    $("#backup-picker").addEventListener("change", function () { if (this.value) $("#backup-path").value = this.value; });
+    $("#backup-init").addEventListener("click", function () {
+      var b = this; b.disabled = true;
+      invoke("check_init_backup", { path: $("#backup-path").value }).then(function (check) {
+        renderChecks("#backup-results", check); return refreshOffline();
+      }).catch(function (e) { toast(String(e)); }).finally(function () { b.disabled = false; });
+    });
+    $("#ownership-cancel").addEventListener("click", cancelOwnership);
+    $("#ownership-import").addEventListener("click", confirmOwnership);
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") cancelOwnership(); });
+  }
+  function offlineCatalogCell(r, i) {
+    var enabled = nasReady() && !state.copyJob && !state.delivering && !(state.run && state.run.active) && (r.local_complete || r.status === "complete");
+    return '<span class="cat-cell"><span class="chip">On this computer</span><button type="button" class="btn-quiet go" data-send="' + i + '"' + (enabled ? "" : " disabled") + '>Send to NAS</button></span>';
+  }
+  function laptopControls(r, i) {
+    return r.laptop_deleted ? '<span class="chip muted">Laptop copy deleted</span>' : '<button type="button" class="btn-quiet" data-delete-laptop="' + i + '"' + (state.copyJob || state.delivering || (state.run && state.run.active) ? ' disabled' : '') + '>Delete laptop copy</button>';
+  }
+  function bindOfflineHistory(box, records) {
+    box.querySelectorAll("[data-send]").forEach(function (b) { b.addEventListener("click", function () { copyJob("send_to_nas", { importId: records[Number(b.dataset.send)].started_at }, "Sending to NAS", "#send-job"); }); });
+    box.querySelectorAll("[data-delete-laptop]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (!b.dataset.confirmUntil || Date.now() > Number(b.dataset.confirmUntil)) {
+          b.dataset.confirmUntil = String(Date.now() + 5000); var until = b.dataset.confirmUntil;
+          b.textContent = "Delete laptop copy? Click again";
+          setTimeout(function () { if (b.dataset.confirmUntil === until && !b.disabled) { delete b.dataset.confirmUntil; b.textContent = "Delete laptop copy"; } }, 5000);
+          return;
+        }
+        b.disabled = true;
+        invoke("delete_laptop_copy", { importId: records[Number(b.dataset.deleteLaptop)].started_at }).then(function (res) {
+          toast("Deleted " + plural(res.deleted, "file", "files") + "." + (res.kept.length ? " Kept changed or extra files: " + res.kept.join(", ") + "." : "") + (res.errors.length ? " " + res.errors.join(" ") : ""));
+          return refreshLedger();
+        }).catch(function (e) { b.disabled = false; delete b.dataset.confirmUntil; b.textContent = "Delete laptop copy"; toast(String(e)); });
+      });
+    });
+  }
+  function backupDriveLabel(uuid) {
+    var d = (state.offline.drives || []).filter(function (x) { return x.uuid === uuid; })[0];
+    return d ? d.label : "backup drive";
+  }
+  // Back up and Send to NAS: progress shows right where the button was pressed
+  // (under the drives, or above Recent imports), and the result stays there.
+  function copyJob(command, args, title, where) {
+    if (state.copyJob || state.delivering || (state.run && state.run.active)) return;
+    state.copyJob = { title: title, stopping: false };
+    ["#backup-job", "#send-job"].forEach(function (id) { if (id !== where) $(id).hidden = true; });
+    var box = $(where); box.hidden = false;
+    box.innerHTML = '<div class="copy-job-head"><b>' + esc(title) + '</b><button type="button" class="btn-quiet warn" data-copy-stop>Stop</button></div>' +
+      '<div class="bar" role="progressbar" aria-label="' + esc(title) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i data-copy-bar></i></div>' +
+      '<p class="copy-job-line" data-copy-line>Checking files and free space…</p>';
+    var bar = box.querySelector("[data-copy-bar]"), line = box.querySelector("[data-copy-line]"), stop = box.querySelector("[data-copy-stop]");
+    stop.addEventListener("click", function () { stop.disabled = true; stop.textContent = "Stopping…"; invoke("cancel_import").catch(function (e) { toast(String(e)); }); });
+    if (box.scrollIntoView) box.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    var setBar = function (pct) { bar.style.width = pct + "%"; bar.parentElement.setAttribute("aria-valuenow", String(Math.round(pct))); };
+    var channel = new tauri.core.Channel();
+    channel.onmessage = function (p) {
+      setBar(p.total_bytes ? Math.min(100, 100 * p.processed_bytes / p.total_bytes) : 0);
+      line.textContent = [p.completed_files + " of " + plural(p.total_files, "file", "files"), gbOf(p.processed_bytes) + " of " + gbOf(p.total_bytes),
+        p.bytes_per_sec != null ? fmt(p.bytes_per_sec / 1e6) + " MB/s" : "", p.eta_secs != null ? "about " + dur(p.eta_secs) + " left" : "",
+        p.current_file ? baseName(String(p.current_file)) : ""].filter(Boolean).join(" · ");
+    };
+    args.onProgress = channel;
+    updateSummary(); renderHistory(); renderBackupDrives(); renderEject();
+    var finish = function (text, ok) {
+      stop.remove();
+      if (ok) setBar(100); else bar.parentElement.hidden = true;
+      line.remove();
+      box.insertAdjacentHTML("beforeend", '<p class="copy-job-result' + (ok ? "" : " warn") + '">' + esc(text) + '</p>');
+    };
+    invoke(command, args).then(function (res) {
+      var sent = res.sent, c = res.counts;
+      var text = res.error || "Verified " + plural(c.verified || 0, "file", "files") + ": " + fmt(c.copied || 0) + " copied, " + fmt(c.skipped || 0) + " already there." +
+        (sent ? " From " + sent.sources.map(function (x) { return x.source; }).join(", ") + "." : "");
+      if (sent && sent.kept_sidecars.length) text += " Kept the NAS's sidecars: " + sent.kept_sidecars.join(", ") + ".";
+      finish(text, !res.error);
+      return refreshLedger().then(refreshCatalogs);
+    }).catch(function (e) { finish(String(e), false); })
+      .finally(function () { state.copyJob = null; updateSummary(); renderHistory(); renderEject(); refreshOffline().catch(function (e) { toast(String(e)); }); });
+  }
+
   /* ---------- Data ---------- */
   function poll() {
-    if (state.polling || (state.run && state.run.active)) return;
+    if (state.polling || state.ownership || (state.run && state.run.active)) return;
     state.polling = true;
     invoke("list_cards").then(function (cards) {
       var roots = cards.map(function (c) { return c.root; });
@@ -656,7 +1007,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   }
 
   function selectCard(root) {
-    if (state.run && state.run.active) return;
+    if (state.ownership || (state.run && state.run.active)) return;
     state.current = root; state.report = null; state.error = null; state.loading = true; state.run = null; state.eject = null;
     renderDesk();
     invoke("read_card", { root: root }).then(function (report) {
@@ -664,8 +1015,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       state.report = report;
       // NVMe cards answer straight away; others need "Read card health".
       if (report.health) state.health[root] = { kind: "read", health: report.health, inserted: true };
+      if (!nasReady()) state.opts.offline = true;
       var dests = {};
-      (report.destinations || []).forEach(function (d) { dests[d.date] = d; });
+      (activeDestinations() || []).forEach(function (d) { dests[d.date] = d; });
       state.shoots = report.groups.map(function (g) {
         var d = dests[g.date] || null;
         // A date that already has a folder on the NAS keeps its title, so another
@@ -696,6 +1048,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     state.shared = res.shared;
     renderCameras();
     renderCameraTag();
+    updateSummary();
   }
 
   // Whether a camera is in `list`: by serial number, or by Sony's internal one when its
@@ -858,6 +1211,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     $("#nas-source").textContent = nas.source === "settings" ? "Saved"
       : nas.source === "environment" ? "Set by CARD_INTAKE_NAS" : "Default, not saved yet";
     state.shoots.forEach(function (_, i) { updatePath(i); });
+    updateOptionRules();
+    renderHistory();
     updateSummary();
   }
 
@@ -993,7 +1348,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (!b) return;
     var r = state.run && state.run.result;
     var ejected = !!(state.eject && state.eject.done) || !!(r && r.ejected);
-    b.disabled = ejected || !!state.eject || state.loading || state.shutterBusy || state.healthBusy || !!(state.run && state.run.active);
+    b.disabled = ejected || !!state.eject || !!state.copyJob || state.loading || state.shutterBusy || state.healthBusy || !!(state.run && state.run.active);
     b.textContent = ejected ? "Ejected" : state.eject ? "Ejecting…" : "Eject";
   }
 
@@ -1060,8 +1415,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var t = { photos: 0, videos: 0, photoBytes: 0, videoBytes: 0, known: false };
     var r = state.report;
     if (!r) return t;
-    t.known = !!(r.destinations && r.destinations.length);
-    (r.destinations || []).forEach(function (d) {
+    var destinations = activeDestinations();
+    t.known = !!destinations.length;
+    destinations.forEach(function (d) {
       t.photos += d.photos_on_nas; t.videos += d.videos_on_nas;
       t.photoBytes += d.photo_bytes_on_nas; t.videoBytes += d.video_bytes_on_nas;
     });
@@ -1098,11 +1454,11 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       var showOther = other >= 0.05e9;
       var pct = function (b) { return (b / v.total_bytes * 100).toFixed(2) + "%"; };
       html += '<div class="cap" role="img" aria-label="Card space: ' + esc(gbOf(newPhotos)) + ' new photos, ' + esc(gbOf(newVideos)) + ' videos, ' +
-        esc(gbOf(there)) + ' already on the NAS' + (v.free_bytes != null ? ", " + esc(gbOf(v.free_bytes)) + " free" : "") + '">' +
+        esc(gbOf(there)) + ' already on ' + destinationLabel() + (v.free_bytes != null ? ", " + esc(gbOf(v.free_bytes)) + " free" : "") + '">' +
         '<span class="p" style="width:' + pct(newPhotos) + '"></span><span class="v" style="width:' + pct(newVideos) + '"></span>' +
         '<span class="d" style="width:' + pct(there) + '"></span>' + (showOther ? '<span class="o" style="width:' + pct(other) + '"></span>' : "") + '</div>' +
         '<div class="legend"><span><i class="p"></i>New photos ' + esc(gbOf(newPhotos)) + '</span><span><i class="v"></i>Videos ' + esc(gbOf(newVideos)) + '</span>' +
-        '<span><i class="d"></i>Already on NAS ' + (nas.known ? esc(gbOf(there)) : "—") + '</span>' +
+        '<span><i class="d"></i>Already on ' + destinationLabel() + ' ' + (nas.known ? esc(gbOf(there)) : "—") + '</span>' +
         (showOther ? '<span><i class="o"></i>Other ' + esc(gbOf(other)) + '</span>' : "") +
         (v.free_bytes != null ? '<span>Free ' + esc(gbOf(v.free_bytes)) + '</span>' : "") + '</div>';
     }
@@ -1116,7 +1472,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       '<div class="stat"><b>' + fmt(r.photos - nas.photos) + '</b><span>new photos</span></div>' +
       '<div class="stat"><b>' + fmt(r.videos - nas.videos) + '</b><span>' + (nas.videos ? "new video clips" : "video clips") + '</span></div>' +
       '<div class="stat"><b>' + (nas.known ? fmt(nas.photos + nas.videos) : "—") + '</b><span>' +
-        (nas.known ? "already on NAS, skipped" : "already on NAS (connect the NAS to check)") + '</span></div>' +
+        (nas.known ? "already on " + destinationLabel() + ", skipped" : "already on " + destinationLabel() + (state.opts.offline ? "" : " (connect the NAS to check)")) + '</span></div>' +
       '<div class="stat"><b>' + esc(dates) + '</b><span>capture dates' + (year ? ", " + esc(year) : "") + '</span></div>' +
       '</div>' +
       (r.times.file_time ? '<p class="hint warn-text">' + esc(plural(r.times.file_time, "file is", "files are") + " dated by file time only, so its shoot date may be off.") + '</p>' : "") +
@@ -1133,6 +1489,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var el = $("#card-meta"), r = state.report;
     if (!el || !r) return;
     var rec = r.card_key ? ledgerCard(r.card_key) : null;
+    if (isNotMineCard(r.card_key)) { el.innerHTML = '<span class="chip muted">Not mine</span>'; return; }
     if (!rec) { el.innerHTML = ""; return; }
     var imports = cardImports(rec);
     var meta = imports.length
@@ -1153,7 +1510,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var html = 'Shot on<b>' + esc(cam.model) + '</b>' + (cam.serial ? '<span class="sn">SN ' + esc(cam.serial) + '</span>' : "");
     // Until My Cameras is loaded, every camera would look new.
     var isNew = state.camerasLoaded && !isMyCamera(cam);
-    if (isNew) {
+    if (isNotMineCamera(cam)) html += '<span class="chip muted">Not mine</span>';
+    else if (isNew) {
       html += '<div class="register"><span class="chip new">New Camera</span>' +
         '<button type="button" class="btn-small" id="desk-register-camera">Register to My Cameras</button></div>';
     }
@@ -1266,7 +1624,11 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     invoke("read_card_health", { root: root }).then(function (outcome) {
       state.health[root] = outcome;
       // A card known by its serial number may take over the inserted card's record.
-      if (outcome.card_key && state.report && state.current === root) state.report.card_key = outcome.card_key;
+      if (outcome.card_key && state.report && state.current === root) {
+        var previousKey = state.report.card_key;
+        state.report.card_key = outcome.card_key;
+        state.notMineCards.forEach(function (c) { if (c.key === previousKey) c.key = outcome.card_key; });
+      }
       return refreshLedger();
     }).catch(function (e) {
       state.health[root] = { kind: "unavailable", reason: String(e) };
@@ -1284,7 +1646,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       return '<div class="sec"><h3 class="sec-title">Nothing to import</h3><p class="hint">This card has no photos or clips in DCIM or M4ROOT/CLIP.</p></div>';
     }
     return '<div class="sec"><h3 class="sec-title">Shoots on this card</h3>' +
-      '<p class="hint">Grouped by capture date. Name each shoot and its folder is created on the NAS. A date that already has a folder there keeps its name.</p>' +
+      '<p class="hint">Grouped by capture date. Name each shoot and its folder is created at the chosen destination. A date that already has a folder there keeps its name.</p>' +
       '<div class="shoots">' + state.shoots.map(function (s, i) {
         var lead = s.photos ? '<span class="n">' + fmt(s.photos) + '</span> photos' : '<span class="n">' + fmt(s.videos) + '</span> clips';
         var rest = gbOf(s.photoBytes + s.videoBytes) + (s.photos && s.videos ? " · " + plural(s.videos, "clip", "clips") : "");
@@ -1302,7 +1664,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
   function optionsSection() {
     return '<div class="sec"><h3 class="sec-title">Options</h3><div class="options">' +
-      opt("opt-verify", state.opts.verify, "Check every file after copying", "Reads each file back from the NAS and compares it with the card (xxHash64), so you know it's safe to format.") +
+      opt("opt-offline", state.opts.offline, "Copy to this computer", "No NAS: photos go to " + (offlineRoot() || "the offline folder") + ". Send them to the NAS later from Recent imports.") +
+      opt("opt-backup", state.opts.backup, "Also copy to backup drives", backupReason()) +
+      opt("opt-verify", state.opts.verify, "Check every file after copying", "Reads each copy back and compares it with the card, so you know it's safe to format.") +
       opt("opt-video", state.opts.video, "Copy videos too", "Clips go into a <code>video</code> folder inside each shoot.", true) +
       opt("opt-eject", state.opts.eject, "Eject the card when done", "Only after every file has been checked.") +
       '</div></div>';
@@ -1330,15 +1694,19 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   }
 
   function bindOptions() {
-    [["opt-verify", "verify"], ["opt-video", "video"], ["opt-eject", "eject"]].forEach(function (pair) {
+    [["opt-verify", "verify"], ["opt-video", "video"], ["opt-eject", "eject"], ["opt-offline", "offline"], ["opt-backup", "backup"]].forEach(function (pair) {
       $("#" + pair[0]).addEventListener("change", function (e) {
         state.opts[pair[1]] = e.target.checked;
-        if (!state.opts.verify) { state.opts.eject = false; $("#opt-eject").checked = false; }
-        $("#opt-eject").disabled = !state.opts.verify;
+        if (pair[1] === "offline") {
+          if (!nasReady()) state.opts.offline = true;
+          switchDestinations();
+          renderDesk();
+        }
+        updateOptionRules();
         updateSummary();
       });
     });
-    $("#opt-eject").disabled = !state.opts.verify;
+    updateOptionRules();
   }
 
   // What the date already has on the NAS, and what this name does with it.
@@ -1397,28 +1765,28 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var t = totals(), btn = $("#start");
     if (!btn) return;
     var resuming = !!(state.run && !state.run.active) || !!state.resumable;
-    btn.textContent = resuming ? "Resume import" : "Import to NAS";
+    btn.textContent = resuming ? "Resume import" : state.opts.offline ? "Import to this computer" : "Import to NAS";
     if (!t.folders) {
       btn.disabled = true;
       $("#summary").textContent = "No shoots selected";
       $("#estimate").textContent = "Tick at least one shoot to import it.";
       return;
     }
-    btn.disabled = !state.nas || !state.nas.connected || state.nas.network !== true || state.healthBusy || state.nasBusy || state.nasEdited || !!state.delivering;
+    btn.disabled = (!state.opts.offline && (!nasReady() || state.nasBusy || state.nasEdited)) || (state.opts.offline && (!state.offline.folder || state.offlineEdited)) || state.healthBusy || !!state.delivering || !!state.copyJob || !!state.ownership || !state.camerasLoaded || !state.settingsReady;
     var what = [];
     if (t.photos) what.push(plural(t.photos, "photo", "photos"));
     if (t.videos) what.push(plural(t.videos, "clip", "clips"));
     $("#summary").textContent = what.length
       ? what.join(" + ") + " · " + gbOf(t.bytes) + " → " + plural(t.folders, "folder", "folders")
-      : "Everything selected is already on the NAS";
+      : "Everything selected is already on " + (state.opts.offline ? "this computer" : "the NAS");
     var speed = lastSpeed();
     var estimate = speed && t.bytes ? "About " + dur(t.bytes / speed) + " at " + fmt(speed / 1e6) + " MB/s, the speed of your last import." : "";
-    if (t.skipped) estimate += (estimate ? " " : "") + plural(t.skipped, "file is", "files are") + " already on the NAS: compared with the card, then skipped.";
+    if (t.skipped) estimate += (estimate ? " " : "") + plural(t.skipped, "file is", "files are") + " already on " + (state.opts.offline ? "this computer" : "the NAS") + ": compared with the card, then skipped.";
     if (!state.opts.verify) estimate += (estimate ? " " : "") + "New copies won't be read back: check them before formatting the card.";
-    $("#estimate").textContent = state.nasEdited ? "Save the NAS path before importing."
-      : state.nasBusy ? "Waiting for the NAS check to finish…"
+    $("#estimate").textContent = state.offlineEdited && state.opts.offline ? "Save the offline folder before importing." : !state.opts.offline && state.nasEdited ? "Save the NAS path before importing."
+      : !state.opts.offline && state.nasBusy ? "Waiting for the NAS check to finish…"
       : state.healthBusy ? "Waiting for the card health reading…"
-      : state.delivering ? "Waiting for the delivery to finish…"
+      : state.copyJob ? "Waiting for the copy job to finish…" : state.delivering ? "Waiting for the delivery to finish…"
       : btn.disabled ? "Connect and save a network photo share before importing."
       : estimate || "Matching XMP and clip XML sidecars are included.";
   }
@@ -1430,7 +1798,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       root: state.current, expected_card_id: state.report.volume.id,
       shoots: totals().list.map(function (s) { return { date: s.date, name: s.name }; }),
       include_videos: state.opts.video, verify: state.opts.verify, eject: state.opts.eject,
-      camera: cam ? cam.model : null
+      camera: cam ? cam.model : null,
+      offline: state.opts.offline, also_backup: state.opts.backup,
+      backup_uuids: state.resumable && state.resumable.request.backup_drives ? state.resumable.request.backup_drives.map(function (d) { return d.uuid; }) : null
     };
   }
 
@@ -1451,7 +1821,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         s.on = !!saved;
         if (saved) s.name = saved.name;
       });
-      state.opts = { verify: p.request.verify, video: p.request.include_videos, eject: p.eject };
+      state.opts = { verify: p.request.verify, video: p.request.include_videos, eject: p.eject, offline: !!p.request.offline, backup: !!(p.request.backup_drives && p.request.backup_drives.length) };
+      switchDestinations(true);
       renderDesk();
     } else {
       renderRun();
@@ -1467,24 +1838,31 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     })[0] || null;
   }
 
+  function backupSummary(result) {
+    return ((result && result.backups) || []).map(function (b) {
+      return '<p class="health-note' + (b.status === "complete" ? "" : " warn") + '">' + esc(b.label + " · " + b.uuid + " · " + b.status + " · " + plural(b.counts.verified, "file", "files") + " verified" + (b.error ? " · " + b.error : "")) + '</p>';
+    }).join("");
+  }
+
   function stoppedText(result) {
     var done = result ? result.copied_files + result.skipped_files : null;
     var head = result && result.status === "failed" ? "Stopped by an error" : "Stopped";
     return (result && result.total_files ? head + " after " + fmt(done) + " of " + fmt(result.total_files) + " files." : head + ".") +
-      " Files already copied stay on the NAS; resuming checks and skips them.";
+      (state.opts.offline ? " Completed copies are kept; resuming checks and skips them." : " Files already copied stay on the NAS; resuming checks and skips them.");
   }
 
   function lockForm(locked) {
     state.shoots.forEach(function (_, i) {
       if ($("#inc-" + i)) { $("#inc-" + i).disabled = locked; $("#name-" + i).disabled = locked; }
     });
-    ["#opt-verify", "#opt-video", "#opt-eject"].forEach(function (id) { if ($(id)) $(id).disabled = locked || (id === "#opt-eject" && !state.opts.verify); });
+    ["#opt-verify", "#opt-video", "#opt-eject", "#opt-offline", "#opt-backup"].forEach(function (id) { if ($(id)) $(id).disabled = locked; });
+    if (!locked) updateOptionRules();
   }
 
   function renderRun() {
     var run = state.run, actions = $("#actions"), progress = $("#progress"), done = $("#done");
     if (!actions) return;
-    lockForm(!!run);
+    lockForm(!!run || !!state.resumable);
     done.hidden = true;
     if (!run) {
       actions.hidden = false;
@@ -1499,7 +1877,10 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       progress.innerHTML = '<p class="stopped" id="stopped" hidden></p><div class="phase" id="phase">Checking card and destination</div>' +
         '<div class="prow"><div class="pct" id="pct">0%</div><button type="button" class="btn-quiet warn" id="stop">Stop</button></div>' +
         '<div class="bar" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="bar"></i></div>' +
-        '<div class="pline" id="pline" aria-live="polite"></div><div class="lr-arm" id="lr-arm"></div>';
+        '<div class="pline" id="pline" aria-live="polite"></div>' +
+        '<div class="nas-progress" id="nas-progress" hidden><div class="prow"><div class="phase">To the NAS</div><div class="nas-pct" id="nas-pct">0%</div></div>' +
+        '<div class="bar" role="progressbar" aria-label="NAS progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="nas-bar"></i></div>' +
+        '<div class="pline" id="nas-pline"></div></div><div class="lr-arm" id="lr-arm"></div>';
       $("#stop").addEventListener("click", stopImport);
       updateProgress();
       renderArm();
@@ -1518,15 +1899,22 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     progress.innerHTML = '<p class="stopped">' + esc(stoppedText(r)) + '</p>' +
       (r && r.error && r.status === "failed" ? '<p class="health-note warn">' + esc(r.error) + '</p>' : "") +
       (run.error ? '<p class="health-note warn">' + esc(run.error) + '</p>' : "") +
+      backupSummary(r) +
       (r ? r.warnings.map(function (w) { return '<p class="health-note warn">' + esc(w) + '</p>'; }).join("") : "");
     updateSummary();
   }
 
   function startImport() {
-    if ($("#start").disabled || state.delivering || (state.run && state.run.active)) return;
+    if ($("#start").disabled || state.delivering || state.copyJob || (state.run && state.run.active)) return;
+    beforeImport(performImport);
+  }
+
+  function performImport() {
     // Resuming after a stop repeats the same request; files already copied are checked and skipped.
     var request = state.run && state.run.request ? state.run.request : importRequest();
-    var run = state.run = { active: true, request: request, progress: null, result: null, error: null, stopping: false, phase: null, arm: null };
+    request.resume = !!state.resumable || !!(state.run && !state.run.active && state.pending && state.pending.request.expected_card_id === request.expected_card_id);
+    var savedDestination = state.resumable ? state.resumable.request.nas_root : destinationRoot();
+    var run = state.run = { active: true, destination: savedDestination, request: request, progress: null, result: null, error: null, stopping: false, phase: null, arm: null };
     state.resumable = null;
     state.tripName = null;
     var channel = new tauri.core.Channel();
@@ -1538,6 +1926,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     renderDesk();
     setNasBusy(false);
     renderHistory();
+    renderBackupDrives();
     invoke("start_import", { request: request, onProgress: channel }).then(function (result) { run.result = result; })
       .catch(function (e) { run.error = String(e); })
       .finally(function () {
@@ -1550,6 +1939,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         }
         setNasBusy(false);
         renderHistory();
+        renderBackupDrives();
         refreshLedger().then(refreshCatalogs).catch(function (e) { toast("Couldn't refresh import history: " + e); });
         refreshNas().catch(function (e) { console.error(e); });
         invoke("get_pending_import").then(function (p) { state.pending = p; }).catch(function () {});
@@ -1561,7 +1951,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     copying: "Copying to NAS",
     verifying: "Checking files on the NAS",
     rating: "Writing initial raw ratings",
-    checking_existing: "Comparing with copies already on the NAS"
+    checking_existing: "Comparing with existing copies",
+    backup: "Copying to backup drive",
+    sending: "Card read · the NAS is catching up"
   };
 
   function updateProgress() {
@@ -1569,7 +1961,12 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (!run || !run.active || !$("#phase")) return;
     // "file_complete" marks a finished file; keep showing what the import is doing.
     if (p && PHASES[p.phase]) run.phase = p.phase;
-    $("#phase").textContent = PHASES[run.phase || "preparing"];
+    var phaseText = PHASES[run.phase || "preparing"];
+    // Offline, or to the NAS through this computer (progress then has a NAS part).
+    var viaLaptop = run.request.offline || !!(p && p.nas);
+    if (viaLaptop && run.phase === "copying") phaseText = run.request.offline ? "Copying to this computer" : "Reading the card into this computer";
+    if (viaLaptop && run.phase === "verifying") phaseText = "Checking files on this computer";
+    $("#phase").textContent = phaseText + (run.phase === "backup" && p && p.current_file ? " · " + p.current_file : "");
     $("#stop").disabled = run.stopping;
     $("#stop").textContent = run.stopping ? "Stopping…" : "Stop";
     $("#stopped").hidden = !run.stopping;
@@ -1584,11 +1981,30 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (p.total_files) {
       if (p.current_file) line.push(baseName(p.current_file));
       line.push(fmt(p.completed_files) + " of " + fmt(p.total_files) + " files");
-      if (p.bytes_per_sec != null) line.push(fmt(p.bytes_per_sec / 1e6) + " MB/s");
-      if (p.eta_secs != null) line.push("about " + dur(p.eta_secs) + " left");
-      if (p.skipped_files) line.push(fmt(p.skipped_files) + " already on NAS");
+      // Once the card is read, only the NAS has a speed and time left.
+      if (p.bytes_per_sec != null && run.phase !== "sending") line.push(fmt(p.bytes_per_sec / 1e6) + " MB/s");
+      if (p.eta_secs != null && run.phase !== "sending") line.push("about " + dur(p.eta_secs) + " left");
+      if (p.skipped_files) line.push(fmt(p.skipped_files) + " already on " + (run.phase === "backup" ? "the drive" : viaLaptop ? "this computer" : "NAS"));
     }
     $("#pline").textContent = line.length ? line.join(" · ") : "Scanning selected shoots…";
+    updateNasProgress(p.nas);
+  }
+
+  // The card is read into this computer at full speed; the NAS follows behind.
+  function updateNasProgress(n) {
+    var box = $("#nas-progress");
+    if (!box) return;
+    box.hidden = !n;
+    if (!n) return;
+    var frac = n.total_bytes ? n.processed_bytes / n.total_bytes : (n.total_files ? n.completed_files / n.total_files : 0);
+    var percent = Math.min(100, Math.floor(frac * 100));
+    $("#nas-pct").textContent = percent + "%";
+    $("#nas-bar").style.width = percent + "%";
+    $("#nas-bar").parentElement.setAttribute("aria-valuenow", percent);
+    var line = [fmt(n.completed_files) + " of " + fmt(n.total_files) + " files", gbOf(n.processed_bytes) + " of " + gbOf(n.total_bytes)];
+    if (n.bytes_per_sec != null) line.push(fmt(n.bytes_per_sec / 1e6) + " MB/s");
+    if (n.eta_secs != null) line.push("about " + dur(n.eta_secs) + " left");
+    $("#nas-pline").textContent = line.join(" · ");
   }
 
   // The shoot "Open in Lightroom" opens: the import's first.
@@ -1599,7 +2015,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   // While copying, ask for Lightroom to open as soon as the import is done.
   function renderArm() {
     var run = state.run, box = $("#lr-arm");
-    if (!box || !run || !run.active) return;
+    if (!box || !run || !run.active || run.request.offline) return;
     var shoots = run.request.shoots, when = run.request.verify ? "when the import is verified" : "when the import finishes";
     if (run.arm) {
       box.innerHTML = '<span>Lightroom opens ' + esc(run.arm.trip ? "the trip " + run.arm.trip : firstShoot(shoots)) + ' ' + when + '.</span>' +
@@ -1667,12 +2083,12 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     what = what.length ? andList(what) : plural(r.total_files, "file", "files");
     var checked = r.verified_files === r.total_files;
     var body = checked
-      ? "All " + what + " are on the NAS and match the card. You can format this card in the camera."
+      ? "All " + what + " are on " + (r.offline ? "this computer" : "the NAS") + " and match the card. You can format this card in the camera."
       : "All " + what + " are copied. They weren't checked against the card, so keep the card until you've checked them.";
     if (r.skipped_elsewhere) {
       body += " " + plural(r.skipped_elsewhere, "file was", "files were") + " already in " + andList(r.found_in.map(baseName)) + " and weren't copied again.";
     } else if (r.skipped_files) {
-      body += " " + plural(r.skipped_files, "file was", "files were") + " already on the NAS.";
+      body += " " + plural(r.skipped_files, "file was", "files were") + " already on " + (r.offline ? "this computer" : "the NAS") + ".";
     }
     if (r.ejected) body += " The card has been ejected.";
     var ratings = r.ratings;
@@ -1681,21 +2097,22 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       (ratings.kept ? " Kept " + plural(ratings.kept, "existing rating", "existing ratings") + "." : "") : "";
     var items = r.shoots.map(function (s, i) {
       var c = catalogFor(r, i), path = catalogPath(s);
-      var cat = c && c.trip ? "Trip catalog: " + c.name : path ? "Catalog: " + path : "";
+      var cat = r.offline ? "" : c && c.trip ? "Trip catalog: " + c.name : path ? "Catalog: " + path : "";
       return '<li><div class="dl-main"><code id="done-path-' + i + '">' + esc(importedPath(r.nas_root, s)) + '</code>' +
         (cat ? '<span class="dl-cat">' + esc(cat) + '</span>' : "") + '</div>' +
-        '<div class="dl-btns"><button type="button" class="btn-open" data-open="' + i + '">Open in Lightroom</button>' +
+        '<div class="dl-btns">' + (r.offline ? "" : '<button type="button" class="btn-open" data-open="' + i + '">Open in Lightroom</button>') +
         '<button type="button" class="btn-quiet" data-copy="' + i + '">Copy path</button></div></li>';
     }).join("");
     d.innerHTML = '<div class="done-head">' + CHECK + '<div><h3>Import complete</h3><p>' + esc(body) + '</p></div></div>' +
       (ratingText ? '<p class="health-note">' + esc(ratingText) + '</p>' : "") +
+      backupSummary(r) +
       r.warnings.map(function (w) { return '<p class="health-note warn">' + esc(w) + '</p>'; }).join("") +
       '<ul class="done-list">' + items + '</ul>' +
-      (r.shoots.length > 1 ? '<div class="done-all"><input type="text" class="trip-name" id="trip-name" spellcheck="false" aria-label="Trip name" placeholder="Trip name" value="' +
+      (!r.offline && r.shoots.length > 1 ? '<div class="done-all"><input type="text" class="trip-name" id="trip-name" spellcheck="false" aria-label="Trip name" placeholder="Trip name" value="' +
         esc(state.tripName != null ? state.tripName : tripGuess(r.shoots)) + '"><button type="button" class="btn-quiet" id="open-trip">Open as a trip</button>' +
         '<span>One catalog for all ' + r.shoots.length + ' shoots, named after the first day. Only shoots without a catalog can join.</span></div>' : "") +
-      '<p class="next">Each shoot gets its own Lightroom catalog on this computer, made from your template; the Card Intake plug-in adds the photos from the NAS as it opens. ' +
-      'When you’ve finished editing, close the catalog and press <b>Finish</b> in Recent imports: it moves to the shoot’s <code>_catalog</code> folder on the NAS with its Smart Previews.</p>' +
+      (r.offline ? '<p class="next">Send to NAS from Recent imports when the share is connected.</p>' : '<p class="next">Each shoot gets its own Lightroom catalog on this computer, made from your template; the Card Intake plug-in adds the photos from the NAS as it opens. ' +
+      'When you’ve finished editing, close the catalog and press <b>Finish</b> in Recent imports: it moves to the shoot’s <code>_catalog</code> folder on the NAS with its Smart Previews.</p>') +
       '<p class="next"><button type="button" class="btn-quiet" id="again">Back to card</button></p>';
     d.hidden = false;
     d.querySelectorAll("[data-copy]").forEach(function (b) {
@@ -1736,8 +2153,10 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
   // Each of the import's catalogs: one per shoot, or a trip holding several.
   function catalogCell(r, i) {
+    if (r.offline && !r.sent) return offlineCatalogCell(r, i);
     var cats = r.status === "complete" ? state.catalogs[r.started_at] || [] : [];
-    if (!cats.length) return '<span class="muted">—</span>';
+    var laptop = r.offline && r.sent ? laptopControls(r, i) : "";
+    if (!cats.length) return laptop || '<span class="muted">—</span>';
     return '<div class="cat-list">' + cats.map(function (c) {
       var key = i + ":" + c.shoots[0];
       var button = function (attr, label, title, kind) {
@@ -1754,12 +2173,12 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       var delivery = state.deliveries[r.started_at + ":" + c.shoots[0]];
       var running = state.delivering === r.started_at + ":" + c.shoots[0];
       body += '<button type="button" class="btn-quiet go" data-deliver="' + key + '"' +
-        (state.delivering || (state.run && state.run.active) ? ' disabled' : '') +
+        (state.delivering || state.copyJob || (state.run && state.run.active) ? ' disabled' : '') +
         ' title="Shows the finished JPEGs that are new, then copies them to the finished photos folder with current Lightroom stars">' + (running ? "Delivering…" : "Deliver") + '</button>';
       if (delivery && delivery.last_delivered) body += '<span class="chip ok">Delivered ' + fmt(delivery.count) + ' · ' + esc(whenLabel(delivery.last_delivered)) + '</span>';
       if (delivery && delivery.error) body += '<span class="chip warn" title="' + esc(delivery.error) + '">Delivery unavailable</span>';
       return '<span class="cat-cell">' + name + body + '</span>';
-    }).join("") + '</div>';
+    }).join("") + laptop + '</div>';
   }
 
   // Imports whose only catalog is the same shoot or trip share one row, e.g. a second
@@ -1767,7 +2186,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   function historyRows(records) {
     var rows = [], byCatalog = {};
     records.forEach(function (r, i) {
-      var cats = r.status === "complete" ? state.catalogs[r.started_at] || [] : [];
+      var cats = r.status === "complete" && (!r.offline || r.sent) ? state.catalogs[r.started_at] || [] : [];
       var key = cats.length === 1 && cats[0].state !== "missing" ? (cats[0].trip ? "trip:" : "shoot:") + cats[0].name : null;
       if (key && byCatalog[key]) { byCatalog[key].push({ r: r, i: i }); return; }
       var members = [{ r: r, i: i }];
@@ -1804,7 +2223,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       '<td class="cam-cell">' + esc(uniq(all.map(function (x) { return x.camera; })).join(", ") || "—") + '</td>' +
       '<td class="r">' + photos + '</td><td class="r">' + esc(gbOf(sum(function (x) { return x.total_bytes; }))) + '</td>' +
       '<td class="r">' + (speed ? fmt(speed / 1e6) + " MB/s" : "—") + '</td>' +
-      '<td>' + checkChip(problem || r) + '</td><td class="folder-cell">' + folder + '</td><td>' + catalogCell(r, i) + '</td></tr>';
+      '<td>' + checkChip(problem || r) + '</td><td class="folder-cell">' + folder + '</td><td>' + catalogCell(r, i) + all.slice(1).filter(function (x) { return x.offline && x.sent; }).map(function (x) { return laptopControls(x, state.ledger.imports.indexOf(x)); }).join("") + '</td></tr>';
   }
 
   function renderHistory() {
@@ -1818,6 +2237,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     box.innerHTML = '<table><thead><tr><th>Date</th><th>Card</th><th>Camera</th><th class="r">Photos</th><th class="r">Size</th><th class="r">Speed</th>' +
       '<th>Check</th><th>Folder</th><th>Lightroom catalog</th></tr></thead><tbody>' +
       historyRows(records).map(historyRow).join("") + '</tbody></table>';
+    bindOfflineHistory(box, records);
     box.querySelectorAll("[data-hopen]").forEach(function (b) {
       var k = b.dataset.hopen.split(":");
       b.addEventListener("click", function () { openLightroom(records[Number(k[0])], Number(k[1]), null, b); });
@@ -1913,7 +2333,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
   // Deliver, step 1: find what's new and show it. Nothing is copied until it's confirmed.
   function deliverPhotos(record, shoot) {
-    if (state.delivering || (state.run && state.run.active)) return;
+    if (state.delivering || state.copyJob || (state.run && state.run.active)) return;
     state.delivering = record.started_at + ":" + shoot; renderHistory(); updateSummary();
     invoke("plan_delivery", { importId: record.started_at, shoot: shoot }).then(function (plan) {
       var fresh = deliveryCounts(plan.shoots).photos.filter(function (p) { return p.action === "new"; });
@@ -2086,17 +2506,19 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   // until it's registered.
   function renderCards() {
     var isNew = function (c) { return c.registered === false; };
-    var fresh = state.ledger.cards.filter(isNew);
+    var fresh = state.ledger.cards.filter(function (c) { return isNew(c) && !isNotMineCard(c.id); });
     var mine = state.ledger.cards.filter(function (c) { return !isNew(c); });
     var box = $("#cards");
     box.innerHTML = fresh.map(cardItem).join("") + (mine.length ? mine.map(cardItem).join("")
       : '<div class="empty">' + (fresh.length ? "No cards in My Cards yet." : "No cards yet. Insert a card and register it here.") + '</div>');
+    box.insertAdjacentHTML("beforeend", notMineList("cards"));
     box.querySelectorAll("[data-register-card]").forEach(function (b) {
       b.addEventListener("click", function () { registerCard(b.dataset.registerCard, b); });
     });
     box.querySelectorAll("[data-remove-card]").forEach(function (b) {
       b.addEventListener("click", function () { removeCard(b.dataset.removeCard, b); });
     });
+    bindNotMine(box, "cards");
     bindFolds(box);
   }
 
@@ -2127,7 +2549,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         fact("Formats seen", c.hardware_serial ? fmt(c.formats) : null) + fact("Insertions", fmt(c.insertions));
     }
     var key = "card:" + c.id, folded = !fresh && !!state.folded[key];
-    var head = '<div class="item-head">' + (fresh ? "" : foldButton(key)) + '<span class="item-name">' + esc(name) + serial + '</span>' +
+    var head = '<div class="item-head"><span class="item-title">' + (fresh ? "" : foldButton(key)) + '<span class="item-name">' + esc(name) + serial + '</span></span>' +
       '<span class="chips">' + chips + '</span>' +
       (fresh ? "" : '<button type="button" class="btn-quiet danger" data-remove-card="' + esc(c.id) + '" title="Removes this card from this computer. Its import history stays.">Remove</button>') + '</div>';
     if (folded) return '<article class="item folded">' + head + '</article>';
@@ -2138,7 +2560,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
   // Each registered camera and card can be folded to its name; the app remembers it.
   function foldButton(key) {
-    var folded = !!state.folded[key];
+    var folded = isFolded(key);
     return '<button type="button" class="fold" data-fold="' + esc(key) + '" aria-expanded="' + !folded + '" title="' + (folded ? "Unfold" : "Fold") + '">' + (folded ? "▸" : "▾") + '</button>';
   }
 
@@ -2149,7 +2571,10 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   }
 
   function toggleFold(key) {
-    if (state.folded[key]) delete state.folded[key]; else state.folded[key] = true;
+    if (key.indexOf("not-mine:") === 0) {
+      var openKey = "open:" + key;
+      if (state.folded[openKey]) delete state.folded[openKey]; else state.folded[openKey] = true;
+    } else if (state.folded[key]) delete state.folded[key]; else state.folded[key] = true;
     renderCards(); renderCameras();
     var again = document.querySelector('[data-fold="' + key.replace(/["\\]/g, "\\$&") + '"]');
     if (again) again.focus();
@@ -2198,9 +2623,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (state.shutterBusy) html += '<div class="empty pulse">Reading the shutter count of every photo on the card…</div>';
     if (state.shutterNote) html += '<div class="empty">' + esc(state.shutterNote) + '</div>';
     // New cameras first: read from photos, but not registered, so not saved.
-    var fresh = (state.newCameras || []).slice();
+    var fresh = (state.newCameras || []).filter(function (c) { return !isNotMineCamera(c); });
     // The inserted card's camera, before (or without) counts from its photos.
-    if (cam && state.camerasLoaded && !isMyCamera(cam) && !hasCamera(fresh, cam.model, cam.serial, cam.internal_serial)) {
+    if (cam && state.camerasLoaded && !isMyCamera(cam) && !isNotMineCamera(cam) && !hasCamera(fresh, cam.model, cam.serial, cam.internal_serial)) {
       fresh.unshift({ model: cam.model, name: null, serial: cam.serial, internal_serial: cam.internal_serial,
         firmware: cam.firmware, count: null, electronic_count: null, last_shot: null, days: [] });
     }
@@ -2210,7 +2635,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     } else if (!state.shutterBusy && !state.library) {
       html += '<div class="empty">' + (fresh.length ? "No cameras in My Cameras yet." : "No cameras yet. Insert a card and register its camera here.") + '</div>';
     }
-    box.innerHTML = html;
+    box.innerHTML = html + notMineList("cameras");
     var stop = $("#lib-stop");
     if (stop) stop.addEventListener("click", stopLibrary);
     box.querySelectorAll("[data-register-camera]").forEach(function (b) {
@@ -2219,6 +2644,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     box.querySelectorAll("[data-remove-camera]").forEach(function (b) {
       b.addEventListener("click", function () { removeCamera(cams[Number(b.dataset.removeCamera)], b); });
     });
+    bindNotMine(box, "cameras");
     bindFolds(box);
   }
 
@@ -2244,7 +2670,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       ? '<div class="item-head"><span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span>' +
         '<span class="chip new">New Camera</span></div><div class="item-id">' + sn + '</div>' +
         '<div class="register"><button type="button" class="btn-small" data-register-camera="' + newIndex + '">Register to My Cameras</button></div>'
-      : '<div class="item-head">' + foldButton(foldKey) + '<span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span>' + sn +
+      : '<div class="item-head"><span class="item-title">' + foldButton(foldKey) + '<span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span></span>' + sn +
         '<button type="button" class="btn-quiet danger" data-remove-camera="' + state.cameras.indexOf(c) + '" title="Removes this camera and its shutter history from every computer when they sync.">Remove</button></div>';
     if (!isNew && state.folded[foldKey]) return '<article class="item folded">' + head + '</article>';
     var shutter = count != null
@@ -2307,6 +2733,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   $("#deliver-save").addEventListener("click", saveDeliverySetup);
   $("#deliver-confirm").addEventListener("click", confirmDelivery);
   $("#deliver-cancel").addEventListener("click", cancelDelivery);
+  bindOfflinePanel();
   document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !$("#deliver-dialog").hidden) cancelDelivery(); });
   if (invoke) {
     refreshPending().catch(function (e) { toast(String(e)); });
@@ -2314,13 +2741,17 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     invoke("get_delivery_settings").then(applyDeliverySetup).catch(function (e) { $("#deliver-status").textContent = String(e); });
     invoke("get_settings").then(function (s) {
       (s.folded || []).forEach(function (k) { state.folded[k] = true; });
-      renderCards(); renderCameras();
+      applyNotMine(s);
+      state.settingsReady = true;
+      updateSummary();
     }).catch(function (e) { console.error(e); });
+    refreshOffline().catch(function (e) { toast(String(e)); });
     refreshNas().catch(function (e) { toast(String(e)); });
     refreshLedger().then(refreshCatalogs).catch(function (e) { toast(String(e)); });
     refreshCameras().catch(function (e) { console.error(e); });
     poll();
     setInterval(poll, POLL_MS);
+    setInterval(pollOffline, 3000);
     setInterval(function () { if (!state.run || !state.run.active) refreshNas().catch(function (e) { console.error(e); }); }, 15000);
   } else {
     $("#nas").innerHTML = '<span class="dot"></span><span>Not running in the app</span>';

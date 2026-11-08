@@ -10,6 +10,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 walkdir = { workspace = true }
 tempfile = "3"
+uuid = { version = "1", features = ["v4", "serde"] }
 roxmltree = "0.21"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }

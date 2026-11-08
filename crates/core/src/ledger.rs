@@ -122,7 +122,19 @@ pub struct CameraSighting {
 impl Ledger {
     pub fn record_import(&mut self, result: crate::import::ImportResult) {
         self.imports.insert(0, result);
-        self.imports.truncate(100);
+        while self.imports.len() > 100 {
+            let Some(index) = self
+                .imports
+                .iter()
+                .enumerate()
+                // The newest result must stay available for Lightroom and Send,
+                // even when protected offline records already fill the limit.
+                .rposition(|(i, r)| i != 0 && (!r.offline || r.sent.is_some()))
+            else {
+                break;
+            };
+            self.imports.remove(index);
+        }
     }
 
     /// Loads the ledger, or starts an empty one if the file doesn't exist yet.
@@ -386,6 +398,52 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trimming_keeps_unsent_offline_imports_even_when_more_than_one_hundred() {
+        let mut ledger = Ledger::default();
+        for i in 0..105 {
+            let mut r = import_from(&format!("card-{i}"));
+            r.offline = true;
+            ledger.record_import(r);
+        }
+        assert_eq!(ledger.imports.len(), 105);
+        ledger.record_import(import_from("NAS"));
+        assert_eq!(ledger.imports.len(), 106);
+        assert_eq!(ledger.imports.iter().filter(|r| r.offline).count(), 105);
+        assert_eq!(ledger.imports[0].card_id.as_deref(), Some("NAS"));
+        let mut old = import_from("old NAS");
+        old.offline = false;
+        ledger.imports.push(old);
+        ledger.record_import(import_from("new NAS"));
+        assert_eq!(ledger.imports.len(), 106);
+        assert_eq!(ledger.imports.iter().filter(|r| r.offline).count(), 105);
+        assert_eq!(ledger.imports[0].card_id.as_deref(), Some("new NAS"));
+    }
+
+    #[test]
+    fn old_history_defaults_to_nas_and_sent_offline_imports_can_be_trimmed() {
+        let old = import_from("old");
+        assert!(!old.offline);
+        assert!(old.sent.is_none());
+        let mut sent = old.clone();
+        sent.offline = true;
+        sent.sent = Some(crate::send::Sent {
+            at: chrono::Utc::now(),
+            nas_root: sent.nas_root.clone(),
+            counts: Default::default(),
+            sources: Vec::new(),
+            kept_sidecars: Vec::new(),
+            found_in: Vec::new(),
+        });
+        let mut ledger = Ledger::default();
+        ledger.record_import(sent);
+        for _ in 0..100 {
+            ledger.record_import(old.clone());
+        }
+        assert_eq!(ledger.imports.len(), 100);
+        assert!(ledger.imports.iter().all(|r| !r.offline));
+    }
 
     fn at(s: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap()

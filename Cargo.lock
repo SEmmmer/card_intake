@@ -303,6 +303,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "uuid",
  "walkdir",
  "windows-sys 0.59.0",
  "xxhash-rust",

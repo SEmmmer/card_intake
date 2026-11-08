@@ -28,6 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|f| f.captured.date())
         .collect();
     let request = import::ImportRequest {
+        offline: false,
+        backup_drives: Vec::new(),
+        relay_to: None,
         root,
         nas_root: destination,
         expected_card_id: None,

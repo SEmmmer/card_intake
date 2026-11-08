@@ -1,7 +1,9 @@
 //! Shared logic for Card Intake, used by the desktop app and the NAS service.
 
+pub mod backup;
 pub mod cameras;
 pub mod card_details;
+pub mod copies;
 pub mod deliver;
 pub mod destinations;
 pub mod eject;
@@ -13,9 +15,11 @@ pub mod import;
 pub mod ledger;
 pub mod naming;
 pub mod nas;
+pub mod offline;
 pub mod process;
 pub mod rating;
 pub mod scan;
+pub mod send;
 pub mod shutter;
 pub mod storage;
 pub mod volume_info;

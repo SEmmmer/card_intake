@@ -23,12 +23,14 @@ async function app(t, network = true, options = {}) {
   };
   const fixture = {
     roots: [{ root: 'E:\\', has_sony_video: true }],
-    ledger: { cards: [], cameras: [], imports: [] },
+    ledger: { cards: [{ id: 'CARD-ID', volume_id: 'CARD-ID', registered: true, first_seen: '2026-11-06T12:00:00', last_seen: '2026-11-06T12:00:00', insertions: 1 }], cameras: [], imports: [] },
     request: null, channel: null, finish: null,
     pending: options.pending || null,
     catalogs: options.catalogs || [],
-    cameras: options.cameras || { cameras: [], shared: { path: null, synced: false, error: null, folders: 0 } },
+    cameras: options.cameras || { cameras: [a7r6()], shared: { path: null, synced: false, error: null, folders: 0 } },
     library: null,
+    settings: plain(options.settings || { folded: [], not_mine_cards: [], not_mine_cameras: [] }),
+    offline: plain(options.offline || { folder: 'C:\\Pictures\\Card Intake Offline', drives: [], candidates: [] }),
     nas: { root: '\\\\NAS\\photos', connected: true, network, free_bytes: 1e12, source: 'settings' }
   };
   window.setInterval = (fn, ms) => { timers.set(ms, fn); return ms; };
@@ -42,7 +44,8 @@ async function app(t, network = true, options = {}) {
     camera: options.camera || { model: 'ILCE-7RM6', serial: '03506694', shutter_count: 894 },
     scan_ms: 12, times: { exif: 2, sidecar: 1, file_time: 0 },
     groups: options.groups || [{ date: '2026-11-06', first: '2026-11-06T17:00:00', last: '2026-11-06T21:00:00', photos: 2, photo_bytes: 200, videos: 1, video_bytes: 100 }],
-    destinations: options.destinations || []
+    destinations: options.destinations || [],
+    offline_destinations: options.offlineDestinations || []
   };
   window.__TAURI__ = { core: {
     Channel: class { onmessage() {} },
@@ -70,16 +73,50 @@ async function app(t, network = true, options = {}) {
         case 'save_delivery_settings':
           fixture.deliverySaved = args.settings;
           return Promise.resolve({ deliver_to: args.settings.deliver_to, url: args.settings.url, has_key: true, library_id: 'lib1', libraries: [{ id: 'lib1', name: 'MyPhoto', assetCount: 42, importPaths: ['/photos/MyPhoto'] }] });
-        case 'get_settings': return Promise.resolve(options.settings || { folded: [] });
+        case 'get_settings': return Promise.resolve(fixture.settings);
+        case 'get_offline_copies': return Promise.resolve(plain(fixture.offline));
+        case 'check_offline_folder': return Promise.resolve(options.offlineCheck || { path: args.path, ok: true, items: [{ status: 'pass', title: 'On this computer', detail: args.path }] });
+        case 'save_offline_folder':
+          if (!options.offlineCheck || options.offlineCheck.ok) fixture.offline.folder = args.path;
+          return Promise.resolve(options.offlineCheck || { path: args.path, ok: true, items: [{ status: 'pass', title: 'Folder can be created', detail: args.path }] });
+        case 'check_init_backup': return Promise.resolve(options.initCheck || { ok: true, items: [{ status: 'pass', title: 'Initialized: created .card-intake-demo', detail: 'Backup drive' }], drive: { uuid: 'demo', label: 'Trip' } });
+        case 'forget_backup': fixture.offline.drives = fixture.offline.drives.filter(d => d.uuid !== args.uuid); return Promise.resolve();
+        case 'eject_backup': fixture.offline.drives.forEach(d => { if (d.uuid === args.uuid) d.root = null; }); return Promise.resolve();
+        case 'back_up_now':
+        case 'send_to_nas':
+          fixture.copyChannel = args.onProgress;
+          return new Promise((resolve, reject) => { fixture.copyFinish = res => {
+            if (res.sent) { const r = fixture.ledger.imports.find(r => r.started_at === args.importId); r.sent = res.sent; r.nas_root = fixture.nas.root; }
+            resolve(res);
+          }; fixture.copyError = reject; });
+        case 'delete_laptop_copy':
+          if (options.deleteError) return Promise.reject(options.deleteError);
+          fixture.ledger.imports.find(r => r.started_at === args.importId).laptop_deleted = !options.deleted || options.deleted.complete;
+          return Promise.resolve(options.deleted || { deleted: 2, kept: [], errors: [], complete: true });
+        case 'mark_not_mine_card':
+        case 'mark_not_mine_camera':
+          if (options.markError) return Promise.reject(options.markError);
+          if (command.endsWith('card')) (fixture.settings.not_mine_cards ||= []).push({ key: args.cardKey, capacity_bytes: 256e9, sd_class: 'SDXC' });
+          else (fixture.settings.not_mine_cameras ||= []).push({ model: args.model, serial: args.serial, internal_serial: args.internalSerial });
+          return Promise.resolve(plain(fixture.settings));
+        case 'forget_not_mine_card':
+          fixture.settings.not_mine_cards = (fixture.settings.not_mine_cards || []).filter(c => c.key !== args.cardKey);
+          return Promise.resolve(plain(fixture.settings));
+        case 'forget_not_mine_camera':
+          fixture.settings.not_mine_cameras = (fixture.settings.not_mine_cameras || []).filter(c => !(c.model === args.model && (args.serial ? c.serial === args.serial : c.internal_serial === args.internalSerial)));
+          return Promise.resolve(plain(fixture.settings));
         case 'save_folded': fixture.folded = args.folded; return Promise.resolve(null);
         case 'open_in_lightroom': return Promise.resolve(fixture.launch || { catalog: 'D:\\LrC Catalogs\\2026\\2026-11-06_Tokyo\\2026-11-06_Tokyo.lrcat', name: '2026-11-06_Tokyo', already_open: false });
         case 'finish_catalog': return Promise.resolve({ name: '2026-11-06_Tokyo', stored: '\\\\NAS\\photos\\2026\\2026-11-06_Tokyo\\_catalog' });
         case 'get_cameras': return Promise.resolve(fixture.cameras);
         case 'read_card_shutter': return Promise.resolve(fixture.cameras);
         case 'register_camera':
+          if (options.registerError) return Promise.reject(options.registerError);
           if (options.camerasAfterRegister) fixture.cameras = options.camerasAfterRegister;
+          else if (!fixture.cameras.cameras.some(c => c.model === args.model && c.serial === args.serial)) fixture.cameras.cameras.push({ ...a7r6(), model: args.model, serial: args.serial, internal_serial: args.internalSerial });
           return Promise.resolve(fixture.cameras);
         case 'register_card':
+          if (options.registerError) return Promise.reject(options.registerError);
           fixture.ledger.cards.forEach(c => { if (c.id === args.cardKey) c.registered = true; });
           return Promise.resolve(plain(fixture.ledger));
         case 'remove_camera':
@@ -358,6 +395,24 @@ test('each camera and card folds to its name, and the app remembers it', async t
   assert.deepEqual(a.last('save_folded').folded, ['camera:03506694']);
 });
 
+test('through this computer, the card bar shows the full-speed read and a second bar the NAS behind it', async t => {
+  const a = await app(t);
+  a.$('#start').click();
+  assert.equal(a.$('#nas-progress').hidden, true);
+  const nas = { completed_files: 300, total_files: 1290, processed_bytes: 40e9, total_bytes: 168e9, bytes_per_sec: 950e6, eta_secs: 135 };
+  a.fixture.channel.onmessage({ phase: 'copying', current_file: '2026\\2026-11-06_Tokyo\\DSC03518.ARW', completed_files: 600, total_files: 1290, skipped_files: 0, processed_bytes: 80e9, total_bytes: 168e9, bytes_per_sec: 1600e6, eta_secs: 55, nas });
+  assert.equal(a.$('#phase').textContent, 'Reading the card into this computer');
+  assert.equal(a.$('#pct').textContent, '47%');
+  assert.equal(a.$('#nas-progress').hidden, false);
+  assert.equal(a.$('#nas-pct').textContent, '23%');
+  assert.equal(a.$('#nas-pline').textContent, '300 of 1,290 files · 40.0 GB of 168.0 GB · 950 MB/s · about 2 min 15 s left');
+  // The card is read: only the NAS has a speed and time left.
+  a.fixture.channel.onmessage({ phase: 'sending', current_file: '2026\\2026-11-06_Tokyo\\DSC04000.ARW', completed_files: 1290, total_files: 1290, skipped_files: 0, processed_bytes: 168e9, total_bytes: 168e9, bytes_per_sec: 0, eta_secs: 0, nas: { ...nas, completed_files: 1000, processed_bytes: 130e9, eta_secs: 40 } });
+  assert.equal(a.$('#phase').textContent, 'Card read · the NAS is catching up');
+  assert.equal(a.$('#pline').textContent, 'DSC04000.ARW · 1,290 of 1,290 files');
+  assert.equal(a.$('#nas-pct').textContent, '77%');
+});
+
 test('imports like the prototype: progress in the desk with the form locked, then the done panel and history row', async t => {
   const a = await app(t);
   assert.equal(a.$('#start').textContent, 'Import to NAS');
@@ -366,7 +421,7 @@ test('imports like the prototype: progress in the desk with the form locked, the
   a.$('#start').click();
   assert.deepEqual(plain(a.fixture.request), {
     root: 'E:\\', expected_card_id: 'CARD-ID', shoots: [{ date: '2026-11-06', name: 'Tokyo' }],
-    include_videos: true, verify: true, eject: false, camera: 'ILCE-7RM6'
+    include_videos: true, verify: true, eject: false, camera: 'ILCE-7RM6', offline: false, also_backup: false, backup_uuids: null, resume: false
   });
   // The card stays on screen; the form is locked and the action bar gives way to progress.
   assert.match(a.$('#desk').textContent, /Shoots on this card/);
@@ -405,7 +460,7 @@ test('imports like the prototype: progress in the desk with the form locked, the
   assert.equal(row.className, 'fresh');
   const cells = [...row.querySelectorAll('td')].map(td => td.textContent);
   // The mock ledger has no card records, so the Card column has nothing to name.
-  assert.deepEqual(cells.slice(1, 8), ['—', 'ILCE-7RM6', '2 + 1 clips', '0.0 GB', '705 MB/s', 'Verified', '2026-11-06_Tokyo']);
+  assert.deepEqual(cells.slice(1, 8), ['Card', 'ILCE-7RM6', '2 + 1 clips', '0.0 GB', '705 MB/s', 'Verified', '2026-11-06_Tokyo']);
   // The result stays when the card is removed.
   a.fixture.roots = [];
   a.timers.get(2000)();
@@ -552,12 +607,13 @@ test('unverified copying disables ejection and never claims verification', async
   assert.match(a.$('#history').textContent, /2 files not checked/);
 });
 
-test('local or unknown destinations and unsaved edits block starting', async t => {
+test('local or unknown NAS destinations select offline copying; unsaved NAS edits block NAS imports', async t => {
   for (const network of [false, null]) {
     const a = await app(t, network);
-    assert.equal(a.$('#start').disabled, true);
-    a.$('#start').click();
-    assert.equal(a.fixture.request, null);
+    assert.equal(a.$('#opt-offline').checked, true);
+    assert.equal(a.$('#opt-offline').disabled, true);
+    assert.equal(a.$('#start').disabled, false);
+    assert.equal(a.$('#start').textContent, 'Import to this computer');
   }
   const a = await app(t);
   a.type('#nas-path', 'Z:\\different');
@@ -1128,4 +1184,224 @@ test('Lightroom setup installs the plug-in and a presets folder for every catalo
   });
   assert.match(a.$('#lr-plugin').textContent, /98 presets and profiles are installed for every catalog\.$/);
   assert.equal(a.$('#lr-status').textContent, 'Saved.');
+});
+
+const borrowedCard = { id: 'CARD-ID', volume_id: 'CARD-ID', registered: false, first_seen: '2026-11-06T12:00:00', last_seen: '2026-11-06T12:00:00', insertions: 1 };
+const borrowedCamera = { model: 'ILCE-7M4', serial: '0451234', internal_serial: '1 2 3' };
+const drive = { uuid: '581ae938-40dc-4cea-a35a-67e7e04fd40f', label: 'Trip backup', root: 'H:\\', free_bytes: 1e12, total_bytes: 2e12, filesystem: 'exFAT' };
+const offlineCopies = drives => ({ folder: 'C:\\Pictures\\Card Intake Offline', drives, candidates: [{ root: 'H:\\', label: 'Trip backup' }] });
+const ownedChoices = { not_mine_cards: [{ key: 'CARD-ID', capacity_bytes: 256e9, sd_class: 'SDXC' }], not_mine_cameras: [borrowedCamera] };
+
+function choose(a, row, value) { a.$(`input[name="owner-${row}"][value="${value}"]`).click(); }
+
+test('Before importing shows only applicable rows, requires every choice, and Cancel does nothing', async t => {
+  const a = await app(t, true, { ledger: { cards: [borrowedCard] }, camera: borrowedCamera });
+  a.$('#start').click();
+  assert.equal(a.$('#ownership-dialog').hidden, false);
+  assert.equal(a.$('#ownership-body').querySelectorAll('fieldset').length, 2);
+  assert.match(a.$('#ownership-body').textContent, /This card isn't in My Cards.*CARD-ID.*This camera isn't in My Cameras.*0451234/);
+  assert.equal(a.$('#ownership-import').disabled, true);
+  choose(a, 0, 'register'); assert.equal(a.$('#ownership-import').disabled, true);
+  choose(a, 1, 'not-mine'); assert.equal(a.$('#ownership-import').disabled, false);
+  a.$('#ownership-cancel').click(); await settle();
+  assert.equal(a.$('#ownership-dialog').hidden, true);
+  assert.equal(a.calls.some(c => ['register_card', 'mark_not_mine_camera', 'start_import'].includes(c.command)), false);
+  a.$('#start').click(); assert.equal(a.$('#ownership-import').disabled, true, 'choices are never preselected');
+  a.window.document.dispatchEvent(new a.window.KeyboardEvent('keydown', { key: 'Escape' }));
+  assert.equal(a.$('#ownership-dialog').hidden, true);
+});
+
+test('Before importing applies Register and Not mine in order before starting, and suppresses future prompts', async t => {
+  const a = await app(t, true, { ledger: { cards: [plain(borrowedCard)] }, camera: borrowedCamera });
+  a.$('#start').click(); choose(a, 0, 'register'); choose(a, 1, 'not-mine'); a.$('#ownership-import').click(); await settle();
+  const commands = a.calls.filter(c => ['register_card', 'mark_not_mine_camera', 'start_import'].includes(c.command));
+  assert.deepEqual(commands.map(c => c.command), ['register_card', 'mark_not_mine_camera', 'start_import']);
+  assert.deepEqual(plain(commands[1].args), { model: borrowedCamera.model, serial: borrowedCamera.serial, internalSerial: borrowedCamera.internal_serial });
+  assert.match(a.$('#camera-tag').textContent, /Not mine/); assert.equal(a.$('#desk-register-camera'), null);
+  a.fixture.finish(result({ status: 'cancelled' })); await settle();
+  a.$('#start').click(); await settle();
+  assert.equal(a.$('#ownership-dialog').hidden, true); assert.equal(a.fixture.requests.length, 2);
+});
+
+test('Before importing Register camera and Not mine card work, and a failing choice never starts an import', async t => {
+  const a = await app(t, true, { ledger: { cards: [plain(borrowedCard)] }, camera: borrowedCamera });
+  a.$('#start').click(); choose(a, 0, 'not-mine'); choose(a, 1, 'register'); a.$('#ownership-import').click(); await settle();
+  assert.equal(a.last('mark_not_mine_card').cardKey, 'CARD-ID'); assert.equal(a.last('register_camera').model, 'ILCE-7M4'); assert.ok(a.fixture.request);
+  const b = await app(t, true, { ledger: { cards: [plain(borrowedCard)] }, markError: 'Could not save Not mine' });
+  b.$('#start').click(); assert.equal(b.$('#ownership-body').querySelectorAll('fieldset').length, 1);
+  choose(b, 0, 'not-mine'); b.$('#ownership-import').click(); await settle();
+  assert.match(b.$('#ownership-error').textContent, /Could not save/); assert.equal(b.fixture.request, null);
+  const c = await app(t, true, { camera: borrowedCamera, registerError: 'Registration failed' });
+  c.$('#start').click(); choose(c, 0, 'register'); c.$('#ownership-import').click(); await settle();
+  assert.match(c.$('#ownership-error').textContent, /Registration failed/); assert.equal(c.fixture.request, null);
+});
+
+test('Not mine chips replace New chips and Register; folded lists remember their state and offer Forget', async t => {
+  const a = await app(t, true, { ledger: { cards: [plain(borrowedCard)] }, camera: borrowedCamera, settings: ownedChoices });
+  assert.match(a.$('#card-meta').textContent, /Not mine/); assert.match(a.$('#camera-tag').textContent, /Not mine/);
+  assert.equal(a.$('#desk-register-card'), null); assert.equal(a.$('#desk-register-camera'), null);
+  assert.equal(a.$('#cards .item.new'), null); assert.equal(a.$('#cameras .item.new'), null);
+  assert.equal(a.$('[data-nm-forget]'), null);
+  a.$('[data-fold="not-mine:cards"]').click();
+  assert.ok(a.fixture.folded.includes('open:not-mine:cards'));
+  assert.match(a.$('#cards .not-mine-list').textContent, /Not mine \(1\).*256 GB.*Register.*Forget/);
+  a.$('#cards [data-nm-forget]').click(); await settle();
+  assert.equal(a.last('forget_not_mine_card').cardKey, 'CARD-ID'); assert.match(a.$('#card-meta').textContent, /New Card/);
+  a.$('[data-fold="not-mine:cameras"]').click(); a.$('#cameras [data-nm-forget]').click(); await settle();
+  assert.equal(a.last('forget_not_mine_camera').model, 'ILCE-7M4'); assert.match(a.$('#camera-tag').textContent, /New Camera/);
+});
+
+test('Register in Not mine removes the choice and uses existing registration, or asks to insert an absent card', async t => {
+  const a = await app(t, true, { ledger: { cards: [plain(borrowedCard)] }, camera: borrowedCamera, settings: { ...ownedChoices, folded: ['open:not-mine:cards', 'open:not-mine:cameras'] } });
+  a.$('#cards [data-nm-register]').click(); await settle();
+  assert.equal(a.last('register_card').cardKey, 'CARD-ID'); assert.equal(a.fixture.settings.not_mine_cards.length, 0);
+  a.$('#cameras [data-nm-register]').click(); await settle(); assert.equal(a.last('register_camera').model, 'ILCE-7M4');
+  const b = await app(t, true, { settings: { not_mine_cards: [{ key: 'absent' }], folded: ['open:not-mine:cards'] } });
+  b.$('#cards [data-nm-register]').click(); await settle(); assert.match(b.$('#toast').textContent, /Insert the card to register it\./);
+  assert.equal(b.calls.some(c => c.command === 'register_card'), false);
+});
+
+test('offline auto-ticks, uses local folder lookups without rereading, and stays ticked when NAS returns', async t => {
+  const a = await app(t, false, { offlineDestinations: existing });
+  assert.equal(a.$('#opt-offline').checked, true); assert.equal(a.$('#opt-offline').disabled, true);
+  assert.equal(a.$('#start').textContent, 'Import to this computer'); assert.equal(a.$('#name-0').value, '夜景');
+  assert.match(a.$('#path-0').textContent, /^C:\\Pictures\\Card Intake Offline/); assert.match(a.$('#note-0').textContent, /Existing folder/);
+  assert.match(a.$('.stats').textContent, /already on this computer/);
+  a.fixture.nas.network = true; a.timers.get(15000)(); await settle();
+  assert.equal(a.$('#opt-offline').checked, true); assert.equal(a.$('#opt-offline').disabled, false);
+  const reads = a.calls.filter(c => c.command === 'read_card').length;
+  a.$('#opt-offline').click(); assert.equal(a.$('#start').textContent, 'Import to NAS');
+  assert.match(a.$('#path-0').textContent, /^\\\\NAS\\photos/);
+  a.$('#opt-offline').click(); assert.equal(a.calls.filter(c => c.command === 'read_card').length, reads);
+  a.$('#start').click(); assert.equal(a.fixture.request.offline, true);
+  assert.equal(a.$('#arm'), null);
+  a.fixture.finish(result({ offline: true, local_complete: true, nas_root: a.fixture.offline.folder })); await settle();
+  assert.equal(a.$('#done [data-open]'), null); assert.match(a.$('#done').textContent, /Send to NAS/);
+});
+
+test('Also copy requires offline, verification and a connected remembered drive; verification off unticks it', async t => {
+  const a = await app(t, true, { offline: offlineCopies([drive]) });
+  assert.equal(a.$('#opt-backup').disabled, true); a.$('#opt-offline').click(); assert.equal(a.$('#opt-backup').disabled, false);
+  a.$('#opt-backup').click(); assert.equal(a.$('#opt-backup').checked, true);
+  a.$('#opt-verify').click(); assert.equal(a.$('#opt-backup').checked, false); assert.equal(a.$('#opt-backup').disabled, true);
+  a.$('#opt-verify').click(); a.$('#opt-backup').click(); a.$('#start').click(); assert.equal(a.fixture.request.also_backup, true);
+  const b = await app(t, false); assert.equal(b.$('#opt-backup').disabled, true); assert.match(b.$('#opt-backup').parentElement.textContent, /Connect a remembered backup drive/);
+});
+
+test('offline Resume keeps the saved backup choices and destination mode', async t => {
+  const pending = { request: { root: 'E:\\', nas_root: 'C:\\old-offline', expected_card_id: 'CARD-ID', shoots: [{ date: '2026-11-06', name: 'Trip' }], verify: true, include_videos: false, offline: true, backup_drives: [drive] }, eject: true };
+  const a = await app(t, true, { pending, offline: offlineCopies([drive]) });
+  assert.equal(a.$('#start').textContent, 'Resume import'); assert.equal(a.$('#opt-offline').checked, true); assert.equal(a.$('#opt-backup').checked, true);
+  assert.match(a.$('#path-0').textContent, /^C:\\old-offline/);
+  a.$('#start').click(); assert.equal(a.fixture.request.resume, true); assert.deepEqual(plain(a.fixture.request.backup_uuids), [drive.uuid]);
+});
+
+test('Offline copies panel shows Check / Init Pass Warn Fail messages including hard space errors', async t => {
+  for (const check of [
+    { ok: true, items: [{ status: 'pass', title: 'Initialized: created .card-intake-uuid', detail: '64 MB came back identical.' }, { status: 'warn', title: 'FAT32', detail: "Files over 4 GB, such as long clips, can't go on this drive" }] },
+    { ok: false, items: [{ status: 'fail', title: 'Not enough space', detail: 'Not enough space on the backup drive: 200 bytes needed, 100 available.' }] }
+  ]) {
+    const a = await app(t, true, { initCheck: check, offline: offlineCopies([drive]) });
+    assert.match(a.$('#backup-drives').textContent, /Trip backup.*581ae938.*H:.*free of.*exFAT.*Back up now.*Eject.*Forget/);
+    a.$('#backup-picker').value = 'H:\\'; a.$('#backup-picker').dispatchEvent(new a.window.Event('change'));
+    a.$('#backup-init').click(); await settle(); assert.equal(a.last('check_init_backup').path, 'H:\\');
+    assert.match(a.$('#backup-results').textContent, check.ok ? /Initialized.*FAT32.*Files over 4 GB/ : /Not enough space.*200 bytes needed, 100 available/);
+  }
+  const b = await app(t); b.type('#offline-path', '\\\\NAS\\bad'); b.$('#offline-check').click(); await settle();
+  assert.equal(b.last('check_offline_folder').path, '\\\\NAS\\bad'); b.type('#offline-path', 'C:\\Trips'); b.$('#offline-save').click(); await settle(); assert.equal(b.fixture.offline.folder, 'C:\\Trips');
+});
+
+test('Back up progress offers Stop and pressing again resumes; drive actions use their UUID', async t => {
+  const a = await app(t, true, { offline: offlineCopies([drive]) });
+  a.$('[data-backup]').click(); assert.equal(a.last('back_up_now').uuid, drive.uuid); assert.equal(a.$('#start').disabled, true);
+  a.fixture.copyChannel.onmessage({ current_file: 'Trip backup/a.ARW', completed_files: 1, skipped_files: 0, total_files: 2, processed_bytes: 100, total_bytes: 200, bytes_per_sec: 1e8, eta_secs: 2 });
+  // Progress shows under the drives, where Back up was pressed.
+  assert.equal(a.$('#backup-job').hidden, false); assert.equal(a.$('#send-job').hidden, true);
+  assert.match(a.$('#backup-job').textContent, /Backing up to Trip backup.*1 of 2 files.*100 MB\/s.*left.*a\.ARW/);
+  assert.equal(a.$('#backup-job [data-copy-bar]').style.width, '50%');
+  a.$('#backup-job [data-copy-stop]').click(); assert.ok(a.calls.some(c => c.command === 'cancel_import'));
+  a.fixture.copyFinish({ status: 'cancelled', error: 'Stopped. Press again to resume.', counts: { verified: 1 } }); await settle();
+  a.$('[data-backup]').click(); assert.equal(a.calls.filter(c => c.command === 'back_up_now').length, 2);
+  a.fixture.copyFinish({ status: 'complete', error: null, counts: { verified: 2 } }); await settle();
+  a.$('[data-backup-eject]').click(); await settle(); assert.equal(a.last('eject_backup').uuid, drive.uuid); assert.match(a.$('#backup-drives').textContent, /Not connected/);
+  a.$('[data-backup-forget]').click(); await settle(); assert.equal(a.last('forget_backup').uuid, drive.uuid);
+});
+
+test('the drive picker lists a USB drive plugged in later, without redrawing the desk', async t => {
+  const a = await app(t, true, { offline: { ...offlineCopies([]), candidates: [] } });
+  assert.match(a.$('#backup-picker').textContent, /No other drive connected/);
+  const name = a.$('#name-0');
+  a.fixture.offline.candidates = [{ root: 'K:\\', label: 'Samsung T9' }, { root: 'H:\\', label: 'Trip backup' }];
+  a.timers.get(3000)(); await settle();
+  assert.match(a.$('#backup-picker').textContent, /Samsung T9 · K:\\.*Trip backup · H:\\/);
+  assert.equal(a.$('#name-0'), name, 'the shoot name field is the same element');
+  // A choice survives the next refresh, and nothing is redrawn when nothing changed.
+  a.$('#backup-picker').value = 'K:\\';
+  a.fixture.offline.candidates = [{ root: 'K:\\', label: 'Samsung T9' }];
+  a.timers.get(3000)(); await settle();
+  assert.equal(a.$('#backup-picker').value, 'K:\\');
+  const options = a.$('#backup-picker').innerHTML;
+  a.timers.get(3000)(); await settle();
+  assert.equal(a.$('#backup-picker').innerHTML, options);
+});
+
+test('Send to NAS waits for a confirmed share, reports source and sidecars, then enables normal NAS actions', async t => {
+  const r = result({ offline: true, local_complete: true, nas_root: 'C:\\Pictures\\Offline' });
+  const a = await app(t, false, { ledger: { imports: [r] }, catalogs: [{ import_id: r.started_at, shoots: [0], name: '2026-11-06_Tokyo', trip: false, state: 'none' }] });
+  assert.equal(a.$('[data-send]').disabled, true); assert.equal(a.$('[data-hopen]'), null); assert.equal(a.$('[data-deliver]'), null);
+  a.fixture.nas.network = true; a.timers.get(15000)(); await settle(); a.$('[data-send]').click();
+  assert.equal(a.last('send_to_nas').importId, r.started_at); assert.equal(a.$('#start').disabled, true);
+  a.fixture.copyFinish({ status: 'complete', counts: { verified: 4 }, sent: { sources: [{ source: 'Trip backup (uuid)' }], kept_sidecars: ['a.xmp'] } }); await settle();
+  assert.match(a.$('#send-job').textContent, /Sending to NAS.*Verified 4 files.*Trip backup.*Kept the NAS's sidecars: a.xmp/);
+  assert.ok(a.$('[data-hopen]')); assert.ok(a.$('[data-deliver]')); assert.ok(a.$('[data-delete-laptop]'));
+});
+
+test('Send Stop and retry keep the row offline; Delete laptop copy needs a second click within five seconds', async t => {
+  const r = result({ offline: true, local_complete: true });
+  const a = await app(t, true, { ledger: { imports: [r] } });
+  a.$('[data-send]').click(); a.$('#send-job [data-copy-stop]').click(); a.fixture.copyFinish({ status: 'cancelled', error: 'Stopped', counts: { verified: 1 } }); await settle();
+  assert.ok(a.$('[data-send]')); a.$('[data-send]').click(); a.fixture.copyFinish({ status: 'complete', counts: { verified: 4 }, sent: { sources: [{ source: 'This computer' }], kept_sidecars: [] } }); await settle();
+  let b = a.$('[data-delete-laptop]'); b.click(); assert.match(b.textContent, /Click again/); assert.equal(a.calls.some(c => c.command === 'delete_laptop_copy'), false);
+  a.removalTimeouts.pop()(); assert.equal(b.textContent, 'Delete laptop copy');
+  b.click(); b.click(); await settle(); assert.equal(a.last('delete_laptop_copy').importId, r.started_at); assert.match(a.$('#history').textContent, /Laptop copy deleted/);
+});
+
+test('Delete laptop errors allow retry and changed or extra files are reported', async t => {
+  const r = result({ offline: true, sent: {} });
+  const a = await app(t, true, { ledger: { imports: [r] }, deleteError: 'Could not read the manifest' });
+  const b = a.$('[data-delete-laptop]'); b.click(); b.click(); await settle(); assert.equal(b.disabled, false); assert.match(a.$('#toast').textContent, /manifest/);
+  const c = await app(t, true, { ledger: { imports: [r] }, deleted: { deleted: 1, kept: ['edited.xmp', 'extra.jpg'], errors: [], complete: false } });
+  c.$('[data-delete-laptop]').click(); c.$('[data-delete-laptop]').click(); await settle(); assert.match(c.$('#toast').textContent, /Kept changed or extra files: edited.xmp, extra.jpg/);
+});
+
+test('Delete laptop controls remain available when sent imports merge with newer NAS imports', async t => {
+  const newest = result();
+  const sent = result({ started_at: '2026-11-05T12:00:00', offline: true, sent: {} });
+  const cats = [newest, sent].map(r => ({ import_id: r.started_at, shoots: [0], name: '2026-11-06_Tokyo', trip: false, state: 'none' }));
+  const a = await app(t, true, { ledger: { imports: [newest, sent] }, catalogs: cats });
+  assert.equal(a.window.document.querySelectorAll('#history tbody tr').length, 1);
+  assert.ok(a.$('[data-hopen]')); assert.ok(a.$('[data-delete-laptop="1"]'));
+  a.$('[data-delete-laptop]').click(); a.$('[data-delete-laptop]').click(); await settle();
+  assert.equal(a.last('delete_laptop_copy').importId, sent.started_at);
+});
+
+test('backing up disables Deliver and a rejected Send stays resumable', async t => {
+  const online = result(), offline = result({ started_at: '2026-11-05T12:00:00', offline: true, local_complete: true });
+  const a = await app(t, true, { offline: offlineCopies([drive]), ledger: { imports: [online, offline] }, catalogs: [{ import_id: online.started_at, shoots: [0], name: '2026-11-06_Tokyo', trip: false, state: 'none' }] });
+  a.$('[data-backup]').click(); assert.equal(a.$('[data-deliver]').disabled, true); assert.equal(a.$('[data-send]').disabled, true);
+  a.fixture.copyError('Drive disconnected'); await settle(); assert.equal(a.$('[data-deliver]').disabled, false);
+  a.$('[data-send]').click(); a.fixture.copyError('A different photo already exists'); await settle();
+  assert.match(a.$('#send-job').textContent, /different photo/); assert.equal(a.$('[data-send]').disabled, false); assert.equal(a.$('[data-delete-laptop]'), null);
+});
+
+test('a failed import lists successful and failed drives and keeps the complete laptop copy available for Send', async t => {
+  const a = await app(t, true, { offline: offlineCopies([drive]) });
+  a.$('#opt-offline').click(); a.$('#opt-backup').click(); a.$('#start').click();
+  a.fixture.finish(result({ status: 'failed', offline: true, local_complete: true, nas_root: a.fixture.offline.folder,
+    error: 'The laptop copy is complete; reconnect the second drive. The card was not ejected.',
+    backups: [{ label: 'Trip backup', uuid: drive.uuid, status: 'complete', counts: { verified: 4 }, error: null }, { label: 'Second drive', uuid: 'second-uuid', status: 'failed', counts: { verified: 1 }, error: 'Drive unplugged' }] }));
+  await settle();
+  assert.match(a.$('#progress').textContent, /Trip backup.*581ae938.*complete.*4 files verified.*Second drive.*second-uuid.*failed.*1 file verified.*Drive unplugged/);
+  assert.equal(a.$('[data-send]').disabled, false);
+  assert.equal(a.$('[data-hopen]'), null);
 });

@@ -289,10 +289,10 @@ pub async fn delivery_states(app: AppHandle) -> Result<Vec<HistoryState>, String
             .clone();
         let root = lightroom::delivery_root(&state)?;
         let mut list = Vec::new();
-        for record in records
-            .iter()
-            .filter(|r| r.status == card_intake_core::import::ImportStatus::Complete)
-        {
+        for record in records.iter().filter(|r| {
+            r.status == card_intake_core::import::ImportStatus::Complete
+                && (!r.offline || r.sent.is_some())
+        }) {
             for (shoot, relative) in record.shoots.iter().enumerate() {
                 let mut entry = HistoryState {
                     import_id: record.started_at,

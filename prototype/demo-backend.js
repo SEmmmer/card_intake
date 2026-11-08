@@ -210,6 +210,36 @@
       error: "Import stopped. Completed files are kept; retry to check and skip them." })
   ];
   var pending = null;
+  var offlineCopies = { folder: "C:\\Users\\you\\Pictures\\Card Intake Offline", drives: [{ uuid: "581ae938-40dc-4cea-a35a-67e7e04fd40f", label: "Trip backup", added_at: now(), root: "H:\\", free_bytes: 1.4e12, total_bytes: 2e12, filesystem: "exFAT" }], candidates: [{ root: "H:\\", label: "Trip backup" }] };
+  var driveMarker = copy(offlineCopies.drives[0]);
+  var notMineCards = [];
+  var notMineCameras = [{ model: "ILCE-7M4", serial: "0451234", internal_serial: null, marked_at: now() }];
+  [CF, SD].forEach(function (root) { reports[root].offline_destinations = []; });
+  ledger.imports.push(done({ started_at: at(-14, "21:00:00.001"), finished_at: at(-14, "21:01:00.001"), offline: true, offline_root: offlineCopies.folder, local_complete: true, nas_root: offlineCopies.folder, card_id: "738E-0C9A", card_key: CF_KEY, camera: "ILCE-7RM6", photos: 84, videos: 1, total_bytes: 84 * ARW + XAVC, shoots: [rel(day(-14), "Mountain-trip")], ratings: ratings(84, 0, 2), backups: [], sent: null, laptop_deleted: false }));
+  function notMineResponse() { return { not_mine_cards: copy(notMineCards), not_mine_cameras: copy(notMineCameras) }; }
+  function offlineCheck(path) {
+    var bad = isNetwork(path) || /^(E|F):/i.test(path) || path.indexOf(".card-intake-") >= 0 || /^H:/i.test(path);
+    return { path: path, ok: !bad, free_bytes: 400e9, total_bytes: 1e12, items: [{ status: bad ? "fail" : "pass", title: bad ? "Choose another offline folder" : "On this computer's own disk", detail: bad ? "Choose a folder away from camera cards, backup drives and network shares." : "Folder found or can be created. 400 GB free." }] };
+  }
+  async function demoCopy(command, args) {
+    if (running) throw new Error("A copy job is already running.");
+    var job = running = { cancel: false };
+    try {
+      for (var n = 0; n <= 10 && !job.cancel; n++) {
+        args.onProgress.onmessage({ phase: command === "send_to_nas" ? "sending" : "backup", current_file: command === "send_to_nas" ? "NAS/DSC01234.ARW" : "Trip backup/DSC01234.ARW", completed_files: n, skipped_files: 0, total_files: 10, processed_bytes: n * ARW, total_bytes: 10 * ARW, bytes_per_sec: 320e6, eta_secs: (10 - n) * ARW / 320e6 });
+        await wait(150);
+      }
+      var counts = { copied: job.cancel ? n - 1 : 10, skipped: 0, verified: job.cancel ? n - 1 : 10, bytes: 10 * ARW };
+      var result = { status: job.cancel ? "cancelled" : "complete", counts: counts, error: job.cancel ? "Stopped. Completed copies are kept; press again to resume." : null };
+      if (!job.cancel && command === "send_to_nas") {
+        var record = ledger.imports.find(function (r) { return r.started_at === args.importId; });
+        result.sent = { at: now(), nas_root: nas.root, counts: counts, sources: record.shoots.map(function (shoot) { return { shoot: shoot, source: "This computer" }; }), kept_sidecars: [], found_in: [] };
+        record.sent = result.sent; record.nas_root = nas.root;
+      }
+      return copy(result);
+    } finally { running = null; }
+  }
+
 
   /* ---------- My Cameras: shutter count history ---------- */
   function counts(offset, min, max, first, last, firmware, electronic) {
@@ -308,11 +338,12 @@
 
   async function runImport(job, request, channel, report) {
     var root = request.root, started = now(), speed = COPY_SPEED[root];
+    var importReport = request.offline ? Object.assign({}, report, { destinations: report.offline_destinations }) : report;
     var files = [], shoots = [], foundIn = [], elsewhere = 0;
     request.shoots.forEach(function (s) {
       var g = report.groups.filter(function (x) { return x.date === s.date; })[0];
       if (!g) return;
-      var folder = folderName(s.date, s.name), d = destination(report, s.date);
+      var folder = folderName(s.date, s.name), d = destination(importReport, s.date);
       var same = d.folders.filter(function (f) { return f.name.toLowerCase() === folder.toLowerCase(); })[0];
       var shoot = { date: s.date, name: s.name, folder: folder, relative: rel(s.date, s.name), same: same, dest: d };
       var kinds = [["photo", g.photos, g.photo_bytes, d.photos_on_nas]];
@@ -331,12 +362,23 @@
     var total = files.reduce(function (sum, f) { return sum + f.size; }, 0);
     var p = { phase: "preparing", current_file: null, completed_files: 0, skipped_files: 0, total_files: files.length,
       processed_bytes: 0, total_bytes: Math.round(total), bytes_per_sec: null, eta_secs: null };
+    // To the NAS with file checks, the card is read into this computer at full speed
+    // and the NAS follows behind at its own speed.
+    var viaLaptop = !request.offline && request.verify, behind = null, NAS_SPEED = 0.6;
+    if (viaLaptop) behind = { completed_files: 0, total_files: files.length, processed_bytes: 0, total_bytes: Math.round(total), bytes_per_sec: null, eta_secs: null };
     function emit(phase, file, rate) {
       p.phase = phase;
       p.current_file = file ? join(root, file.name) : null;
       p.bytes_per_sec = rate || null;
       p.eta_secs = rate ? (total - p.processed_bytes) / (rate * (request.verify ? 0.8 : 1)) : null;
       p.processed_bytes = Math.round(p.processed_bytes);
+      if (behind) {
+        behind.processed_bytes = Math.round(Math.min(p.processed_bytes, Math.max(behind.processed_bytes, p.processed_bytes * NAS_SPEED)));
+        behind.completed_files = Math.floor(behind.total_files * behind.processed_bytes / Math.max(1, behind.total_bytes));
+        behind.bytes_per_sec = rate ? rate * NAS_SPEED : behind.bytes_per_sec;
+        behind.eta_secs = behind.bytes_per_sec ? (behind.total_bytes - behind.processed_bytes) / behind.bytes_per_sec : null;
+        p.nas = copy(behind);
+      }
       channel.onmessage(copy(p));
     }
     function jitter(base) { return base * (0.97 + Math.random() * 0.06); }
@@ -372,6 +414,18 @@
       await wait(tick);
     }
 
+    // The card is read; the NAS catches up.
+    if (behind) {
+      NAS_SPEED = 1;
+      for (var left = behind.total_bytes - behind.processed_bytes; left > 0 && !job.cancel; left = behind.total_bytes - behind.processed_bytes) {
+        behind.processed_bytes = Math.min(behind.total_bytes, behind.processed_bytes + Math.max(behind.total_bytes / 25, 1));
+        behind.completed_files = Math.floor(behind.total_files * behind.processed_bytes / Math.max(1, behind.total_bytes));
+        behind.eta_secs = behind.bytes_per_sec ? (behind.total_bytes - behind.processed_bytes) / behind.bytes_per_sec : null;
+        p.phase = "sending"; p.nas = copy(behind);
+        channel.onmessage(copy(p));
+        await wait(110);
+      }
+    }
     var cancelled = job.cancel;
     var finished = files.filter(function (f) { return f.done; });
     var raws = finished.filter(function (f) { return /\.ARW$/i.test(f.name); });
@@ -380,7 +434,16 @@
       for (i = 0; i < 5; i++) { emit("rating", raws[Math.floor(i * raws.length / 5)]); await wait(110); }
     }
 
-    // What's on the NAS now, for the next read of this card.
+    if (!cancelled && request.also_backup) {
+      var drives = offlineCopies.drives.filter(function (d) { return d.root; });
+      for (var bi = 0; bi < drives.length && !job.cancel; bi++) {
+        channel.onmessage({ phase: "backup", current_file: drives[bi].label + "/DSC01234.ARW", completed_files: 0, skipped_files: 0, total_files: finished.length, processed_bytes: 0, total_bytes: Math.round(total), bytes_per_sec: 320e6, eta_secs: total / 320e6 });
+        await wait(700);
+      }
+      cancelled = job.cancel;
+    }
+
+    // What's on the chosen destination now, for the next read of this card.
     shoots.forEach(function (s) {
       var mine = finished.filter(function (f) { return f.shoot === s && !f.there; });
       var photos = mine.filter(function (f) { return f.kind === "photo"; }), videos = mine.filter(function (f) { return f.kind === "video"; });
@@ -397,7 +460,7 @@
 
     var copied = finished.filter(function (f) { return !f.there; }).length;
     var result = {
-      started_at: started, finished_at: now(), root: root, nas_root: nas.root, card_id: report.volume.id, card_key: report.card_key,
+      started_at: started, finished_at: now(), root: root, nas_root: request.offline ? offlineCopies.folder : nas.root, offline: !!request.offline, offline_root: request.offline ? offlineCopies.folder : null, local_complete: !!request.offline && !cancelled, backups: request.also_backup && !cancelled ? offlineCopies.drives.filter(function (d) { return d.root; }).map(function (d) { return { uuid: d.uuid, label: d.label, status: "complete", counts: { copied: files.length, skipped: 0, verified: files.length, bytes: Math.round(total) }, error: null }; }) : [], sent: null, laptop_deleted: false, card_id: report.volume.id, card_key: report.card_key,
       status: cancelled ? "cancelled" : "complete",
       total_files: files.length, total_bytes: Math.round(total),
       copied_files: copied, skipped_files: finished.length - copied,
@@ -414,9 +477,14 @@
       ejected: !cancelled && !!request.eject
     };
     ledger.imports.unshift(result);
-    ledger.imports = ledger.imports.slice(0, 100);
+    while (ledger.imports.length > 100) {
+      var trim = -1;
+      ledger.imports.forEach(function (r, i) { if (!r.offline || r.sent) trim = i; });
+      if (trim < 0) break;
+      ledger.imports.splice(trim, 1);
+    }
     cardRecord(root);
-    pending = cancelled ? { request: Object.assign({}, request, { nas_root: nas.root }), eject: !!request.eject } : null;
+    pending = cancelled ? { request: Object.assign({}, request, { nas_root: result.nas_root, backup_drives: request.also_backup ? offlineCopies.drives.filter(function (d) { return d.root; }) : [] }), eject: !!request.eject } : null;
     if (result.ejected) roots = roots.filter(function (r) { return r !== root; });
     return copy(result);
   }
@@ -446,7 +514,7 @@
   function catalogStates() {
     var list = [];
     ledger.imports.forEach(function (r) {
-      if (r.status !== "complete") return;
+      if (r.status !== "complete" || (r.offline && !r.sent)) return;
       var seen = [];
       r.shoots.forEach(function (s, i) {
         var c = catalogOf(s);
@@ -607,6 +675,7 @@
           // My Cameras keep the card's counts; a camera that isn't one of them is new, with only these.
           var cam = reports[args.root].camera, days = CARD_DAYS[args.root];
           var same = function (c) { return sameCamera(c, cam.model, cam.serial, cam.internal_serial); };
+          if (notMineCameras.some(same)) return camerasResponse();
           var mine = myCameras.findIndex(same), fresh = newCameras.findIndex(same);
           if (mine >= 0) myCameras[mine] = addDays(myCameras[mine], days);
           else if (fresh >= 0) newCameras[fresh] = addDays(newCameras[fresh], days);
@@ -641,7 +710,36 @@
       case "get_ledger":
         return Promise.resolve(copy(ledger));
       case "get_settings":
-        return Promise.resolve({ nas_root: nas.root, lightroom: copy(lightroom), deliver_to: deliverySetup.deliver_to, folded: folded.slice() });
+        return Promise.resolve(Object.assign({ nas_root: nas.root, lightroom: copy(lightroom), deliver_to: deliverySetup.deliver_to, folded: folded.slice() }, notMineResponse()));
+      case "get_offline_copies": return Promise.resolve(copy(offlineCopies));
+      case "check_offline_folder": return wait(400, offlineCheck(args.path));
+      case "save_offline_folder":
+        var check = offlineCheck(args.path);
+        if (check.ok) offlineCopies.folder = args.path;
+        return wait(400, check);
+      case "check_init_backup":
+        var forbidden = /^(C|E|F):/i.test(args.path) || isNetwork(args.path);
+        if (!forbidden && !offlineCopies.drives.some(function (d) { return d.uuid === driveMarker.uuid; })) offlineCopies.drives.push(copy(driveMarker));
+        return wait(800, { path: args.path, ok: !forbidden, items: [{ status: forbidden ? "fail" : "pass", title: forbidden ? "Choose another volume" : "Card Intake drive Trip backup", detail: forbidden ? "Choose a local volume away from this computer's system disk, offline folder and camera cards." : "64 MB came back identical. Enough space: 35 GB needed, 1.4 TB free." }], drive: forbidden ? null : copy(driveMarker) });
+      case "forget_backup": offlineCopies.drives = offlineCopies.drives.filter(function (d) { return d.uuid !== args.uuid; }); return Promise.resolve();
+      case "eject_backup": offlineCopies.drives.forEach(function (d) { if (d.uuid === args.uuid) d.root = null; }); return wait(400);
+      case "back_up_now":
+      case "send_to_nas": return demoCopy(command, args);
+      case "delete_laptop_copy":
+        ledger.imports.forEach(function (r) { if (r.started_at === args.importId) r.laptop_deleted = true; });
+        return wait(400, { deleted: 85, kept: [], errors: [], complete: true });
+      case "mark_not_mine_card":
+        var card = ledger.cards.find(function (c) { return c.id === args.cardKey; });
+        notMineCards.push({ key: args.cardKey, model: card && card.model, capacity_bytes: card && card.capacity_bytes, sd_class: card && card.sd_class, marked_at: now() });
+        return Promise.resolve(notMineResponse());
+      case "mark_not_mine_camera":
+        notMineCameras.push({ model: args.model, serial: args.serial, internal_serial: args.internalSerial, marked_at: now() });
+        newCameras = newCameras.filter(function (c) { return !sameCamera(c, args.model, args.serial, args.internalSerial); });
+        return Promise.resolve(notMineResponse());
+      case "forget_not_mine_card":
+        notMineCards = notMineCards.filter(function (c) { return c.key !== args.cardKey; }); return Promise.resolve(notMineResponse());
+      case "forget_not_mine_camera":
+        notMineCameras = notMineCameras.filter(function (c) { return !sameCamera(c, args.model, args.serial, args.internalSerial); }); return Promise.resolve(notMineResponse());
       case "nas_status":
         return Promise.resolve(copy(nas));
       case "check_nas":

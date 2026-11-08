@@ -122,13 +122,18 @@ pub async fn scan_library(
                 match folder_result {
                     FolderResult::Read { folder, samples } => {
                         let (read, left_out) = history.read(&samples);
+                        let registered = read.cameras.iter().all(|c| mine.owns_camera(c));
+                        let mut read = read;
+                        if let Ok(settings) = state.settings.lock() {
+                            settings.drop_not_mine(&mut read);
+                        }
                         history.merge(&read);
                         result.folders_read += 1;
                         result.photos_read += folder.photos.len();
                         result.shutter_counts += samples.len() - left_out;
                         // A folder with photos from a camera not in My Cameras is read
                         // again next time, so they count once it's registered.
-                        if read.cameras.iter().all(|c| mine.owns_camera(c)) {
+                        if registered {
                             batch.folders.insert(folder.relative, folder.stamp);
                         }
                         batch.merge(&read);

@@ -104,7 +104,7 @@ test('the demo stops an import, then resumes it and skips what was copied', asyn
   const { window, $, until, errors } = await demo(t);
   await until(() => $('#start') && !$('#start').disabled, 'the inserted card');
   $('#start').click();
-  await until(() => $('#stop') && /Copying/.test($('#phase').textContent), 'copying');
+  await until(() => $('#stop') && /Reading the card/.test($('#phase').textContent), 'copying');
   $('#stop').click();
   await until(() => $('#start') && $('#start').textContent === 'Resume import', 'the stop');
   assert.match($('#progress').textContent, /Stopped after \d+ of 611 files/);
@@ -112,5 +112,28 @@ test('the demo stops an import, then resumes it and skips what was copied', asyn
   await until(() => $('#done') && !$('#done').hidden, 'the resumed import');
   assert.match($('#done').textContent, /All 608 photos and 3 clips are on the NAS/);
   assert.match($('#history').textContent, /Stopped/);
+  assert.deepEqual(errors, []);
+});
+
+test('the demo sends the sample offline import and deletes its laptop copy with two clicks', async t => {
+  const { $, until, errors } = await demo(t);
+  await until(() => $('[data-send]') && !$('[data-send]').disabled, 'the offline history row');
+  assert.match($('#backup-drives').textContent, /Trip backup.*exFAT/);
+  $('[data-send]').click();
+  await until(() => $('[data-delete-laptop]'), 'verified Send');
+  assert.match($('#send-job').textContent, /Verified.*From This computer/);
+  const remove = $('[data-delete-laptop]'); remove.click(); assert.match(remove.textContent, /Click again/); remove.click();
+  await until(() => /Laptop copy deleted/.test($('#history').textContent), 'deleted laptop copy');
+  assert.deepEqual(errors, []);
+});
+
+test('the demo Not-mine camera has Register and Forget in its remembered folded list', async t => {
+  const { window, $, until, errors } = await demo(t);
+  await until(() => $('[data-fold="not-mine:cameras"]'), 'Not mine');
+  assert.equal($('#cameras [data-nm-forget]'), null);
+  $('[data-fold="not-mine:cameras"]').click();
+  assert.match($('#cameras .not-mine-list').textContent, /ILCE-7M4.*0451234.*Register.*Forget/);
+  $('#cameras [data-nm-register]').click();
+  await until(() => [...window.document.querySelectorAll('#cameras .item')].some(c => /ILCE-7M4/.test(c.textContent)), 'registered camera');
   assert.deepEqual(errors, []);
 });

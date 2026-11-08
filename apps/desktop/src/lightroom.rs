@@ -815,7 +815,11 @@ fn record_folders(state: &AppState, import_id: NaiveDateTime) -> Result<Vec<Loca
         .map_err(|e| e.to_string())?
         .imports
         .iter()
-        .find(|r| r.started_at == import_id && r.status == ImportStatus::Complete)
+        .find(|r| {
+            r.started_at == import_id
+                && r.status == ImportStatus::Complete
+                && (!r.offline || r.sent.is_some())
+        })
         .cloned()
         .ok_or("Choose a completed import from the history.")?;
     if record.shoots.is_empty() {
@@ -1007,7 +1011,7 @@ pub async fn lightroom_catalogs(app: AppHandle) -> Result<Vec<CatalogState>, Str
         let mut states = Vec::new();
         for record in imports
             .iter()
-            .filter(|r| r.status == ImportStatus::Complete)
+            .filter(|r| r.status == ImportStatus::Complete && (!r.offline || r.sent.is_some()))
         {
             let mine: &mut Vec<CatalogState> = &mut Vec::new();
             for (i, relative) in record.shoots.iter().enumerate() {
