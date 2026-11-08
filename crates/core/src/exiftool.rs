@@ -79,13 +79,26 @@ fn details(obj: &Map<String, Value>) -> CameraDetails {
         .or_else(|| number("ShutterCount3"))
         .or_else(|| number("ShutterCount2"));
     let mechanical = number("MechanicalShutterCount");
+    // Nikon's ShutterCount "includes both mechanical and electronic shutter
+    // activations" (ExifTool's Nikon tags), so on a Nikon that also counts its
+    // mechanical shutter (the Zf) the difference is its electronic count.
+    let nikon = text("Make")
+        .or_else(|| model.clone())
+        .is_some_and(|m| m.to_ascii_uppercase().starts_with("NIKON"));
+    let nikon_electronic = match (nikon, total, mechanical) {
+        (true, Some(total), Some(mechanical)) => total.checked_sub(mechanical),
+        _ => None,
+    };
     // A body without a mechanical shutter (the Nikon Z 9) writes 0 in
     // MechanicalShutterCount on every photo, while ShutterCount carries the real count:
     // there the 0 is not a reading and the total is. On a body with a mechanical shutter,
     // 0 actuations there is a valid reading, so it comes first.
     let (shutter_count, electronic_count) = match &model {
         Some(model) if !cameras::has_mechanical_shutter(model) => (total, None),
-        _ => (mechanical.or(total), number("ElectronicShutterCount")),
+        _ => (
+            mechanical.or(total),
+            number("ElectronicShutterCount").or(nikon_electronic),
+        ),
     };
 
     CameraDetails {
@@ -134,8 +147,20 @@ pub struct ShutterSample {
 /// File names go through a UTF-8 argument file: on Windows, ExifTool can't take
 /// non-ASCII names (e.g. a shoot called 夜景) on its command line.
 pub fn shutter_samples(exiftool: &Path, photos: &[PathBuf]) -> io::Result<Vec<ShutterSample>> {
+    let mut tags = TAGS.to_vec();
+    tags.push("-DateTimeOriginal");
+    let bytes = read_batch(exiftool, photos, &tags)?;
+    parse_shutter_json(&bytes)
+}
+
+/// Runs a read-only batch through a UTF-8 argument file, including partial results.
+pub(crate) fn read_batch(
+    exiftool: &Path,
+    photos: &[PathBuf],
+    tags: &[&str],
+) -> io::Result<Vec<u8>> {
     if photos.is_empty() {
-        return Ok(Vec::new());
+        return Ok(b"[]".to_vec());
     }
     let mut list = tempfile::Builder::new()
         .prefix("card-intake-exiftool-")
@@ -143,7 +168,7 @@ pub fn shutter_samples(exiftool: &Path, photos: &[PathBuf]) -> io::Result<Vec<Sh
         .tempfile()?;
     for photo in photos {
         let name = photo.to_string_lossy();
-        if !name.contains(['\n', '\r']) {
+        if !name.contains(['\n', '\r']) && !name.starts_with(['-', '#']) {
             writeln!(list, "{name}")?;
         }
     }
@@ -151,20 +176,19 @@ pub fn shutter_samples(exiftool: &Path, photos: &[PathBuf]) -> io::Result<Vec<Sh
     let list = list.into_temp_path();
     let output = crate::process::command(exiftool)
         .args(["-json", "-n", "-fast", "-charset", "filename=utf8"])
-        .args(TAGS)
-        .arg("-DateTimeOriginal")
+        .args(tags)
         .arg("-@")
         .arg(&list)
         .output()?;
     // ExifTool exits with an error when any one file fails; the others are still read.
     if output.stdout.iter().all(u8::is_ascii_whitespace) {
         if output.status.success() {
-            return Ok(Vec::new());
+            return Ok(b"[]".to_vec());
         }
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(io::Error::other(format!("ExifTool failed: {}", err.trim())));
     }
-    parse_shutter_json(&output.stdout)
+    Ok(output.stdout)
 }
 
 /// The photos worth reading in a folder: one per shot, preferring the raw file when
@@ -338,6 +362,39 @@ mod tests {
         assert_eq!(z8.shutter_count, Some(0));
         let sony = parse_json(br#"[{"Model":"ILCE-7RM6","ShutterCount":0}]"#).unwrap();
         assert_eq!(sony.shutter_count, Some(0));
+    }
+
+    #[test]
+    fn a_nikon_zf_counts_its_mechanical_shutter_and_the_rest_is_electronic() {
+        // Cut from a real Zf NEF (ExifTool 13.59): ShutterCount counts every release,
+        // MechanicalShutterCount the mechanical shutter's alone.
+        let json = br#"[{"SourceFile":"DSC_5546.NEF","Make":"NIKON CORPORATION",
+            "Model":"NIKON Z f","SerialNumber":8043077,"Software":"Ver.03.01",
+            "LensModel":"NIKKOR Z 24-120mm f/4 S","ShutterCount":25602,
+            "MechanicalShutterCount":10045,"DateTimeOriginal":"2026:06:02 10:12:31"}]"#;
+        let zf = parse_json(json).unwrap();
+        assert_eq!(zf.model.as_deref(), Some("NIKON Z f"));
+        assert_eq!(zf.shutter_count, Some(10_045));
+        assert_eq!(zf.electronic_count, Some(25_602 - 10_045));
+        let samples = parse_shutter_json(json).unwrap();
+        assert_eq!(
+            (samples[0].count, samples[0].electronic_count),
+            (10_045, Some(15_557))
+        );
+        assert_eq!(samples[0].firmware.as_deref(), Some("03.01"));
+
+        // A mechanical count above the total isn't a pair of counters to subtract.
+        let odd = parse_json(
+            br#"[{"Make":"NIKON CORPORATION","Model":"NIKON Z f","ShutterCount":5,"MechanicalShutterCount":9}]"#,
+        )
+        .unwrap();
+        assert_eq!((odd.shutter_count, odd.electronic_count), (Some(9), None));
+        // Only Nikon's ShutterCount is documented as counting every release.
+        let other = parse_json(
+            br#"[{"Make":"OTHER","Model":"X1","ShutterCount":50,"MechanicalShutterCount":20}]"#,
+        )
+        .unwrap();
+        assert_eq!(other.electronic_count, None);
     }
 
     #[test]

@@ -173,7 +173,7 @@ fn run_checks(check: &mut NasCheck, text: &str) {
 }
 
 /// Writes 64 MB, reads it back, compares, deletes. Returns the write speed in MB/s.
-fn write_test(dir: &Path) -> Result<f64, String> {
+pub fn write_test(dir: &Path) -> Result<f64, String> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())

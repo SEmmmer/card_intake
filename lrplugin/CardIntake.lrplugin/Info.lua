@@ -14,9 +14,12 @@ return {
   LrToolkitIdentifier = "io.github.semmmer.cardintake",
   LrPluginName = "Card Intake",
   LrInitPlugin = "Init.lua",
+  -- Without this, Lightroom loads the plug-in (and runs Init.lua) only when one of its
+  -- features is first used, e.g. in Plug-in Manager, so new photos waited until then.
+  LrForceInitPlugin = true,
   LrPluginInfoProvider = "PluginInfo.lua",
   LrLibraryMenuItems = {
     { title = "Add new files from NAS", file = "AddNewFiles.lua" },
   },
-  VERSION = { major = 0, minor = 3, revision = 0 },
+  VERSION = { major = 0, minor = 3, revision = 1 },
 }

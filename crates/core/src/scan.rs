@@ -57,6 +57,16 @@ pub fn kind_of(path: &Path) -> Option<MediaKind> {
     }
 }
 
+/// Proprietary raws use XMP sidecars; DNG, JPEG and HEIF store XMP in the photo.
+pub fn uses_raw_sidecar(path: &Path) -> bool {
+    kind_of(path) == Some(MediaKind::Photo)
+        && path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            !["dng", "jpg", "jpeg", "hif", "heic", "heif"]
+                .iter()
+                .any(|other| e.eq_ignore_ascii_case(other))
+        })
+}
+
 /// Folders that hold the originals. Proxies (`M4ROOT/SUB`) and thumbnails
 /// (`M4ROOT/THMBNL`) are left out.
 fn source_dirs(root: &Path) -> [PathBuf; 3] {
@@ -177,6 +187,17 @@ mod tests {
     use super::*;
     use std::fs::{self, File};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn only_proprietary_raw_photos_use_sidecar_ratings() {
+        for ext in PHOTO_EXTENSIONS {
+            let path = PathBuf::from(format!("photo.{}", ext.to_uppercase()));
+            assert_eq!(uses_raw_sidecar(&path), ["arw", "nef", "nrw"].contains(ext));
+        }
+        for name in ["clip.MP4", "clip.NEV", "photo.xmp", "photo.xml"] {
+            assert!(!uses_raw_sidecar(Path::new(name)));
+        }
+    }
 
     fn write(path: &Path, bytes: &[u8], age_secs: u64) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();

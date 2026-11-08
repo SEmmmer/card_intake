@@ -1,16 +1,20 @@
 // Hide the console window in Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod delivery;
+mod immich;
 mod imports;
 mod library;
 mod lightroom;
+mod not_mine;
+mod offline;
 mod settings;
 
 use card_intake_core::{
     cameras,
     card_details::{self, CardDetails},
     destinations::{self, DateDestination},
-    exif,
+    eject, exif,
     exiftool::{self, ShutterSample},
     grouping::{self, ShootGroup},
     health::{self, CardHealth, HealthOutcome},
@@ -40,11 +44,17 @@ struct AppState {
     imports: Arc<imports::ImportControl>,
     pending_path: PathBuf,
     local_data: PathBuf,
-    /// The user's Pictures folder: Lightroom catalogs go in `Lightroom/Card Intake` there.
+    /// Pictures holds the default offline folder and Lightroom catalogs.
     pictures: Option<PathBuf>,
     /// This computer's copy of the shutter count database.
     shutter: Mutex<shutter::Store>,
+    /// Readings of cameras not in My Cameras, from cards and NAS photos read since the
+    /// app started. Never saved: registering a camera stores its readings.
+    new_cameras: Mutex<ShutterDb>,
     library: library::LibraryControl,
+    delivering: Arc<std::sync::atomic::AtomicBool>,
+    /// Serialises starting imports, delivery, backup and Send jobs.
+    activity_gate: Mutex<()>,
 }
 
 impl AppState {
@@ -63,32 +73,87 @@ impl AppState {
 
     /// Adds readings to this computer's database, then syncs it with the shared one
     /// in the photo share (when connected): only rows changed since the last sync go
-    /// either way.
+    /// either way. Readings of cameras not in My Cameras are kept in memory instead,
+    /// and stored once the camera is registered, here or on another computer.
     fn sync_shutter(&self, add: &ShutterDb) -> Result<CamerasResponse, String> {
+        self.update_shutter(add, &[]).map(|(response, _)| response)
+    }
+
+    fn update_shutter(
+        &self,
+        add: &ShutterDb,
+        samples: &[ShutterSample],
+    ) -> Result<(CamerasResponse, usize), String> {
         let mut store = self.shutter.lock().map_err(|e| e.to_string())?;
-        store
-            .add(add)
-            .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
+        let read = |e: std::io::Error| format!("Couldn't read the shutter counts: {e}");
+        let root = self.shared_root();
         let mut shared = SharedStatus::default();
-        if let Some(root) = self.shared_root() {
-            shared.path = Some(shutter::shared_path(&root).display().to_string());
-            match shutter::sync_shared(&root, &mut store) {
+        // Fetch other computers' history and removals before checking raw readings.
+        if let Some(root) = &root {
+            shared.path = Some(shutter::shared_path(root).display().to_string());
+            match shutter::sync_shared(root, &mut store) {
                 Ok(()) => shared.synced = true,
                 Err(e) => shared.error = Some(e.to_string()),
             }
         }
-        let read = |e: std::io::Error| format!("Couldn't read the shutter counts: {e}");
+        let mut new_cameras = self.new_cameras.lock().map_err(|e| e.to_string())?;
+        let mut readings = std::mem::take(&mut *new_cameras);
+        readings.merge(add);
+        let ignored = self.settings.lock().map_err(|e| e.to_string())?.clone();
+        not_mine::filter(&ignored, &mut readings);
+        store.retain_current(&mut readings).map_err(read)?;
+        let mut history = store.load().map_err(read)?;
+        history.merge(&readings);
+        let ignored_cameras = ignored.not_mine();
+        let samples: Vec<_> = samples
+            .iter()
+            .filter(|s| {
+                !ignored_cameras.owns(&s.model, s.serial.as_deref(), s.internal_serial.as_deref())
+            })
+            .cloned()
+            .collect();
+        let (mut raw, left_out) = history.read(&samples);
+        not_mine::filter(&ignored, &mut raw);
+        store.retain_current(&mut raw).map_err(read)?;
+        readings.merge(&raw);
+        *new_cameras = readings.split_off_new(&store.my_cameras().map_err(read)?);
+        let changed = store
+            .add(&readings)
+            .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
+        if changed && let Some(root) = &root {
+            match shutter::sync_shared(root, &mut store) {
+                Ok(()) => shared.synced = true,
+                Err(e) => shared.error = Some(e.to_string()),
+            }
+        }
         shared.folders = store.folder_count().map_err(read)?;
-        Ok(CamerasResponse {
-            cameras: store.load().map_err(read)?.views(),
-            shared,
-        })
+        Ok((
+            CamerasResponse {
+                cameras: store.load().map_err(read)?.views(),
+                new_cameras: new_cameras.views(),
+                shared,
+            },
+            left_out,
+        ))
+    }
+
+    /// Whether a camera is in My Cameras.
+    fn is_my_camera(&self, model: &str, serial: Option<&str>, internal: Option<&str>) -> bool {
+        self.shutter
+            .lock()
+            .ok()
+            .and_then(|store| store.my_cameras().ok())
+            .is_some_and(|mine| mine.owns(model, serial, internal))
     }
 }
 
 #[derive(Serialize, Default)]
 struct CamerasResponse {
+    /// My Cameras, with their shutter count history.
     cameras: Vec<CameraView>,
+    /// Cameras whose photos were read but that aren't registered. Their readings are
+    /// kept only until the app closes.
+    new_cameras: Vec<CameraView>,
     shared: SharedStatus,
 }
 
@@ -127,6 +192,7 @@ struct CardReport {
     /// Per capture date: the shoot folders already on the NAS and the card's files
     /// in them. Empty when the photo share isn't connected.
     destinations: Vec<DateDestination>,
+    offline_destinations: Vec<DateDestination>,
     camera: Option<CameraSummary>,
     scan_ms: u128,
 }
@@ -143,6 +209,9 @@ struct CameraSummary {
     make: Option<String>,
     model: String,
     serial: Option<String>,
+    /// Sony's internal serial number, which identifies a body whose photos don't carry
+    /// the serial number.
+    internal_serial: Option<String>,
     firmware: Option<String>,
     lens: Option<String>,
     shutter_count: Option<u64>,
@@ -170,34 +239,90 @@ async fn list_cards() -> Result<Vec<CardVolume>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Reads a card (never writes to it), then remembers the card and camera.
+/// Safely ejects the card on screen when you ask, as "Eject the card when done" does
+/// after an import. `expected_id` is the volume ID the screen shows: a card swapped in
+/// since then is left alone.
+#[tauri::command]
+async fn eject_card(
+    root: String,
+    expected_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if state.imports.is_active() {
+        return Err("Wait for the import to finish, or stop it, before ejecting the card.".into());
+    }
+    let root = PathBuf::from(root);
+    tauri::async_runtime::spawn_blocking(move || {
+        if expected_id.is_some() && volume_info::volume_info(&root).id != expected_id {
+            return Err(
+                "A different card is in that drive now, so it wasn't ejected. Eject it in Explorer."
+                    .to_string(),
+            );
+        }
+        eject::eject_card(&root)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Reads a card (never writes to it), then remembers the card, and the camera when
+/// it's in My Cameras. A card seen for the first time is new: it's kept while the app
+/// runs, and saved once registered.
 #[tauri::command]
 async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardReport, String> {
     let exiftool = state.exiftool.clone();
     let root = PathBuf::from(root);
     let nas = state.shared_root();
+    let offline = imports::pending_offline_folder(&state, &root)
+        .map(Ok)
+        .unwrap_or_else(|| state.offline_root())?;
     let mut report = tauri::async_runtime::spawn_blocking(move || {
-        build_report(&root, exiftool.as_deref(), nas.as_deref())
+        build_report(&root, exiftool.as_deref(), nas.as_deref(), Some(&offline))
     })
     .await
     .map_err(|e| e.to_string())??;
 
+    if let Some(camera) = &mut report.camera {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        if settings.not_mine().owns(
+            &camera.model,
+            camera.serial.as_deref(),
+            camera.internal_serial.as_deref(),
+        ) {
+            camera.shutter_count = None;
+            camera.electronic_count = None;
+        }
+    }
     let now = Local::now().naive_local();
     let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
     report.card_key = ledger.record_card(
         sighting(&report.volume, &report.drive, &report.details),
         now,
     );
+    if let Some(card) = report
+        .card_key
+        .as_ref()
+        .and_then(|key| ledger.cards.iter().find(|c| &c.id == key))
+    {
+        not_mine::align_card(&state, report.volume.id.as_deref(), card)?;
+    }
     if let (Some(key), Some(health)) = (&report.card_key, &report.health) {
         ledger.record_health(key, health.clone(), now);
     }
-    if let Some(camera) = &report.camera {
+    if let Some(camera) = &report.camera
+        && state.is_my_camera(
+            &camera.model,
+            camera.serial.as_deref(),
+            camera.internal_serial.as_deref(),
+        )
+    {
         ledger.record_camera(
             CameraSighting {
                 model: camera.model.clone(),
                 serial: camera.serial.clone(),
                 firmware: camera.firmware.clone(),
-                shutter_count: camera.shutter_count,
+                // This single-photo preview has not passed the history check.
+                shutter_count: None,
             },
             now,
         );
@@ -234,12 +359,20 @@ async fn read_card_health(
     let mut card_key = None;
     if let HealthOutcome::Read { health } = &outcome {
         let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+        let old_key = volume
+            .id
+            .as_deref()
+            .and_then(|id| ledger.card_key_for_volume(id));
         card_key = ledger.record_reading(
             volume.id.as_deref(),
             (**health).clone(),
             Local::now().naive_local(),
         );
-        if card_key.is_some() {
+        if let Some(card) = card_key
+            .as_ref()
+            .and_then(|key| ledger.cards.iter().find(|c| &c.id == key))
+        {
+            not_mine::align_card(&state, old_key.as_deref(), card)?;
             state.save_ledger(&ledger)?;
         }
     }
@@ -285,13 +418,104 @@ async fn read_card_shutter(
     })
     .await
     .map_err(|e| e.to_string())??;
-    let mut add = ShutterDb::default();
-    for sample in &samples {
-        add.add(sample);
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>()
+            .update_shutter(&ShutterDb::default(), &samples)
+            .map(|(response, _)| response)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Adds a camera to My Cameras, with what was already read from its photos. The
+/// registration is shared through the photo share like the counts.
+#[tauri::command]
+async fn register_camera(
+    model: String,
+    serial: Option<String>,
+    internal_serial: Option<String>,
+    app: AppHandle,
+) -> Result<CamerasResponse, String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("A camera needs its model to be registered.".into());
     }
-    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().sync_shutter(&add))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state
+            .shutter
+            .lock()
+            .map_err(|e| e.to_string())?
+            .register(
+                &model,
+                serial.as_deref().filter(|s| !s.trim().is_empty()),
+                internal_serial.as_deref().filter(|s| !s.trim().is_empty()),
+            )
+            .map_err(|e| format!("Couldn't register the camera: {e}"))?;
+        // Moves the readings kept for it into the database.
+        state.sync_shutter(&ShutterDb::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Removes a camera and its history everywhere this database syncs.
+#[tauri::command]
+async fn remove_camera(
+    model: String,
+    serial: Option<String>,
+    internal_serial: Option<String>,
+    app: AppHandle,
+) -> Result<CamerasResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        {
+            let mut store = state.shutter.lock().map_err(|e| e.to_string())?;
+            store
+                .remove(&model, serial.as_deref(), internal_serial.as_deref())
+                .map_err(|e| format!("Couldn't remove the camera: {e}"))?;
+            let mut camera = shutter::MyCameras::default();
+            camera.add(&model, serial.as_deref(), internal_serial.as_deref());
+            state
+                .new_cameras
+                .lock()
+                .map_err(|e| e.to_string())?
+                .cameras
+                .retain(|c| !camera.owns_camera(c));
+        }
+        // The ledger's old camera previews aren't part of the shared history.
+        let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+        ledger
+            .cameras
+            .retain(|c| c.model != model || c.serial != serial);
+        state.save_ledger(&ledger)?;
+        drop(ledger);
+        state.sync_shutter(&ShutterDb::default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Adds a card to My Cards, with what this app learned about it since it was inserted.
+#[tauri::command]
+fn register_card(card_key: String, state: State<'_, AppState>) -> Result<Ledger, String> {
+    let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+    if !ledger.register_card(&card_key) {
+        return Err("This card isn't known any more. Insert it again to register it.".into());
+    }
+    state.save_ledger(&ledger)?;
+    Ok(ledger.clone())
+}
+
+/// Removes this computer's card record. Its import results stay in the ledger.
+#[tauri::command]
+fn remove_card(card_key: String, state: State<'_, AppState>) -> Result<Ledger, String> {
+    let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+    let mut updated = ledger.clone();
+    updated.remove_card(&card_key);
+    state.save_ledger(&updated)?;
+    *ledger = updated;
+    Ok(ledger.clone())
 }
 
 /// Every camera's shutter count history, merged with the shared database when the
@@ -351,8 +575,31 @@ fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     state
         .settings
         .lock()
-        .map(|s| s.clone())
+        .map(|s| {
+            let mut safe = s.clone();
+            safe.immich.api_key.clear();
+            safe
+        })
         .map_err(|e| e.to_string())
+}
+
+/// Remembers which cameras and cards are folded in My Cameras and My Cards.
+#[tauri::command]
+fn save_folded(folded: Vec<String>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    let mut updated = settings.clone();
+    updated.folded = folded
+        .into_iter()
+        .filter(|k| !k.is_empty() && k.len() <= 200)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .take(1000)
+        .collect();
+    updated
+        .save(&state.settings_path)
+        .map_err(|e| format!("Couldn't save the settings: {e}"))?;
+    *settings = updated;
+    Ok(())
 }
 
 /// Saves the NAS path. An empty path goes back to the default.
@@ -431,6 +678,7 @@ fn build_report(
     root: &Path,
     exiftool: Option<&Path>,
     nas: Option<&Path>,
+    offline: Option<&Path>,
 ) -> Result<CardReport, String> {
     let started = Instant::now();
     let files = scan::scan_card(root).map_err(|e| format!("Couldn't read the card: {e}"))?;
@@ -467,6 +715,9 @@ fn build_report(
         destinations: nas
             .map(|n| destinations::find(n, &files))
             .unwrap_or_default(),
+        offline_destinations: offline
+            .map(|p| destinations::find(p, &files))
+            .unwrap_or_default(),
         camera: camera_summary(&files, exiftool),
         scan_ms: started.elapsed().as_millis(),
     })
@@ -491,12 +742,14 @@ fn camera_summary(files: &[MediaFile], exiftool: Option<&Path>) -> Option<Camera
         .or_else(|| clip.and_then(|c| scan::sidecar_serial(&c.path)));
 
     let mut electronic_count = None;
+    let mut internal_serial = None;
     let (shutter_count, shutter_note) = match (newest_photo, exiftool) {
         (None, _) => (None, Some("No photos on this card to read it from.".into())),
         (Some(_), None) => (None, Some(exiftool_note())),
         (Some(photo), Some(tool)) => match exiftool::camera_details(tool, &photo.path) {
             Ok(details) => {
                 electronic_count = details.electronic_count;
+                internal_serial = details.internal_serial;
                 match details.shutter_count {
                     Some(count) => (Some(count), None),
                     None => (
@@ -515,6 +768,7 @@ fn camera_summary(files: &[MediaFile], exiftool: Option<&Path>) -> Option<Camera
         make: basic.make,
         model,
         serial,
+        internal_serial,
         firmware: basic.software.as_deref().map(exiftool::firmware_version),
         lens: basic.lens,
         shutter_count,
@@ -608,7 +862,7 @@ fn run_cli(args: &[String]) -> Option<i32> {
     let print = |value: serde_json::Result<String>| println!("{}", value.unwrap_or_default());
     match (flag, arg) {
         ("--report", Some(root)) => {
-            match build_report(Path::new(root), find_exiftool(None).as_deref(), None) {
+            match build_report(Path::new(root), find_exiftool(None).as_deref(), None, None) {
                 Ok(report) => print(serde_json::to_string_pretty(&report)),
                 Err(e) => {
                     eprintln!("{e}");
@@ -643,15 +897,18 @@ fn run_cli(args: &[String]) -> Option<i32> {
             match shutter_samples_parallel(&exiftool, &photos) {
                 Ok(samples) => {
                     let mut db = ShutterDb::default();
-                    for sample in &samples {
-                        db.add(sample);
-                    }
+                    let left_out = db.add_read(&samples);
                     eprintln!(
                         "{} photos, {} with a shutter count, read in {} ms",
                         photos.len(),
                         samples.len(),
                         started.elapsed().as_millis()
                     );
+                    if left_out > 0 {
+                        eprintln!(
+                            "{left_out} counts left out: they don't fit the camera's other photos"
+                        );
+                    }
                     print(serde_json::to_string_pretty(&db.views()));
                 }
                 Err(e) => {
@@ -660,8 +917,51 @@ fn run_cli(args: &[String]) -> Option<i32> {
                 }
             }
         }
+        ("--deliver-plan", Some(folder)) => {
+            let Some(tool) = find_exiftool(None) else {
+                eprintln!("Deliver needs ExifTool. Set CARD_INTAKE_EXIFTOOL to its full path.");
+                return Some(1);
+            };
+            // Saved settings are only read. The CLI exits before Tauri setup can open any
+            // settings, history or shutter database for writing.
+            #[cfg(windows)]
+            let config = std::env::var_os("APPDATA").map(PathBuf::from);
+            #[cfg(not(windows))]
+            let config = std::env::var_os("HOME")
+                .map(|p| PathBuf::from(p).join("Library/Application Support"));
+            let saved = config
+                .and_then(|c| {
+                    Settings::load(&c.join("io.github.semmmer.cardintake/settings.json")).ok()
+                })
+                .unwrap_or_default();
+            let Some(photos) = args.get(3).cloned().or(saved.deliver_to.clone()) else {
+                eprintln!(
+                    "usage: card_intake_desktop --deliver-plan <shoot> <finished photos folder> [catalog]"
+                );
+                return Some(2);
+            };
+            let shoot = Path::new(folder);
+            let target = Path::new(&photos).join(shoot.file_name().unwrap_or_default());
+            let catalog = args.get(4).map(PathBuf::from).or_else(|| {
+                let root = saved.lightroom.catalog_root.clone().or_else(|| {
+                    #[cfg(windows)]
+                    let home = std::env::var_os("USERPROFILE");
+                    #[cfg(not(windows))]
+                    let home = std::env::var_os("HOME");
+                    home.map(|p| PathBuf::from(p).join("Pictures/Lightroom/Card Intake"))
+                })?;
+                lightroom::delivery_target(&root, shoot).ok()?.catalog
+            });
+            match card_intake_core::deliver::plan(shoot, &tool, catalog.as_deref(), &target) {
+                Ok(result) => print(serde_json::to_string_pretty(&result)),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return Some(1);
+                }
+            }
+        }
         ("--check-nas", Some(path)) => print(serde_json::to_string_pretty(&nas::check_nas(path))),
-        ("--report" | "--health" | "--check-nas" | "--shutter", None) => {
+        ("--report" | "--health" | "--check-nas" | "--shutter" | "--deliver-plan", None) => {
             eprintln!("usage: card_intake_desktop {flag} <path>");
             return Some(2);
         }
@@ -707,7 +1007,10 @@ fn main() {
                 local_data: app.path().app_local_data_dir()?,
                 pictures: app.path().picture_dir().ok(),
                 shutter: Mutex::new(shutter),
+                new_cameras: Mutex::new(ShutterDb::default()),
                 library: library::LibraryControl::default(),
+                delivering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                activity_gate: Mutex::new(()),
             });
             Ok(())
         })
@@ -724,7 +1027,21 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            offline::get_offline_copies,
+            offline::check_offline_folder,
+            offline::save_offline_folder,
+            offline::check_init_backup,
+            offline::forget_backup,
+            offline::eject_backup,
+            offline::back_up_now,
+            offline::send_to_nas,
+            offline::delete_laptop_copy,
+            not_mine::mark_not_mine_card,
+            not_mine::mark_not_mine_camera,
+            not_mine::forget_not_mine_card,
+            not_mine::forget_not_mine_camera,
             list_cards,
+            eject_card,
             read_card,
             read_card_health,
             get_ledger,
@@ -734,6 +1051,10 @@ fn main() {
             nas_status,
             read_card_shutter,
             get_cameras,
+            register_camera,
+            register_card,
+            remove_camera,
+            remove_card,
             library::scan_library,
             library::cancel_library_scan,
             imports::start_import,
@@ -743,6 +1064,12 @@ fn main() {
             lightroom::open_in_lightroom,
             lightroom::finish_catalog,
             lightroom::lightroom_catalogs,
+            delivery::get_delivery_settings,
+            delivery::save_delivery_settings,
+            delivery::plan_delivery,
+            delivery::deliver,
+            save_folded,
+            delivery::delivery_states,
             imports::cancel_import
         ])
         .run(tauri::generate_context!())
@@ -752,6 +1079,173 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Commands use only this fixture's files, with an in-memory shutter store
+    /// and an unreachable local NAS path. No app or configured share is opened.
+    fn local_state(dir: &Path) -> AppState {
+        AppState {
+            ledger: Mutex::new(Ledger::default()),
+            ledger_path: dir.join("ledger.json"),
+            settings: Mutex::new(Settings {
+                nas_root: Some(dir.join("missing-nas").display().to_string()),
+                ..Default::default()
+            }),
+            settings_path: dir.join("settings.json"),
+            exiftool: None,
+            smartctl: None,
+            imports: Arc::new(imports::ImportControl::default()),
+            pending_path: dir.join("pending.json"),
+            local_data: dir.into(),
+            pictures: Some(dir.join("Pictures")),
+            shutter: Mutex::new(shutter::Store::in_memory()),
+            new_cameras: Mutex::new(ShutterDb::default()),
+            library: library::LibraryControl::default(),
+            delivering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            activity_gate: Mutex::new(()),
+        }
+    }
+
+    #[test]
+    fn marking_not_mine_drops_memory_and_blocks_card_and_scan_readings_from_entering_history() {
+        // An environment override must not send this fixture to a real share.
+        if std::env::var_os("CARD_INTAKE_NAS").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let state = local_state(dir.path());
+        let sample = ShutterSample {
+            model: "ILCE-7M4".into(),
+            serial: Some("0451234".into()),
+            internal_serial: Some("1 2 3".into()),
+            firmware: None,
+            count: 100,
+            electronic_count: None,
+            taken: chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        };
+        let (batch, _) = ShutterDb::default().read(std::slice::from_ref(&sample));
+        state.sync_shutter(&batch).unwrap();
+        assert_eq!(state.new_cameras.lock().unwrap().cameras.len(), 1);
+        not_mine::mark_camera_for(
+            sample.model.clone(),
+            sample.serial.clone(),
+            sample.internal_serial.clone(),
+            &state,
+        )
+        .unwrap();
+        assert!(state.new_cameras.lock().unwrap().is_empty());
+        let (response, _) = state.update_shutter(&batch, &[sample]).unwrap();
+        assert!(response.new_cameras.is_empty());
+        assert!(response.cameras.is_empty());
+        assert!(
+            state
+                .shutter
+                .lock()
+                .unwrap()
+                .load()
+                .unwrap()
+                .cameras
+                .is_empty()
+        );
+        assert_eq!(
+            Settings::load(&state.settings_path)
+                .unwrap()
+                .not_mine_cameras
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn activity_gate_serializes_import_backup_send_and_delivery_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = local_state(dir.path());
+        let active = state.begin_copy().unwrap();
+        assert!(state.begin_copy().is_err());
+        state.imports.cancel().unwrap();
+        assert!(active.cancel.load(std::sync::atomic::Ordering::Relaxed));
+        drop(active);
+        state
+            .delivering
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(state.begin_copy().is_err());
+        state
+            .delivering
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(state.begin_copy().is_ok());
+    }
+
+    #[test]
+    fn card_reports_also_find_existing_offline_shoots() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = dir.path().join("card");
+        let offline = dir.path().join("offline");
+        let sidecar = br#"<NonRealTimeMeta><CreationDate value="2026-11-08T18:00:00+09:00"/></NonRealTimeMeta>"#;
+        write(&card.join("M4ROOT/CLIP/C0001.MP4"), b"clip");
+        write(&card.join("M4ROOT/CLIP/C0001M01.XML"), sidecar);
+        write(
+            &offline.join("2026/2026-11-08_Kyoto/video/C0001.MP4"),
+            b"clip",
+        );
+        let report = build_report(&card, None, None, Some(&offline)).unwrap();
+        assert!(report.destinations.is_empty());
+        assert_eq!(
+            report.offline_destinations[0].suggested_title.as_deref(),
+            Some("Kyoto")
+        );
+        assert_eq!(report.offline_destinations[0].videos_on_nas, 1);
+    }
+
+    #[test]
+    fn offline_file_lists_are_saved_in_app_data_and_never_in_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = local_state(dir.path());
+        let card = dir.path().join("card");
+        let offline = dir.path().join("offline");
+        write(&card.join("M4ROOT/CLIP/C0001.MP4"), b"clip");
+        write(&card.join("M4ROOT/CLIP/C0001M01.XML"), br#"<NonRealTimeMeta><CreationDate value="2026-11-08T18:00:00+09:00"/></NonRealTimeMeta>"#);
+        let request = card_intake_core::import::ImportRequest {
+            root: card,
+            nas_root: offline.clone(),
+            expected_card_id: None,
+            shoots: vec![card_intake_core::import::ShootSelection {
+                date: chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap(),
+                name: "Kyoto".into(),
+            }],
+            include_videos: true,
+            verify: true,
+            workers: 1,
+            camera: None,
+            offline: true,
+            backup_drives: Vec::new(),
+            relay_to: None,
+        };
+        let result = card_intake_core::import::import_card(
+            &request,
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+            |_| {},
+        );
+        assert_eq!(result.local_files.len(), 2);
+        super::offline::save_import_manifest(&state, &result).unwrap();
+        let path = std::fs::read_dir(dir.path().join("offline-manifests"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let saved = card_intake_core::send::Manifest::load(&path).unwrap();
+        assert_eq!(saved.offline_root, offline);
+        assert_eq!(saved.files.len(), 2);
+        let mut ledger = Ledger::default();
+        ledger.record_import(result);
+        ledger.save(&state.ledger_path).unwrap();
+        let text = std::fs::read_to_string(&state.ledger_path).unwrap();
+        assert!(!text.contains("local_files"));
+        assert!(!text.contains("C0001.MP4"));
+    }
 
     fn write(path: &Path, bytes: &[u8]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -776,7 +1270,7 @@ mod tests {
             b"C0001 bytes",
         );
 
-        let report = build_report(&card, None, Some(&nas)).unwrap();
+        let report = build_report(&card, None, Some(&nas), None).unwrap();
         assert_eq!(report.videos, 2);
         assert_eq!(report.destinations.len(), 1);
         let day = &report.destinations[0];
@@ -787,7 +1281,7 @@ mod tests {
 
         // Without a connected share there is nothing to look up.
         assert!(
-            build_report(&card, None, None)
+            build_report(&card, None, None, None)
                 .unwrap()
                 .destinations
                 .is_empty()

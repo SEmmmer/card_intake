@@ -5,9 +5,16 @@
 //!     cargo run -p card_intake_core --example count_photos -- <photo share> <folder>...
 //!
 //! Each folder under the given roots is read once, and skipped on later runs unless its
-//! photos changed. The counts are merged into `<photo share>/.card-intake/shutter.sqlite`,
+//! photos changed. `--again` reads them all again, for counts a newer Card Intake
+//! reads that an earlier run didn't (such as a Nikon Zf's electronic count):
+//!
+//!     cargo run -p card_intake_core --example count_photos -- --again <photo share> <folder>...
+//!
+//! The counts are merged into `<photo share>/.card-intake/shutter.sqlite`,
 //! the database the app reads, the same way the app syncs with it; merging is idempotent,
-//! so a run can be repeated and an interrupted run keeps what it already saved.
+//! so a run can be repeated and an interrupted run keeps what it already saved. Only the
+//! counts of My Cameras are added: photos from other cameras are listed at the end, and
+//! their folders are read again on the next run.
 
 use card_intake_core::shutter::{self, FolderResult, LibraryFolder, ShutterDb, Store};
 use chrono::NaiveDate;
@@ -25,7 +32,9 @@ const SAVE_EVERY: Duration = Duration::from_secs(20);
 const EXTRA_PREFIX: &str = "extra:";
 
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    let again = all.iter().any(|a| a == "--again");
+    let mut args = all.into_iter().filter(|a| a != "--again");
     let Some(share) = args.next().map(PathBuf::from) else {
         usage();
     };
@@ -44,25 +53,26 @@ fn main() {
         );
         std::process::exit(1);
     }
-    if let Err(e) = run(&share, &roots, &exiftool) {
+    if let Err(e) = run(&share, &roots, &exiftool, again) {
         eprintln!("{e}");
         std::process::exit(1);
     }
 }
 
 fn usage() -> ! {
-    eprintln!("usage: count_photos <photo share> <folder>...");
+    eprintln!("usage: count_photos [--again] <photo share> <folder>...");
     eprintln!(r#"example: count_photos \\NAS\photos "\\NAS\old\Nikon Transfer 2026 5""#);
     std::process::exit(2);
 }
 
-fn run(share: &Path, roots: &[PathBuf], exiftool: &Path) -> Result<(), String> {
+fn run(share: &Path, roots: &[PathBuf], exiftool: &Path, again: bool) -> Result<(), String> {
     let database = shutter::shared_path(share);
     // A working copy in memory, filled from the shared database and synced back to it.
     let mut local = Store::in_memory();
     shutter::sync_shared(share, &mut local)
         .map_err(|e| format!("Couldn't read {} ({e}).", database.display()))?;
     let before = local.load().map_err(|e| e.to_string())?;
+    let mut history = before.clone();
     let cancel = AtomicBool::new(false);
     let mut todo: Vec<LibraryFolder> = Vec::new();
     let mut seen = BTreeSet::new();
@@ -81,7 +91,7 @@ fn run(share: &Path, roots: &[PathBuf], exiftool: &Path) -> Result<(), String> {
             }
             folders_total += 1;
             photos_total += folder.photos.len();
-            if before.folders.get(&folder.relative) == Some(&folder.stamp) {
+            if !again && before.folders.get(&folder.relative) == Some(&folder.stamp) {
                 unchanged += 1;
             } else {
                 todo.push(folder);
@@ -98,7 +108,10 @@ fn run(share: &Path, roots: &[PathBuf], exiftool: &Path) -> Result<(), String> {
     }
 
     let started = Instant::now();
+    // Only My Cameras' counts are added; register a camera in the app first.
+    let mine = local.my_cameras().map_err(|e| e.to_string())?;
     let mut batch = ShutterDb::default();
+    let mut not_mine = BTreeSet::new();
     let mut saved = Instant::now();
     let (mut photos_read, mut counts, mut failures) = (0usize, 0usize, 0usize);
     shutter::read_folders(
@@ -109,18 +122,38 @@ fn run(share: &Path, roots: &[PathBuf], exiftool: &Path) -> Result<(), String> {
         |_progress| {},
         |result| match result {
             FolderResult::Read { folder, samples } => {
+                let (mut read, left_out) = history.read(&samples);
+                history.merge(&read);
+                let new = read.split_off_new(&mine);
                 photos_read += folder.photos.len();
-                counts += samples.len();
+                counts += samples.len() - left_out;
                 println!(
-                    "  {}: {} photos, {} with a shutter count",
+                    "  {}: {} photos, {} with a shutter count{}",
                     label(&folder.relative),
                     folder.photos.len(),
-                    samples.len()
+                    samples.len() - left_out,
+                    if left_out > 0 {
+                        format!(" ({left_out} left out: they don't fit the camera's other photos)")
+                    } else {
+                        String::new()
+                    }
                 );
-                for sample in &samples {
-                    batch.add(sample);
+                for camera in &new.cameras {
+                    let serial = camera
+                        .serial
+                        .as_deref()
+                        .or(camera.internal_serial.as_deref());
+                    not_mine.insert(format!(
+                        "{} {}",
+                        camera.model,
+                        serial.unwrap_or("(no serial)")
+                    ));
                 }
-                batch.folders.insert(folder.relative.clone(), folder.stamp);
+                // Read again next time if it holds photos from a camera not registered.
+                if new.cameras.is_empty() {
+                    batch.folders.insert(folder.relative.clone(), folder.stamp);
+                }
+                batch.merge(&read);
                 if saved.elapsed() >= SAVE_EVERY {
                     let synced = local
                         .add(&batch)
@@ -154,6 +187,12 @@ fn run(share: &Path, roots: &[PathBuf], exiftool: &Path) -> Result<(), String> {
         counts
     );
     report(&before, &merged);
+    if !not_mine.is_empty() {
+        println!("Not counted, as they aren't in My Cameras (register them in the app):");
+        for camera in &not_mine {
+            println!("  {camera}");
+        }
+    }
     println!("Saved in {}", database.display());
     Ok(())
 }

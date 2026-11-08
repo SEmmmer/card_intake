@@ -35,7 +35,7 @@ pub fn find_camera_cards() -> Vec<CardVolume> {
 }
 
 #[cfg(windows)]
-fn mount_points() -> Vec<PathBuf> {
+pub fn mount_points() -> Vec<PathBuf> {
     use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
     // SAFETY: GetLogicalDrives has no arguments.
     let drives = unsafe { GetLogicalDrives() };
@@ -53,12 +53,12 @@ fn mount_points() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn mount_points() -> Vec<PathBuf> {
+pub fn mount_points() -> Vec<PathBuf> {
     subdirs(Path::new("/Volumes"))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn mount_points() -> Vec<PathBuf> {
+pub fn mount_points() -> Vec<PathBuf> {
     // /media/<user>/<label>, /run/media/<user>/<label> or /mnt/<label>
     let mut points = Vec::new();
     for base in ["/media", "/run/media", "/mnt"] {
@@ -81,6 +81,42 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The existing volume holding a path. Callers resolve missing folders through
+/// their nearest existing parent before asking, so a disconnected mount fails.
+#[cfg(windows)]
+pub fn volume_root(path: &Path) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW;
+    let resolved = std::fs::canonicalize(path).ok()?;
+    let wide: Vec<u16> = resolved.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut root = vec![0u16; 32768];
+    // SAFETY: wide is terminated, and root is a live output buffer.
+    if unsafe { GetVolumePathNameW(wide.as_ptr(), root.as_mut_ptr(), root.len() as u32) } == 0 {
+        return None;
+    }
+    let end = root.iter().position(|&c| c == 0)?;
+    let text = String::from_utf16_lossy(&root[..end]);
+    Some(PathBuf::from(
+        text.strip_prefix(r"\\?\")
+            .filter(|s| !s.starts_with("UNC\\"))
+            .unwrap_or(&text),
+    ))
+}
+
+#[cfg(unix)]
+pub fn volume_root(path: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let mut root = std::fs::canonicalize(path).ok()?;
+    let dev = std::fs::metadata(&root).ok()?.dev();
+    while let Some(parent) = root.parent() {
+        if std::fs::metadata(parent).ok()?.dev() != dev {
+            break;
+        }
+        root = parent.to_path_buf();
+    }
+    Some(root)
 }
 
 #[cfg(test)]

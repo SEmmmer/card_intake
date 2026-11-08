@@ -1,4 +1,5 @@
-//! The cards and cameras this app has seen, kept between runs as one JSON file.
+//! The cards and cameras this app has seen, kept between runs as one JSON file. Only
+//! registered cards (My Cards) are saved; a new card is kept while the app runs.
 
 use crate::health::CardHealth;
 use chrono::NaiveDateTime;
@@ -51,6 +52,15 @@ pub struct CardRecord {
     /// Health log readings, oldest first.
     #[serde(default)]
     pub health: Vec<HealthReading>,
+    /// Registered as one of the user's cards (My Cards). A card the app hasn't seen is
+    /// new until then: it's kept while the app runs but never saved. Cards in ledgers
+    /// from before registration existed are registered.
+    #[serde(default = "registered")]
+    pub registered: bool,
+}
+
+fn registered() -> bool {
+    true
 }
 
 impl CardRecord {
@@ -112,7 +122,19 @@ pub struct CameraSighting {
 impl Ledger {
     pub fn record_import(&mut self, result: crate::import::ImportResult) {
         self.imports.insert(0, result);
-        self.imports.truncate(100);
+        while self.imports.len() > 100 {
+            let Some(index) = self
+                .imports
+                .iter()
+                .enumerate()
+                // The newest result must stay available for Lightroom and Send,
+                // even when protected offline records already fill the limit.
+                .rposition(|(i, r)| i != 0 && (!r.offline || r.sent.is_some()))
+            else {
+                break;
+            };
+            self.imports.remove(index);
+        }
     }
 
     /// Loads the ledger, or starts an empty one if the file doesn't exist yet.
@@ -124,13 +146,23 @@ impl Ledger {
         }
     }
 
-    /// Saves by writing a temporary file and renaming it, so a crash never leaves half a file.
+    /// Saves by writing a temporary file and renaming it, so a crash never leaves half a
+    /// file. New cards aren't saved: only the ones registered.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = path.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
+        let saved = Ledger {
+            cards: self
+                .cards
+                .iter()
+                .filter(|c| c.registered)
+                .cloned()
+                .collect(),
+            ..self.clone()
+        };
+        let text = serde_json::to_string_pretty(&saved).map_err(io::Error::other)?;
         std::fs::write(&tmp, text)?;
         std::fs::rename(tmp, path)
     }
@@ -200,12 +232,26 @@ impl Ledger {
                     insertions: 1,
                     hardware_serial: seen.hardware_serial,
                     health: Vec::new(),
+                    registered: false,
                 });
                 id
             }
         };
         self.cards.sort_by_key(|c| std::cmp::Reverse(c.last_seen));
         Some(key)
+    }
+
+    /// Adds a new card to My Cards. Returns false if the card isn't known.
+    pub fn register_card(&mut self, card_key: &str) -> bool {
+        let card = self.cards.iter_mut().find(|c| c.id == card_key);
+        card.map(|c| c.registered = true).is_some()
+    }
+
+    /// Forgets a card without changing the imports that mention it.
+    pub fn remove_card(&mut self, card_key: &str) -> bool {
+        let before = self.cards.len();
+        self.cards.retain(|c| c.id != card_key);
+        self.cards.len() != before
     }
 
     /// The key of the record this card belongs to, without recording anything.
@@ -289,6 +335,8 @@ impl Ledger {
             card.formats += 1;
         }
         card.volume_id = Some(seen.current_volume_id().to_string());
+        // A registered card stays registered whichever way it was recognised.
+        card.registered |= seen.registered;
         card.insertions += seen.insertions;
         card.first_seen = card.first_seen.min(seen.first_seen);
         card.last_seen = card.last_seen.max(seen.last_seen);
@@ -350,6 +398,52 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trimming_keeps_unsent_offline_imports_even_when_more_than_one_hundred() {
+        let mut ledger = Ledger::default();
+        for i in 0..105 {
+            let mut r = import_from(&format!("card-{i}"));
+            r.offline = true;
+            ledger.record_import(r);
+        }
+        assert_eq!(ledger.imports.len(), 105);
+        ledger.record_import(import_from("NAS"));
+        assert_eq!(ledger.imports.len(), 106);
+        assert_eq!(ledger.imports.iter().filter(|r| r.offline).count(), 105);
+        assert_eq!(ledger.imports[0].card_id.as_deref(), Some("NAS"));
+        let mut old = import_from("old NAS");
+        old.offline = false;
+        ledger.imports.push(old);
+        ledger.record_import(import_from("new NAS"));
+        assert_eq!(ledger.imports.len(), 106);
+        assert_eq!(ledger.imports.iter().filter(|r| r.offline).count(), 105);
+        assert_eq!(ledger.imports[0].card_id.as_deref(), Some("new NAS"));
+    }
+
+    #[test]
+    fn old_history_defaults_to_nas_and_sent_offline_imports_can_be_trimmed() {
+        let old = import_from("old");
+        assert!(!old.offline);
+        assert!(old.sent.is_none());
+        let mut sent = old.clone();
+        sent.offline = true;
+        sent.sent = Some(crate::send::Sent {
+            at: chrono::Utc::now(),
+            nas_root: sent.nas_root.clone(),
+            counts: Default::default(),
+            sources: Vec::new(),
+            kept_sidecars: Vec::new(),
+            found_in: Vec::new(),
+        });
+        let mut ledger = Ledger::default();
+        ledger.record_import(sent);
+        for _ in 0..100 {
+            ledger.record_import(old.clone());
+        }
+        assert_eq!(ledger.imports.len(), 100);
+        assert!(ledger.imports.iter().all(|r| !r.offline));
+    }
 
     fn at(s: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap()
@@ -422,10 +516,63 @@ mod tests {
 
         let mut ledger = Ledger::default();
         ledger.record_card(card("A"), at("2026-11-01 10:00"));
+        assert!(ledger.register_card("A"));
         ledger.record_camera(camera(Some(100)), at("2026-11-01 10:00"));
         ledger.save(&path).unwrap();
 
         assert_eq!(Ledger::load(&path).unwrap(), ledger);
+    }
+
+    #[test]
+    fn a_new_card_is_kept_while_the_app_runs_and_saved_once_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.json");
+        let mut ledger = Ledger::default();
+        let key = ledger
+            .record_card(card("NEW"), at("2026-11-07 10:00"))
+            .unwrap();
+        assert!(!ledger.cards[0].registered);
+        ledger.record_card(card("NEW"), at("2026-11-07 11:00"));
+        assert_eq!(ledger.cards[0].insertions, 2);
+        ledger.record_import(import_from(&key));
+        ledger.save(&path).unwrap();
+        let saved = Ledger::load(&path).unwrap();
+        assert!(saved.cards.is_empty());
+        // The import is history and stays, whatever its card.
+        assert_eq!(saved.imports.len(), 1);
+
+        assert!(ledger.register_card(&key));
+        assert!(!ledger.register_card("UNKNOWN"));
+        ledger.save(&path).unwrap();
+        let saved = Ledger::load(&path).unwrap();
+        assert_eq!(saved.cards.len(), 1);
+        assert!(saved.cards[0].registered);
+        assert_eq!(saved.cards[0].insertions, 2);
+    }
+
+    #[test]
+    fn removing_a_card_keeps_its_imports_and_sees_it_as_new_next_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.json");
+        let mut ledger = Ledger::default();
+        let key = ledger
+            .record_card(cfexpress("A", "SERIAL"), at("2026-11-01 10:00"))
+            .unwrap();
+        ledger.register_card(&key);
+        ledger.record_import(import_from(&key));
+        assert!(ledger.remove_card(&key));
+        assert!(!ledger.remove_card(&key));
+        ledger.save(&path).unwrap();
+        let mut ledger = Ledger::load(&path).unwrap();
+        assert!(ledger.cards.is_empty());
+        assert_eq!(ledger.imports[0].card_key.as_deref(), Some(key.as_str()));
+        assert_eq!(
+            ledger.record_card(cfexpress("B", "SERIAL"), at("2026-11-07 10:00")),
+            Some(key)
+        );
+        assert!(!ledger.cards[0].registered);
+        assert_eq!(ledger.cards[0].insertions, 1);
+        assert_eq!(ledger.cards[0].first_seen, at("2026-11-07 10:00"));
     }
 
     #[test]
@@ -554,6 +701,7 @@ mod tests {
         let key = ledger
             .record_card(bridged("1111-AAAA"), at("2026-11-01 10:00"))
             .unwrap();
+        ledger.register_card(&key);
         ledger.record_reading(
             Some("1111-AAAA"),
             reading("P640", 0),
@@ -578,6 +726,8 @@ mod tests {
         );
         assert_eq!(ledger.cards.len(), 1);
         let card = &ledger.cards[0];
+        // The card as inserted looked new; it's the registered card.
+        assert!(card.registered);
         assert_eq!(card.formats, 1);
         assert_eq!(card.insertions, 2);
         assert_eq!(card.volume_id.as_deref(), Some("3333-CCCC"));
@@ -623,5 +773,7 @@ mod tests {
         let ledger: Ledger = serde_json::from_str(old).unwrap();
         assert!(ledger.cards[0].health.is_empty());
         assert_eq!(ledger.cards[0].hardware_serial, None);
+        // Saved before registration existed: one of the user's cards.
+        assert!(ledger.cards[0].registered);
     }
 }
