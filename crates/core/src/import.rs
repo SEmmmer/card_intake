@@ -8,7 +8,13 @@
 //! An import to the NAS can use this computer as its buffer ([`ImportRequest::relay_to`]):
 //! the card is read into the laptop at the card's full speed, and every verified photo
 //! or clip is sent on to the NAS by separate workers at the same time, so the network
-//! never holds the card back. The card counts as imported once the NAS has everything.
+//! never holds the card back. The card can leave once its complete, rated laptop
+//! copy is saved for recovery; the same job keeps uploading until the NAS has it all.
+
+mod metadata;
+mod readback;
+mod upload;
+pub(crate) use upload::Folders as CheckedFolders;
 
 use crate::scan::MediaKind;
 use crate::{backup, copies, destinations, naming, nas, offline, rating, scan, send, volume_info};
@@ -18,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use xxhash_rust::xxh64::Xxh64;
@@ -55,8 +61,16 @@ pub struct ImportRequest {
     pub relay_to: Option<PathBuf>,
 }
 
-/// Photos and clips sent to the NAS at once while the card is read into the laptop.
+/// Four writers keep reads/writes flowing while limiting NAS write contention and
+/// source buffers. Separate finishers absorb the disk waits.
 const RELAY_WORKERS: usize = 4;
+/// Resolve existing copies separately so a cold NAS read cannot occupy a writer.
+/// Two lookups overlap metadata calls without flooding the share with directory work.
+const RELAY_RESOLVERS: usize = 2;
+/// Eight finishers overlap disk commits/read-backs; sixteen queued files bound
+/// unflushed data and handles. More concurrency trades NAS load for throughput.
+const RELAY_FINISHERS: usize = 8;
+const RELAY_BACKLOG: usize = 16;
 
 /// Four files at once keeps a CFexpress card and a 10 GbE link busy without
 /// thrashing an SD card.
@@ -64,6 +78,8 @@ pub const DEFAULT_WORKERS: usize = 4;
 
 /// Read and write in 4 MiB pieces: fewer round trips over SMB than 1 MiB.
 const CHUNK: usize = 4 * 1024 * 1024;
+/// Room for generated/merged rating fields as well as the selected card files.
+const RATING_ROOM_PER_RAW: u64 = 65536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,6 +146,17 @@ pub struct ImportResult {
     pub sent: Option<crate::send::Sent>,
     #[serde(default)]
     pub laptop_deleted: bool,
+    /// Recovery entries remain ordinary offline imports after a restart.
+    #[serde(default)]
+    pub uploading: bool,
+    #[serde(default)]
+    pub upload_to: Option<PathBuf>,
+    /// Catalogs opened before NAS folder resolution finished, on this computer.
+    /// Keeping their identity avoids losing edits when a shoot resolves elsewhere.
+    #[serde(default)]
+    pub lightroom_catalogs: Vec<PathBuf>,
+    #[serde(default)]
+    pub timings: ImportTimings,
     /// Handed to the desktop for its local file list, never stored in the ledger.
     #[serde(skip)]
     pub local_files: Vec<copies::CopyFile>,
@@ -139,8 +166,29 @@ pub struct ImportResult {
     pub sent_manifest: Option<send::Manifest>,
 }
 
+/// Seconds are wall time except the named upload stages, summed over workers.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImportTimings {
+    pub card_seconds: f64,
+    pub card_bytes: u64,
+    pub upload_seconds: f64,
+    pub uploaded_bytes: u64,
+    pub uploaded_files: usize,
+    pub writing_seconds: f64,
+    pub flushing_seconds: f64,
+    pub reading_back_seconds: f64,
+    pub publishing_seconds: f64,
+    pub nas_sidecar_seconds: f64,
+    pub backlog_wait_seconds: f64,
+    pub exiftool_seconds: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportProgress {
+    /// Emitted once, after the complete laptop recovery record is saved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card_done: Option<Box<ImportResult>>,
     pub phase: &'static str,
     pub current_file: Option<PathBuf>,
     pub completed_files: usize,
@@ -178,15 +226,30 @@ struct Relay {
     total_files: usize,
     total_bytes: u64,
     done_files: AtomicUsize,
-    done_bytes: AtomicU64,
-    /// Bytes of the file each sender is copying right now.
-    in_flight: Vec<AtomicU64>,
-    started: Instant,
+    transfer: Mutex<Transfer>,
     /// Every photo is queued; what's left is the NAS catching up.
     card_done: AtomicBool,
     failed: AtomicBool,
     error: Mutex<Option<String>>,
     sent: Mutex<HashMap<String, send::Relayed>>,
+    verified: Mutex<Vec<send::VerifiedFile>>,
+    kept_sidecars: Mutex<BTreeMap<PathBuf, PathBuf>>,
+    warnings: Mutex<Vec<String>>,
+    ratings: Mutex<rating::RatingSummary>,
+    timings: Mutex<ImportTimings>,
+    window: Mutex<VecDeque<(Instant, u64, u64)>>,
+    first_send: Mutex<Option<Instant>>,
+    folders: upload::Folders,
+    hooks: upload::Hooks,
+    backlog: Mutex<usize>,
+}
+
+#[derive(Default)]
+struct Transfer {
+    written: u64,
+    verified_written: u64,
+    verified: u64,
+    in_flight: [u64; RELAY_WORKERS],
 }
 
 impl Relay {
@@ -199,32 +262,73 @@ impl Relay {
             total_files: originals.clone().count(),
             total_bytes: originals.map(|e| e.size).sum(),
             done_files: AtomicUsize::new(0),
-            done_bytes: AtomicU64::new(0),
-            in_flight: (0..RELAY_WORKERS).map(|_| AtomicU64::new(0)).collect(),
-            started: Instant::now(),
+            transfer: Default::default(),
             card_done: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             error: Mutex::new(None),
             sent: Mutex::new(HashMap::new()),
+            verified: Default::default(),
+            kept_sidecars: Default::default(),
+            warnings: Default::default(),
+            ratings: Default::default(),
+            timings: Default::default(),
+            window: Default::default(),
+            first_send: Default::default(),
+            folders: Default::default(),
+            hooks: Default::default(),
+            backlog: Default::default(),
         }
     }
 
     fn progress(&self) -> NasProgress {
-        let processed = self.done_bytes.load(Ordering::Relaxed)
-            + self
-                .in_flight
-                .iter()
-                .map(|b| b.load(Ordering::Relaxed))
-                .sum::<u64>();
-        let seconds = self.started.elapsed().as_secs_f64();
-        let speed = (seconds >= 1.0 && processed > 0).then(|| processed as f64 / seconds);
+        let (processed, sent) = {
+            let transfer = self.transfer.lock().unwrap_or_else(|e| e.into_inner());
+            let in_flight = transfer.in_flight.iter().sum::<u64>();
+            (
+                transfer.verified
+                    + transfer.written.saturating_sub(transfer.verified_written) / 2
+                    + in_flight / 2,
+                transfer.written + in_flight,
+            )
+        };
+        let now = Instant::now();
+        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        if window
+            .back()
+            .is_none_or(|(t, ..)| now.duration_since(*t) >= Duration::from_millis(250))
+        {
+            window.push_back((now, processed, sent));
+        }
+        while window.len() > 2
+            && window
+                .front()
+                .is_some_and(|(t, ..)| now.duration_since(*t) > SPEED_WINDOW)
+        {
+            window.pop_front();
+        }
+        let (speed, eta) = window
+            .front()
+            .map(|(t, p, b)| {
+                let seconds = now.duration_since(*t).as_secs_f64();
+                if seconds < 1.0 {
+                    return (None, None);
+                }
+                let speed = sent.saturating_sub(*b) as f64 / seconds;
+                let work = processed.saturating_sub(*p) as f64 / seconds;
+                (
+                    Some(speed),
+                    (work > 0.0).then(|| self.total_bytes.saturating_sub(processed) as f64 / work),
+                )
+            })
+            .unwrap_or((None, None));
+
         NasProgress {
             completed_files: self.done_files.load(Ordering::Relaxed),
             total_files: self.total_files,
             processed_bytes: processed,
             total_bytes: self.total_bytes,
             bytes_per_sec: speed,
-            eta_secs: speed.map(|s| self.total_bytes.saturating_sub(processed) as f64 / s),
+            eta_secs: eta,
         }
     }
 
@@ -247,6 +351,10 @@ struct Entry {
     /// Same-named, same-size files in the date's other folders, which may already
     /// hold this photo or clip.
     elsewhere: Vec<PathBuf>,
+    /// Captured while reading/planning the card; never queried after card done.
+    locked: bool,
+    /// A RAW+JPEG pair's one XMP is owned and sent by the raw's worker.
+    shared_with_raw: bool,
 }
 
 struct Plan {
@@ -311,7 +419,9 @@ struct Shared<P> {
     skipped_elsewhere: usize,
     found_in: BTreeSet<PathBuf>,
     warnings: Vec<String>,
-    rating_targets: Vec<(PathBuf, PathBuf)>,
+    sidecars: Arc<Sidecars>,
+    ratings: rating::RatingSummary,
+    unread_raws: usize,
     verified: Vec<copies::CopyFile>,
     record_verified: bool,
     destination: PathBuf,
@@ -324,7 +434,7 @@ struct Shared<P> {
     error: Option<String>,
     relay: Option<Arc<Relay>>,
     /// Verified photos and clips for the NAS senders; dropped once the card is read.
-    relay_queue: Option<mpsc::Sender<copies::CopyFile>>,
+    relay_queue: Option<mpsc::Sender<upload::Job>>,
 }
 
 const SPEED_WINDOW: Duration = Duration::from_secs(5);
@@ -341,7 +451,7 @@ impl<P: FnMut(ImportProgress)> Shared<P> {
     /// The most telling thing any worker is doing: copying, then verifying, then
     /// checking a file that's already on the NAS.
     fn phase(&self) -> &'static str {
-        ["copying", "verifying", "checking_existing"]
+        ["copying", "verifying", "checking_existing", "rating"]
             .into_iter()
             .find(|p| self.slots.iter().any(|s| s.phase == *p))
             .unwrap_or("copying")
@@ -382,6 +492,7 @@ impl<P: FnMut(ImportProgress)> Shared<P> {
     fn emit(&mut self, phase: &'static str, file: &Path) {
         let (bytes_per_sec, eta_secs) = self.rates();
         let progress = ImportProgress {
+            card_done: None,
             phase,
             current_file: Some(file.to_path_buf()),
             completed_files: self.copied_files + self.skipped_files,
@@ -432,13 +543,6 @@ impl<P: FnMut(ImportProgress)> Shared<P> {
             match copies::file(&self.destination, relative.to_path_buf()) {
                 Ok(mut file) => {
                     file.hash = hash;
-                    // Photos and clips go on to the NAS right away; sidecars follow
-                    // once the card is read.
-                    if entry.kind.is_some()
-                        && let Some(queue) = &self.relay_queue
-                    {
-                        let _ = queue.send(file.clone());
-                    }
                     self.verified.push(file);
                 }
                 Err(error) => {
@@ -524,13 +628,55 @@ fn run(
 
 /// `require_network` is for the destination in `nas_root`; `nas_network` for the NAS
 /// an import through this computer sends to.
+pub fn import_card_with_recovery(
+    request: &ImportRequest,
+    exiftool: Option<&Path>,
+    cancel: &AtomicBool,
+    card_ready: impl FnMut(&mut ImportResult) -> Result<(), String> + Send,
+    progress: impl FnMut(ImportProgress) + Send,
+) -> ImportResult {
+    run_engine(
+        request,
+        !request.offline,
+        true,
+        exiftool,
+        cancel,
+        card_ready,
+        progress,
+        upload::Hooks::default(),
+    )
+}
+
 fn run_with_exiftool(
     request: &ImportRequest,
     require_network: bool,
     nas_network: bool,
     exiftool: Option<&Path>,
     cancel: &AtomicBool,
+    progress: impl FnMut(ImportProgress) + Send,
+) -> ImportResult {
+    run_engine(
+        request,
+        require_network,
+        nas_network,
+        exiftool,
+        cancel,
+        |_| Ok(()),
+        progress,
+        upload::Hooks::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_engine(
+    request: &ImportRequest,
+    require_network: bool,
+    nas_network: bool,
+    exiftool: Option<&Path>,
+    cancel: &AtomicBool,
+    mut card_ready: impl FnMut(&mut ImportResult) -> Result<(), String> + Send,
     mut progress: impl FnMut(ImportProgress) + Send,
+    hooks: upload::Hooks,
 ) -> ImportResult {
     let now = Local::now().naive_local();
     let mut result = ImportResult {
@@ -564,10 +710,15 @@ fn run_with_exiftool(
         backups: Vec::new(),
         sent: None,
         laptop_deleted: false,
+        uploading: false,
+        upload_to: None,
+        lightroom_catalogs: Vec::new(),
+        timings: Default::default(),
         local_files: Vec::new(),
         sent_manifest: None,
     };
     progress(ImportProgress {
+        card_done: None,
         phase: "preparing",
         current_file: None,
         completed_files: 0,
@@ -625,13 +776,15 @@ fn run_with_exiftool(
             relay_to: None,
             ..request.clone()
         };
-        let mut result = run_with_exiftool(
+        let mut result = run_engine(
             &direct,
             nas_network,
             nas_network,
             exiftool,
             cancel,
+            card_ready,
             progress,
+            hooks,
         );
         result.warnings.insert(
             0,
@@ -658,10 +811,11 @@ fn run_with_exiftool(
             }
             .min(plan.groups.len())
             .max(1);
-            let relay = request
-                .relay_to
-                .as_ref()
-                .map(|nas| Arc::new(Relay::new(nas, nas_network, &plan.entries)));
+            let relay = request.relay_to.as_ref().map(|nas| {
+                let mut relay = Relay::new(nas, nas_network, &plan.entries);
+                relay.hooks = hooks.clone();
+                Arc::new(relay)
+            });
             let (queue, queued) = match relay {
                 Some(_) => {
                     let (queue, queued) = mpsc::channel();
@@ -679,7 +833,9 @@ fn run_with_exiftool(
                 skipped_elsewhere: 0,
                 found_in: BTreeSet::new(),
                 warnings: Vec::new(),
-                rating_targets: Vec::new(),
+                sidecars: Default::default(),
+                ratings: Default::default(),
+                unread_raws: 0,
                 verified: Vec::new(),
                 record_verified: request.offline,
                 destination: plan.destination.clone(),
@@ -700,120 +856,268 @@ fn run_with_exiftool(
                 .filter(|e| e.kind == Some(MediaKind::Photo) && scan::uses_raw_sidecar(&e.source))
                 .map(|e| e.source.clone())
                 .collect();
-            let readings = std::thread::scope(|scope| {
-                let metadata = scope.spawn(|| rating::read_settings(exiftool, &raw_sources));
-                let senders: Vec<_> = match (&relay, &queued) {
-                    (Some(relay), Some(queued)) => (0..RELAY_WORKERS)
-                        .map(|slot| {
-                            let (relay, shared) = (&**relay, &shared);
-                            scope.spawn(move || relay_files(slot, relay, queued, cancel, shared))
+            let metadata = metadata::Metadata::default();
+            let upload_finished = AtomicBool::new(false);
+            let (finish_tx, finish_rx) = mpsc::sync_channel(RELAY_BACKLOG);
+            let finish_rx = Mutex::new(finish_rx);
+            let (resolved_tx, resolved_rx) = mpsc::channel();
+            let resolved_rx = Mutex::new(resolved_rx);
+            std::thread::scope(|scope| {
+                let metadata_worker = scope.spawn(|| metadata.read(exiftool, &raw_sources, cancel));
+                let finishers: Vec<_> = relay
+                    .as_ref()
+                    .map(|relay| {
+                        (0..RELAY_FINISHERS)
+                            .map(|_| {
+                                let (shared, finish_rx) = (&shared, &finish_rx);
+                                scope.spawn(move || {
+                                    upload::finish_files(relay, finish_rx, cancel, shared)
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let resolvers: Vec<_> = match (&relay, &queued) {
+                    (Some(relay), Some(queued)) => (0..RELAY_RESOLVERS)
+                        .map(|_| {
+                            let resolved_tx = resolved_tx.clone();
+                            scope.spawn(move || {
+                                upload::resolve_files(relay, queued, &resolved_tx, cancel)
+                            })
                         })
                         .collect(),
                     _ => Vec::new(),
                 };
+                drop(resolved_tx);
+                let senders: Vec<_> = match &relay {
+                    Some(relay) => (0..RELAY_WORKERS)
+                        .map(|slot| {
+                            let (shared, finish_tx, queued) =
+                                (&shared, finish_tx.clone(), &resolved_rx);
+                            scope.spawn(move || {
+                                upload::send_files(slot, relay, queued, &finish_tx, cancel, shared)
+                            })
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                drop(finish_tx);
+                let ticker = relay.as_ref().map(|relay| {
+                    let (shared, finished) = (&shared, &upload_finished);
+                    scope.spawn(move || {
+                        while !finished.load(Ordering::Relaxed) {
+                            if cancel.load(Ordering::Relaxed) {
+                                relay.failed.store(true, Ordering::Relaxed);
+                            }
+                            if relay.card_done.load(Ordering::Relaxed) {
+                                upload::report(relay, shared, Path::new(""));
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                    })
+                });
                 let copiers: Vec<_> = (0..workers)
                     .map(|worker| {
-                        let (shared, next, stop, plan) = (&shared, &next, &stop, &plan);
+                        let (shared, next, stop, plan, metadata) =
+                            (&shared, &next, &stop, &plan, &metadata);
                         scope.spawn(move || {
-                            copy_files(worker, request, require_network, plan, next, stop, shared)
+                            copy_files(
+                                worker,
+                                request,
+                                require_network,
+                                plan,
+                                next,
+                                stop,
+                                shared,
+                                metadata,
+                            )
                         })
                     })
                     .collect();
                 for copier in copiers {
-                    let _ = copier.join();
+                    if copier.join().is_err() {
+                        shared.lock().unwrap_or_else(|e| e.into_inner()).error.get_or_insert_with(|| "A card copy worker stopped unexpectedly. Keep the card and Resume to check the copies.".into());
+                        stop.failed.store(true, Ordering::Relaxed);
+                    }
                 }
-                // The card is read: the senders finish the queue, then stop.
-                shared.lock().unwrap_or_else(|e| e.into_inner()).relay_queue = None;
-                if let Some(relay) = &relay {
-                    relay.card_done.store(true, Ordering::Relaxed);
-                }
-                let readings = metadata.join().unwrap_or_else(|_| rating::Readings {
-                    warnings: vec![
-                        "Initial raw ratings couldn't be read; import again to retry.".into(),
-                    ],
-                    ..Default::default()
+                let (readings, exif_seconds) = metadata_worker.join().unwrap_or_else(|_| {
+                    (
+                        rating::Readings {
+                            warnings: vec![
+                                "Initial raw ratings couldn't be read; import again to retry."
+                                    .into(),
+                            ],
+                            ..Default::default()
+                        },
+                        0.0,
+                    )
                 });
+                {
+                    let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    shared.relay_queue = None;
+                    shared.warnings.extend(readings.warnings);
+                    result.timings.card_seconds = shared.started.elapsed().as_secs_f64();
+                    result.timings.card_bytes = shared.completed_read;
+                    result.timings.exiftool_seconds = exif_seconds;
+                    result.ratings = shared.ratings.clone();
+                    if shared.unread_raws > 0 {
+                        let n = shared.unread_raws;
+                        let noun = if n == 1 { "raw" } else { "raws" };
+                        shared.warnings.push(format!("Initial ratings skipped for {n} {noun} whose settings couldn't be read. Import again to retry."));
+                    }
+                    if request.offline && shared.error.is_none() && !cancel.load(Ordering::Relaxed)
+                    {
+                        match collect_local_files(&plan, shared.verified.clone()) {
+                            Ok(files) => {
+                                result.shoots = files
+                                    .iter()
+                                    .map(|f| f.relative.components().take(2).collect::<PathBuf>())
+                                    .collect::<BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect();
+                                result.local_files = files;
+                                result.local_complete = true;
+                            }
+                            Err(error) => {
+                                shared.error.get_or_insert(error);
+                            }
+                        }
+                    }
+                    if let Some(relay) = &relay {
+                        if shared.error.is_none()
+                            && result.local_complete
+                            && !cancel.load(Ordering::Relaxed)
+                        {
+                            result.timings.card_seconds = shared.started.elapsed().as_secs_f64();
+                            result.status = ImportStatus::Complete;
+                            result.uploading = true;
+                            result.upload_to = Some(relay.nas.clone());
+                            result.copied_files = shared.copied_files;
+                            result.skipped_files = shared.skipped_files;
+                            result.verified_files = shared.verified_files;
+                            result.completed_bytes = shared.completed_bytes;
+                            result.warnings = shared.warnings.clone();
+                            result.finished_at = Local::now().naive_local();
+                            result.average_bytes_per_sec = (result.timings.card_seconds > 0.0)
+                                .then(|| {
+                                    (result.timings.card_bytes as f64 / result.timings.card_seconds)
+                                        as u64
+                                });
+                            let recovery = card_ready(&mut result);
+                            shared.warnings.clone_from(&result.warnings);
+                            match recovery {
+                                Ok(()) => {
+                                    relay.card_done.store(true, Ordering::Relaxed);
+                                    let notification = ImportProgress {
+                                        card_done: Some(Box::new(result.clone())),
+                                        phase: "card_done",
+                                        current_file: None,
+                                        completed_files: shared.total_files,
+                                        skipped_files: shared.skipped_files,
+                                        total_files: shared.total_files,
+                                        processed_bytes: shared.total_bytes,
+                                        total_bytes: shared.total_bytes,
+                                        bytes_per_sec: None,
+                                        eta_secs: None,
+                                        nas: Some(relay.progress()),
+                                    };
+                                    (shared.progress)(notification);
+                                }
+                                Err(error) => {
+                                    result.uploading = false;
+                                    result.upload_to = None;
+                                    relay.fail(error.clone());
+                                    shared.error.get_or_insert(error);
+                                }
+                            }
+                        } else {
+                            relay.failed.store(true, Ordering::Relaxed);
+                        }
+                    }
+                }
+                for resolver in resolvers {
+                    let _ = resolver.join();
+                }
                 for sender in senders {
                     let _ = sender.join();
                 }
-                readings
+                for finisher in finishers {
+                    let _ = finisher.join();
+                }
+                if let Some(relay) = &relay {
+                    upload::report(relay, &shared, Path::new(""));
+                }
+                upload_finished.store(true, Ordering::Relaxed);
+                if let Some(ticker) = ticker {
+                    let _ = ticker.join();
+                }
             });
             let mut shared = shared.into_inner().unwrap_or_else(|e| e.into_inner());
-            shared.warnings.extend(readings.warnings);
-            let copy_seconds = shared.started.elapsed().as_secs_f64();
-            let targets = std::mem::take(&mut shared.rating_targets);
-            // Through this computer: once the NAS has every file, ratings go into the
-            // NAS sidecars as in a direct import, and the laptop copy is deleted.
+            let mut copy_seconds = result.timings.card_seconds;
             let mut sent = None;
-            let mut nas_failed = None;
-            if let Some(relay) = &relay
-                && shared.error.is_none()
-                && !cancel.load(Ordering::Relaxed)
-            {
-                let relayed = relay.error.lock().unwrap_or_else(|e| e.into_inner()).take();
-                let outcome = match relayed {
-                    Some(error) => Err(error),
-                    None => finish_relay(
-                        &plan,
-                        relay,
-                        &stop,
-                        &readings.settings,
-                        &targets,
-                        &mut shared,
-                        &mut result,
-                    ),
-                };
-                match outcome {
-                    Ok(done) => sent = Some(done),
-                    Err(error) if cancel.load(Ordering::Relaxed) => {
-                        shared.error.get_or_insert(error);
-                    }
-                    Err(error) => nas_failed = Some(error),
-                }
-            }
-            if sent.is_none() {
-                apply_ratings(
-                    &plan,
-                    &plan.destination,
-                    require_network,
-                    request.offline,
-                    &stop,
-                    &readings.settings,
-                    targets,
-                    &mut shared,
-                    &mut result.ratings,
+            if let Some(relay) = &relay {
+                let mut timings = relay
+                    .timings
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                timings.card_seconds = result.timings.card_seconds;
+                timings.card_bytes = result.timings.card_bytes;
+                timings.exiftool_seconds = result.timings.exiftool_seconds;
+                timings.upload_seconds = relay
+                    .first_send
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .map(|s| s.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
+                result.timings = timings;
+                shared.warnings.extend(
+                    relay
+                        .warnings
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone(),
                 );
+                let error = relay.error.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if shared.error.is_none() && !cancel.load(Ordering::Relaxed) {
+                    match error
+                        .map_or_else(|| finish_relay(&plan, relay, &mut shared, &mut result), Err)
+                    {
+                        Ok(done) => sent = Some(done),
+                        Err(error) => {
+                            shared.error = Some(if result.local_complete {
+                                format!(
+                                    "This computer has a verified copy, but the NAS copy failed: {}. Use Send to NAS in Recent imports to finish.",
+                                    error.trim_end_matches('.')
+                                )
+                            } else {
+                                error
+                            });
+                        }
+                    }
+                }
             }
-            if stop.user.load(Ordering::Relaxed) {
-                shared.error.get_or_insert_with(|| STOPPED.to_string());
+            // Publication of the whole NAS import commits success. A late Stop
+            // during local cleanup must not claim its deleted files remain local.
+            if stop.user.load(Ordering::Relaxed) && sent.is_none() {
+                shared.error = Some(if result.uploading {
+                    "Upload stopped. The photos are safe on this computer. Use Send to NAS in Recent imports to finish.".into()
+                } else {
+                    STOPPED.into()
+                });
             }
-            if sent.is_none()
-                && request.offline
+            if relay.is_none()
+                && result.local_complete
                 && shared.error.is_none()
-                && !cancel.load(Ordering::Relaxed)
+                && !request.backup_drives.is_empty()
             {
-                match collect_local_files(&plan, std::mem::take(&mut shared.verified)) {
-                    Ok(files) => {
-                        result.local_files = files;
-                        result.local_complete = true;
-                    }
-                    Err(error) => {
-                        shared.error.get_or_insert(error);
-                    }
-                }
-                if shared.error.is_none() && !request.backup_drives.is_empty() {
-                    finish_backups(request, cancel, &mut shared, &mut result);
-                }
-                // The NAS failed: the laptop copy is an offline import, sent later.
-                if shared.error.is_none()
-                    && let Some(error) = nas_failed
-                {
-                    shared.error = Some(format!(
-                        "This computer has a verified copy, but the NAS copy failed: {}. The card was not ejected. Press Send to NAS in Recent imports once the NAS is fixed, or Resume.",
-                        error.trim_end_matches('.')
-                    ));
-                }
+                finish_backups(request, cancel, &mut shared, &mut result);
             }
+            if relay.is_none() {
+                result.timings.card_seconds = shared.started.elapsed().as_secs_f64();
+                copy_seconds = result.timings.card_seconds;
+            }
+            result.uploading = false;
             result.copied_files = shared.copied_files;
             result.skipped_files = shared.skipped_files;
             result.verified_files = shared.verified_files;
@@ -842,12 +1146,20 @@ fn run_with_exiftool(
                 result.found_in = sent.found_in.clone();
                 let mut shoots: BTreeSet<PathBuf> = plan.shoots.iter().cloned().collect();
                 shoots.extend(sent.found_in.iter().cloned());
+                shoots.extend(
+                    relay
+                        .sent
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .values()
+                        .map(|r| r.target.components().take(2).collect::<PathBuf>()),
+                );
                 result.shoots = shoots
                     .into_iter()
                     .filter(|s| relay.nas.join(s).is_dir())
                     .collect();
+                result.offline = false;
                 if result.laptop_deleted {
-                    result.offline = false;
                     result.offline_root = None;
                 } else {
                     // Some laptop files remain: Delete laptop copy offers them later.
@@ -892,205 +1204,102 @@ fn run_with_exiftool(
     result
 }
 
-/// One NAS sender: takes each verified laptop copy off the queue and sends it on,
-/// until the card is read and the queue is empty. After a NAS error the rest of the
-/// queue is left for Send to NAS, and the card copy carries on.
-fn relay_files<P: FnMut(ImportProgress)>(
-    slot: usize,
-    relay: &Relay,
-    queued: &Mutex<mpsc::Receiver<copies::CopyFile>>,
-    cancel: &AtomicBool,
-    shared: &Mutex<Shared<P>>,
-) {
-    let report = |file: &Path| {
-        // The card workers report often; a busy lock only skips one update.
-        if let Ok(mut shared) = shared.try_lock() {
-            let phase = if relay.card_done.load(Ordering::Relaxed) {
-                "sending"
-            } else {
-                shared.phase()
-            };
-            shared.emit(phase, file);
-        }
-    };
-    let mut last = Instant::now();
-    loop {
-        let next = queued.lock().unwrap_or_else(|e| e.into_inner()).recv();
-        let Ok(file) = next else {
-            return;
-        };
-        if relay.failed.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
-            continue;
-        }
-        let outcome = send::relay_file(
-            &relay.nas,
-            &file,
-            relay.require_network,
-            &relay.cache,
-            cancel,
-            |n| {
-                relay.in_flight[slot].store(n, Ordering::Relaxed);
-                if last.elapsed() >= Duration::from_millis(200) {
-                    last = Instant::now();
-                    report(&file.relative);
-                }
-            },
-        );
-        relay.in_flight[slot].store(0, Ordering::Relaxed);
-        match outcome {
-            Ok(done) => {
-                relay.done_files.fetch_add(1, Ordering::Relaxed);
-                relay.done_bytes.fetch_add(file.size, Ordering::Relaxed);
-                relay
-                    .sent
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(send::key(&file.relative), done);
-            }
-            Err(_) if cancel.load(Ordering::Relaxed) => {}
-            Err(error) => relay.fail(format!("{}: {error}", file.relative.display())),
-        }
-        if last.elapsed() >= Duration::from_millis(200) || relay.card_done.load(Ordering::Relaxed) {
-            last = Instant::now();
-            report(&file.relative);
-        }
-    }
-}
-
-/// After the card is read and its photos and clips are on the NAS: sends the rest
-/// (the card's sidecars), writes the initial ratings into the NAS sidecars as a direct
-/// import does, then deletes the laptop copy of every file the NAS verified.
+/// After the NAS has verified every file of the import: checks that nothing on the
+/// laptop changed or was left unsent, then deletes the laptop copies the NAS holds.
+/// A card sidecar the NAS kept its own version of stays on the laptop.
 fn finish_relay<P: FnMut(ImportProgress)>(
     plan: &Plan,
     relay: &Relay,
-    stop: &Stop,
-    settings: &HashMap<PathBuf, rating::Settings>,
-    targets: &[(PathBuf, PathBuf)],
     shared: &mut Shared<P>,
     result: &mut ImportResult,
 ) -> Result<send::Sent, String> {
-    let local = collect_local_files(plan, shared.verified.clone())?;
-    let manifest = send::Manifest {
+    let local = &result.local_files;
+    let mut manifest = send::Manifest {
         offline_root: plan.destination.clone(),
-        shoots: plan
+        shoots: result.shoots.clone(),
+        files: relay
+            .verified
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
+    };
+    // Only confirmed files are eligible for deletion. Generated rating packets
+    // can be discarded after merging; a differing card sidecar remains locally.
+    manifest.files.sort_by(|a, b| a.relative.cmp(&b.relative));
+    manifest.files.dedup_by(|a, b| a.relative == b.relative);
+    let verified: BTreeMap<_, _> = manifest
+        .files
+        .iter()
+        .map(|v| (&v.relative, (v.size, v.modified)))
+        .collect();
+    if local
+        .iter()
+        .any(|f| verified.get(&f.relative) != Some(&(f.size, f.modified)))
+    {
+        return Err(
+            "Some laptop files changed or were not sent. Their laptop copies were kept.".into(),
+        );
+    }
+    let kept_sidecars = relay
+        .kept_sidecars
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    manifest
+        .files
+        .retain(|f| !kept_sidecars.contains_key(&f.relative));
+    let relayed = relay.sent.lock().unwrap_or_else(|e| e.into_inner());
+    let timings = relay.timings.lock().unwrap_or_else(|e| e.into_inner());
+    let done = send::Sent {
+        at: chrono::Utc::now(),
+        nas_root: relay.nas.clone(),
+        counts: copies::CopyCounts {
+            copied: timings.uploaded_files,
+            skipped: relayed.values().filter(|r| !r.copied).count(),
+            verified: local.len(),
+            bytes: local.iter().map(|f| f.size).sum(),
+        },
+        sources: result
             .shoots
             .iter()
-            .filter(|s| plan.destination.join(s).is_dir())
-            .cloned()
-            .collect(),
-        files: local
-            .iter()
-            .map(|f| send::VerifiedFile {
-                relative: f.relative.clone(),
-                size: f.size,
-                modified: f.modified,
+            .map(|shoot| send::Source {
+                shoot: shoot.clone(),
+                source: "This computer".into(),
             })
             .collect(),
+        kept_sidecars: kept_sidecars.values().cloned().collect(),
+        found_in: relayed
+            .values()
+            .filter_map(|r| r.found_in.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
     };
-    let relayed = relay.sent.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let (card_files, card_bytes) = (shared.total_files, shared.total_bytes);
-    let sent = send::send_import_with(
-        &manifest,
-        &[],
-        &relay.nas,
-        relay.require_network,
-        stop.user,
-        |p| {
-            (shared.progress)(ImportProgress {
-                phase: "sending",
-                current_file: p.current_file,
-                completed_files: card_files,
-                skipped_files: 0,
-                total_files: card_files,
-                processed_bytes: card_bytes,
-                total_bytes: card_bytes,
-                bytes_per_sec: None,
-                eta_secs: None,
-                nas: Some(NasProgress {
-                    completed_files: p.completed_files,
-                    total_files: p.total_files,
-                    processed_bytes: p.processed_bytes,
-                    total_bytes: p.total_bytes,
-                    bytes_per_sec: None,
-                    eta_secs: None,
-                }),
-            })
-        },
-        &relayed,
-        true,
-    );
-    let done = match (sent.status, sent.sent) {
-        (ImportStatus::Complete, Some(done)) => done,
-        _ => {
-            return Err(sent
-                .error
-                .unwrap_or_else(|| "The NAS copy didn't finish.".into()));
-        }
-    };
-    for path in &done.kept_sidecars {
-        shared.warnings.push(format!(
-            "{} differs from this card's; the NAS's version was kept.",
-            path.display()
-        ));
+    result.ratings = relay
+        .ratings
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    #[cfg(test)]
+    if let Some(before_delete) = &relay.hooks.before_delete {
+        before_delete();
     }
-    // Ratings go next to each raw where it is on the NAS, which may be the date's
-    // other folder.
-    let nas_targets = targets
-        .iter()
-        .filter_map(|(source, raw)| {
-            let relative = raw.strip_prefix(&plan.destination).ok()?;
-            let target = relayed
-                .get(&send::key(relative))
-                .map(|r| r.target.clone())
-                .unwrap_or_else(|| relative.to_path_buf());
-            let raw = relay.nas.join(target);
-            raw.is_file().then_some((source.clone(), raw))
-        })
-        .collect();
-    apply_ratings(
-        plan,
-        &relay.nas,
-        relay.require_network,
-        false,
-        stop,
-        settings,
-        nas_targets,
-        shared,
-        &mut result.ratings,
-    );
-    // Only this import's files, and only those unchanged since the NAS verified them.
-    let ours: BTreeSet<_> = local.iter().map(|f| send::key(&f.relative)).collect();
-    match send::delete_laptop(&sent.manifest) {
+    match send::delete_laptop_with_workers(&manifest, RELAY_FINISHERS) {
         Ok(deleted) => {
-            let kept: Vec<_> = deleted
-                .kept
-                .iter()
-                .filter(|k| ours.contains(&send::key(k)))
-                .collect();
             for error in &deleted.errors {
                 shared
                     .warnings
                     .push(format!("Couldn't delete the laptop copy: {error}"));
             }
-            if !kept.is_empty() {
-                shared.warnings.push(format!(
-                    "{} changed on this computer after it was sent, so its laptop copy was kept.",
-                    kept.iter()
-                        .map(|k| k.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
+            if !deleted.kept.is_empty() {
+                shared.warnings.push("Files changed on this computer or differ from the NAS's sidecars; their laptop copies were kept.".into());
             }
-            result.laptop_deleted = deleted.errors.is_empty() && kept.is_empty();
+            result.laptop_deleted = deleted.errors.is_empty() && deleted.kept.is_empty();
         }
         Err(error) => shared
             .warnings
             .push(format!("The laptop copy wasn't deleted: {error}")),
     }
-    result.local_files = local;
-    result.local_complete = true;
-    result.offline_root = Some(plan.destination.clone());
-    result.sent_manifest = Some(sent.manifest);
+    result.sent_manifest = Some(manifest);
     Ok(done)
 }
 
@@ -1098,7 +1307,12 @@ fn finish_relay<P: FnMut(ImportProgress)>(
 /// size, in the shoot folder or the date's other folders), before the card is read.
 fn preflight_nas(plan: &Plan, nas: &Path) -> Result<(), String> {
     let mut folders: HashMap<NaiveDate, Vec<destinations::FolderIndex>> = HashMap::new();
-    let mut needed = 0u64;
+    let mut needed = plan
+        .entries
+        .iter()
+        .filter(|e| scan::uses_raw_sidecar(&e.source))
+        .count() as u64
+        * RATING_ROOM_PER_RAW;
     for entry in &plan.entries {
         let there = fs::metadata(nas.join(&entry.relative))
             .is_ok_and(|m| m.is_file() && (entry.kind.is_none() || m.len() == entry.size));
@@ -1236,6 +1450,7 @@ fn finish_backups<P: FnMut(ImportProgress)>(
 
 /// One worker: takes the next photo or clip (with its sidecars) until none are left
 /// or the import stops.
+#[allow(clippy::too_many_arguments)]
 fn copy_files<P: FnMut(ImportProgress)>(
     worker: usize,
     request: &ImportRequest,
@@ -1244,8 +1459,10 @@ fn copy_files<P: FnMut(ImportProgress)>(
     next: &AtomicUsize,
     stop: &Stop,
     shared: &Mutex<Shared<P>>,
+    metadata: &metadata::Metadata,
 ) {
     let lock = || shared.lock().unwrap_or_else(|e| e.into_inner());
+    let sidecars = lock().sidecars.clone();
     let mut buffer = vec![0u8; CHUNK];
     loop {
         if stop.check().is_err() {
@@ -1363,95 +1580,173 @@ fn copy_files<P: FnMut(ImportProgress)>(
             }
         }
         let main = &plan.entries[group[0]];
+        let raw = main_elsewhere
+            .map(|folder| folder.join(main.relative.file_name().unwrap()))
+            .unwrap_or_else(|| plan.destination.join(&main.relative));
+        let mut rated = None;
         if main.kind == Some(MediaKind::Photo) && scan::uses_raw_sidecar(&main.source) {
-            let destination = main_elsewhere
-                .map(|folder| folder.join(main.relative.file_name().unwrap()))
-                .unwrap_or_else(|| plan.destination.join(&main.relative));
-            lock()
-                .rating_targets
-                .push((main.source.clone(), destination));
+            {
+                let mut shared = lock();
+                shared.slots[worker].phase = "rating";
+                shared.emit("rating", &main.relative);
+            }
+            let settings = metadata
+                .get(&main.source, stop)
+                .or_else(|| main.locked.then(rating::Settings::default));
+            if let Some(settings) = settings {
+                let initial = rating::initial_rating(&settings, main.locked);
+                let outcome = (|| {
+                    stop.check()?;
+                    let sidecar = sidecars.path(&raw)?;
+                    inspect_relative(
+                        &plan.destination,
+                        sidecar
+                            .strip_prefix(&plan.destination)
+                            .map_err(|e| e.to_string())?,
+                    )?;
+                    stop.check()?;
+                    let written = rating::write_sidecar(&sidecar, &initial)?;
+                    lock().ratings.record(&initial, written);
+                    rated = Some((initial, written));
+                    Ok::<_, String>(())
+                })();
+                if let Err(warning) = outcome
+                    && stop.check().is_ok()
+                {
+                    lock().warnings.push(warning);
+                }
+            } else if stop.check().is_ok() {
+                lock().unread_raws += 1;
+            }
+            lock().slots[worker] = Slot::default();
+        }
+        let queue = lock().relay_queue.clone();
+        if let Some(queue) = queue {
+            let outcome = (|| {
+                let relative = raw
+                    .strip_prefix(&plan.destination)
+                    .map_err(|e| e.to_string())?;
+                let mut file = copies::file(&plan.destination, relative.to_path_buf())?;
+                file.hash = lock()
+                    .verified
+                    .iter()
+                    .find(|f| f.relative == relative)
+                    .and_then(|f| f.hash);
+                let companions = local_companions(&raw, &mut HashMap::new())?
+                    .into_iter()
+                    .filter(|p| {
+                        !main.shared_with_raw
+                            || !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp"))
+                    })
+                    .map(|p| {
+                        copies::file(
+                            &plan.destination,
+                            p.strip_prefix(&plan.destination).unwrap().to_path_buf(),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let card_sidecars = group
+                    .iter()
+                    .skip(1)
+                    .map(|&i| {
+                        let entry = &plan.entries[i];
+                        Ok((
+                            entry
+                                .relative
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .to_lowercase(),
+                            (
+                                entry.size,
+                                copies::hash(&entry.source, entry.size, stop.user)?,
+                            ),
+                        ))
+                    })
+                    .collect::<Result<HashMap<_, _>, String>>()?;
+                let _ = queue.send(upload::Job {
+                    file,
+                    companions,
+                    rated,
+                    card_sidecars,
+                });
+                Ok::<_, String>(())
+            })();
+            if let Err(error) = outcome {
+                lock().error.get_or_insert(error);
+                stop.failed.store(true, Ordering::Relaxed);
+                return;
+            }
         }
     }
 }
 
-/// Writes the initial ratings into the sidecars beside `targets` (card raw, raw at
-/// `destination`): the import's own destination, or the NAS for an import through
-/// this computer. `local` is a destination on this computer.
-#[allow(clippy::too_many_arguments)]
-fn apply_ratings<P: FnMut(ImportProgress)>(
-    plan: &Plan,
-    destination: &Path,
-    require_network: bool,
-    local: bool,
-    stop: &Stop,
-    settings: &HashMap<PathBuf, rating::Settings>,
-    targets: Vec<(PathBuf, PathBuf)>,
-    shared: &mut Shared<P>,
-    summary: &mut rating::RatingSummary,
-) {
-    // Read each folder once, including sidecars whose extension is upper-case.
-    let mut folders: HashMap<PathBuf, HashMap<String, PathBuf>> = HashMap::new();
-    let mut unread = 0;
-    for (source, raw) in targets {
-        if stop.user.load(Ordering::Relaxed) {
-            break;
-        }
-        let outcome = (|| {
-            check_destination(destination, require_network)?;
-            if local {
-                offline::validate(destination)?;
+/// Find an existing case-insensitive XMP name, refusing ambiguous packets.
+#[cfg(not(windows))]
+fn sidecar_path(raw: &Path) -> Result<PathBuf, String> {
+    let wanted = raw.with_extension("xmp");
+    let mut found = None;
+    for entry in
+        fs::read_dir(raw.parent().ok_or("Missing photo folder")?).map_err(|e| e.to_string())?
+    {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&wanted.file_name().unwrap().to_string_lossy())
+        {
+            if found.is_some() {
+                return Err(format!("Ambiguous sidecars for {}.", raw.display()));
             }
-            if volume_info::volume_info(&plan.root).id != plan.card_id {
-                return Err("The card changed before its initial ratings were written.".into());
-            }
-            let locked = rating::locked_on_card(&source).map_err(|e| e.to_string())?;
-            let fallback = rating::Settings::default();
-            let Some(settings) = settings.get(&source).or(locked.then_some(&fallback)) else {
-                unread += 1;
-                return Ok(());
-            };
-            let initial = rating::initial_rating(settings, locked);
-            let folder = raw.parent().unwrap();
-            if !folders.contains_key(folder) {
-                let mut names = HashMap::new();
-                for item in fs::read_dir(folder).map_err(|e| e.to_string())? {
-                    let item = item.map_err(|e| e.to_string())?;
-                    let key = item.file_name().to_string_lossy().to_lowercase();
-                    if names.insert(key, item.path()).is_some() {
-                        return Err(format!("Ambiguous file names in {}.", folder.display()));
-                    }
-                }
-                folders.insert(folder.to_path_buf(), names);
-            }
-            let names = &folders[folder];
-            let raw = names
-                .get(&raw.file_name().unwrap().to_string_lossy().to_lowercase())
-                .unwrap_or(&raw);
-            let wanted = raw.with_extension("xmp");
-            let sidecar = names
-                .get(&wanted.file_name().unwrap().to_string_lossy().to_lowercase())
-                .unwrap_or(&wanted);
-            let relative = sidecar
-                .strip_prefix(destination)
-                .map_err(|e| e.to_string())?;
-            inspect_relative(destination, relative)?;
-            shared.emit("rating", relative);
-            let written = rating::write_sidecar(sidecar, &initial)?;
-            summary.record(&initial, written);
-            if local && shared.record_verified {
-                shared
-                    .verified
-                    .push(copies::file(destination, relative.to_path_buf())?);
-            }
-            Ok(())
-        })();
-        if let Err(warning) = outcome {
-            shared.warnings.push(warning);
+            found = Some(entry.path());
         }
     }
-    if unread > 0 {
-        let noun = if unread == 1 { "raw" } else { "raws" };
-        shared.warnings.push(format!("Initial ratings skipped for {unread} {noun} whose settings couldn't be read. Import again to retry."));
+    Ok(found.unwrap_or(wanted))
+}
+
+/// Windows resolves fresh case variants to the same file. Scan names once per
+/// folder (also catching ambiguous pre-existing names), then retain that spelling.
+/// Other systems keep checking case variants before each merge.
+#[derive(Default)]
+struct Sidecars {
+    #[cfg(windows)]
+    folders: Mutex<HashMap<PathBuf, HashMap<String, PathBuf>>>,
+}
+impl Sidecars {
+    fn path(&self, raw: &Path) -> Result<PathBuf, String> {
+        #[cfg(not(windows))]
+        {
+            sidecar_path(raw)
+        }
+        #[cfg(windows)]
+        {
+            let parent = raw.parent().ok_or("Missing photo folder")?;
+            let mut folders = self.folders.lock().unwrap_or_else(|e| e.into_inner());
+            if !folders.contains_key(parent) {
+                let mut names = HashMap::new();
+                for entry in fs::read_dir(parent).map_err(|e| e.to_string())? {
+                    let entry = entry.map_err(|e| e.to_string())?;
+                    if names
+                        .insert(
+                            entry.file_name().to_string_lossy().to_lowercase(),
+                            entry.path(),
+                        )
+                        .is_some()
+                    {
+                        return Err(format!("Ambiguous file names in {}.", parent.display()));
+                    }
+                }
+                folders.insert(parent.to_path_buf(), names);
+            }
+            let wanted = raw.with_extension("xmp");
+            let key = wanted.file_name().unwrap().to_string_lossy().to_lowercase();
+            Ok(folders
+                .get_mut(parent)
+                .unwrap()
+                .entry(key)
+                .or_insert(wanted)
+                .clone())
+        }
     }
 }
 
@@ -1635,6 +1930,28 @@ fn plan(request: &ImportRequest, require_network: bool) -> Result<Plan, String> 
         }
         groups.push(group);
     }
+    // A JPEG can sort before its raw (different EXIF times or filename case).
+    // Give their shared packet to the raw so rating never races the card XMP copy.
+    let raw_owners: HashMap<_, _> = groups
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| {
+            let main = &entries[g[0]];
+            scan::uses_raw_sidecar(&main.source)
+                .then(|| (send::key(&main.relative.with_extension("")), i))
+        })
+        .collect();
+    for i in 0..groups.len() {
+        let main = &entries[groups[i][0]];
+        if main.kind == Some(MediaKind::Photo)
+            && !scan::uses_raw_sidecar(&main.source)
+            && let Some(&owner) = raw_owners.get(&send::key(&main.relative.with_extension("")))
+        {
+            entries[groups[i][0]].shared_with_raw = true;
+            let companions = groups[i].split_off(1);
+            groups[owner].extend(companions);
+        }
+    }
     if entries.is_empty() {
         return Err("No photos or enabled video clips were selected.".into());
     }
@@ -1716,6 +2033,8 @@ fn add_entry(
         modified: meta.modified().ok(),
         kind: None,
         elsewhere: Vec::new(),
+        locked: rating::locked_attributes(&meta),
+        shared_with_raw: false,
     });
     Ok(Some(entries.len() - 1))
 }
@@ -1797,7 +2116,7 @@ fn preflight_backups(request: &ImportRequest, plan: &Plan) -> Result<(), String>
         .iter()
         .filter(|e| e.kind == Some(MediaKind::Photo) && scan::uses_raw_sidecar(&e.source))
         .count() as u64
-        * 65536;
+        * RATING_ROOM_PER_RAW;
     if request.offline {
         check_space(
             &plan.destination,
@@ -2038,6 +2357,7 @@ fn read_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod pipeline;
 
     fn backup_target(f: &Fixture) -> backup::Target {
         let root = f._dir.path().join("backup-drive");
@@ -2228,7 +2548,7 @@ mod tests {
         let permissions = lock(&f);
         let r = run(&f.request, false, &AtomicBool::new(false), |_| {});
         unlock(&f, permissions);
-        // The card isn't done: the NAS doesn't have it.
+        // The card is complete on this computer; the conflicting NAS copy failed.
         assert_eq!(r.status, ImportStatus::Failed, "{r:?}");
         let error = r.error.clone().unwrap();
         assert!(

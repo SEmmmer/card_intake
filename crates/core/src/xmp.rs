@@ -31,10 +31,12 @@ const FIELDS: &[&str] = &[
 ];
 const EMPTY: &str = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>\n";
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Written {
     pub rating: i32,
     pub kept: bool,
+    /// Expected packet bytes, also used for uncached NAS verification.
+    pub hash: u64,
 }
 
 type Edit = (Range<usize>, String);
@@ -298,7 +300,8 @@ fn merge(text: &str, initial: &InitialRating) -> Result<(String, Written), Strin
         output.replace_range(range, &replacement);
     }
     Document::parse(&output).map_err(|e| format!("Couldn't validate merged XMP: {e}"))?;
-    Ok((output, Written { rating, kept }))
+    let hash = xxhash_rust::xxh64::xxh64(output.as_bytes(), 0);
+    Ok((output, Written { rating, kept, hash }))
 }
 
 pub(crate) fn write(path: &Path, initial: &InitialRating) -> Result<Written, String> {

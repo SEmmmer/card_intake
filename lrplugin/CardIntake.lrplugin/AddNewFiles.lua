@@ -1,9 +1,15 @@
--- Library > Plug-in Extras > Add new files from NAS: for a catalog that's already open
--- when a second card or DxO DNGs land in its shoot folders.
-local LrApplication = import "LrApplication"
+-- Library > Plug-in Extras > Add new files from NAS starts the same bounded
+-- upload fill-in loop as start-up. An existing loop is shared, never duplicated.
 local LrTasks = import "LrTasks"
-local Intake = require "Intake"
 
 LrTasks.startAsyncTask(function()
-  Intake.run(LrApplication.activeCatalog(), true)
+  local ok, problem = LrTasks.pcall(function()
+    require("Intake").run(nil, true)
+  end)
+  if not ok then
+    local logger = import "LrLogger"("CardIntake")
+    logger:enable("logfile")
+    logger:error("Menu task failed: " .. tostring(problem))
+    import "LrDialogs".message("Card Intake couldn't add the new files", tostring(problem), "warning")
+  end
 end)

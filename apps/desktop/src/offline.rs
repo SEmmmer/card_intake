@@ -344,6 +344,7 @@ pub async fn send_to_nas(
             saved.shoots.retain(|s| nas.join(s).is_dir());
             saved.shoots.sort();
             saved.shoots.dedup();
+            super::lightroom::refresh_saved_handoffs(saved, &source.shoots);
             state.save_ledger(&updated)?;
             *ledger = updated;
         }

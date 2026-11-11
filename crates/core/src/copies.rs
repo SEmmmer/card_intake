@@ -171,7 +171,7 @@ pub fn unchanged(file: &CopyFile) -> Result<(), String> {
     }
 }
 
-fn stream(
+pub(crate) fn stream(
     input: &mut File,
     mut output: Option<&mut File>,
     size: u64,
@@ -389,6 +389,7 @@ impl<'a> Progress<'a> {
         let seconds = self.started.elapsed().as_secs_f64();
         let speed = (seconds >= 1.0).then(|| done as f64 / seconds);
         progress(ImportProgress {
+            card_done: None,
             phase,
             current_file: Some(Path::new(self.label).join(&file.relative)),
             completed_files: self.counts.verified,

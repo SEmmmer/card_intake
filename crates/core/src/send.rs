@@ -124,7 +124,7 @@ pub fn key(path: &Path) -> String {
 /// import's senders.
 pub type DateFolders = Mutex<HashMap<NaiveDate, Arc<Vec<destinations::FolderIndex>>>>;
 
-fn date_folders(
+pub(crate) fn date_folders(
     nas: &Path,
     date: NaiveDate,
     cache: &DateFolders,
@@ -139,7 +139,7 @@ fn date_folders(
 /// Where a photo or clip goes on the NAS: its own path, unless it isn't there and an
 /// identical copy is already in another folder for the same date (an earlier import
 /// under another title), which is then used. Returns that folder too.
-fn nas_target(
+pub(crate) fn nas_target(
     nas: &Path,
     shoot: &Path,
     file: &CopyFile,
@@ -559,6 +559,15 @@ pub struct Deleted {
 /// Only this explicit action deletes photos. The manifest is kept in app data;
 /// every file is checked again, and the year folder and backup drives stay put.
 pub fn delete_laptop(manifest: &Manifest) -> Result<Deleted, String> {
+    delete_laptop_with_workers(manifest, 1)
+}
+
+/// The through-computer import overlaps local deletions after the NAS has all
+/// files. Each worker applies the same path, size and exact-time checks as Send.
+pub(crate) fn delete_laptop_with_workers(
+    manifest: &Manifest,
+    workers: usize,
+) -> Result<Deleted, String> {
     let root = &manifest.offline_root;
     if !root.exists() {
         return Ok(Deleted {
@@ -580,24 +589,45 @@ pub fn delete_laptop(manifest: &Manifest) -> Result<Deleted, String> {
         {
             return Err("A manifest file is outside its shoot folders.".into());
         }
-        copies::inspect(root, &file.relative)?;
-        let path = root.join(&file.relative);
-        match fs::symlink_metadata(&path) {
-            Ok(meta)
-                if meta.is_file()
-                    && !copies::is_link(&meta)
-                    && meta.len() == file.size
-                    && meta.modified().ok() == Some(file.modified) =>
-            {
-                match fs::remove_file(&path) {
-                    Ok(()) => result.deleted += 1,
-                    Err(e) => result.errors.push(format!("{}: {e}", path.display())),
-                }
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let checked = import::CheckedFolders::default();
+    if workers > 1 {
+        let mut parents = BTreeSet::new();
+        for file in &manifest.files {
+            let parent = file.relative.parent().ok_or("Missing file folder")?;
+            if parents.insert(parent.to_path_buf()) && root.join(parent).is_dir() {
+                checked.pin_existing(root, &file.relative)?;
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => result.errors.push(format!("{}: {e}", path.display())),
-            _ => result.kept.push(file.relative.clone()),
         }
+    }
+    let deleted = std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..workers.max(1).min(manifest.files.len().max(1)))
+            .map(|_| {
+                let next = &next;
+                let checked = &checked;
+                scope.spawn(move || {
+                    let mut result = Deleted::default();
+                    while let Some(file) = manifest.files.get(next.fetch_add(1, Ordering::Relaxed))
+                    {
+                        delete_one(root, file, checked, &mut result)?;
+                    }
+                    Ok::<_, String>(result)
+                })
+            })
+            .collect();
+        jobs.into_iter()
+            .map(|job| {
+                job.join()
+                    .map_err(|_| "Laptop deletion worker stopped".to_string())?
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })?;
+    drop(checked); // release directory pins before removing the empty folders
+    for worker in deleted {
+        result.deleted += worker.deleted;
+        result.kept.extend(worker.kept);
+        result.errors.extend(worker.errors);
     }
     for shoot in &manifest.shoots {
         if !root.join(shoot).is_dir() {
@@ -625,6 +655,33 @@ pub fn delete_laptop(manifest: &Manifest) -> Result<Deleted, String> {
     }
     result.complete = result.errors.is_empty() && result.kept.is_empty();
     Ok(result)
+}
+
+fn delete_one(
+    root: &Path,
+    file: &VerifiedFile,
+    checked: &import::CheckedFolders,
+    result: &mut Deleted,
+) -> Result<(), String> {
+    checked.inspect_for_delete(root, &file.relative)?;
+    let path = root.join(&file.relative);
+    match fs::symlink_metadata(&path) {
+        Ok(meta)
+            if meta.is_file()
+                && !copies::is_link(&meta)
+                && meta.len() == file.size
+                && meta.modified().ok() == Some(file.modified) =>
+        {
+            match fs::remove_file(&path) {
+                Ok(()) => result.deleted += 1,
+                Err(e) => result.errors.push(format!("{}: {e}", path.display())),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => result.errors.push(format!("{}: {e}", path.display())),
+        _ => result.kept.push(file.relative.clone()),
+    }
+    Ok(())
 }
 
 #[cfg(test)]

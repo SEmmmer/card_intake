@@ -415,7 +415,27 @@
     }
 
     // The card is read; the NAS catches up.
-    if (behind) {
+    if (behind && !job.cancel) {
+      job.cardDone = true;
+      var doneRaws = files.filter(function (f) { return /\.ARW$/i.test(f.name); });
+      var newRaws = doneRaws.filter(function (f) { return !f.there; }).length;
+      job.ejected = !!request.eject;
+      var recovery = {
+        started_at: started, finished_at: now(), root: root, nas_root: offlineCopies.folder,
+        offline_root: offlineCopies.folder, offline: true, local_complete: true, uploading: true, upload_to: nas.root,
+        status: "complete", total_files: files.length, total_bytes: Math.round(total), copied_files: files.length - existing.length,
+        skipped_files: existing.length, verified_files: files.length, completed_bytes: Math.round(total),
+        photos: files.filter(function (f) { return f.kind === "photo"; }).length, videos: files.filter(function (f) { return f.kind === "video"; }).length,
+        shoots: shoots.map(function (s) { return s.relative; }), card_id: report.volume.id, card_key: report.card_key,
+        camera: request.camera, warnings: [], error: null, ejected: job.ejected,
+        ratings: ratings(newRaws, newRaws ? 1 : 0, Math.min(Math.max(0, newRaws - 1), Math.round(newRaws * 0.01)), doneRaws.length - newRaws),
+        timings: { card_seconds: total / speed, card_bytes: Math.round(total) }
+      };
+      ledger.imports.unshift(recovery);
+      pending = null;
+      if (job.ejected) roots = roots.filter(function (r) { return r !== root; });
+      p.card_done = copy(recovery); p.phase = "card_done"; p.nas = copy(behind);
+      channel.onmessage(copy(p)); delete p.card_done;
       NAS_SPEED = 1;
       for (var left = behind.total_bytes - behind.processed_bytes; left > 0 && !job.cancel; left = behind.total_bytes - behind.processed_bytes) {
         behind.processed_bytes = Math.min(behind.total_bytes, behind.processed_bytes + Math.max(behind.total_bytes / 25, 1));
@@ -430,9 +450,6 @@
     var finished = files.filter(function (f) { return f.done; });
     var raws = finished.filter(function (f) { return /\.ARW$/i.test(f.name); });
     var rated = raws.filter(function (f) { return !f.there; }).length, kept = raws.length - rated;
-    if (!cancelled && raws.length) {
-      for (i = 0; i < 5; i++) { emit("rating", raws[Math.floor(i * raws.length / 5)]); await wait(110); }
-    }
 
     if (!cancelled && request.also_backup) {
       var drives = offlineCopies.drives.filter(function (d) { return d.root; });
@@ -476,6 +493,20 @@
       ratings: cancelled ? ratings(0, 0, 0) : ratings(rated, rated ? 1 : 0, Math.min(Math.max(0, rated - 1), Math.round(rated * 0.01)), kept),
       ejected: !cancelled && !!request.eject
     };
+    result.uploading = false;
+    result.lightroom_catalogs = job.catalogs || [];
+    if (viaLaptop) result.upload_to = nas.root;
+    result.timings = { card_seconds: total / speed, card_bytes: Math.round(total), upload_seconds: viaLaptop ? total / (speed * 0.6) : 0,
+      uploaded_bytes: viaLaptop ? Math.round(behind.processed_bytes) : 0, uploaded_files: viaLaptop ? behind.completed_files : 0,
+      writing_seconds: viaLaptop ? total / (speed * 0.8) : 0, flushing_seconds: viaLaptop ? files.length * 0.25 : 0,
+      reading_back_seconds: viaLaptop ? total / speed : 0, publishing_seconds: 0.1, nas_sidecar_seconds: raws.length * 0.04,
+      backlog_wait_seconds: viaLaptop ? 2 : 0, exiftool_seconds: raws.length * 0.015 };
+    if (job.cardDone && cancelled) {
+      result.offline = true; result.offline_root = offlineCopies.folder; result.nas_root = offlineCopies.folder; result.local_complete = true;
+      result.error = "Upload stopped. The photos are safe on this computer. Use Send to NAS in Recent imports to finish.";
+    }
+    result.ejected = job.ejected || result.ejected;
+    ledger.imports = ledger.imports.filter(function (r) { return r.started_at !== started; });
     ledger.imports.unshift(result);
     while (ledger.imports.length > 100) {
       var trim = -1;
@@ -484,7 +515,7 @@
       ledger.imports.splice(trim, 1);
     }
     cardRecord(root);
-    pending = cancelled ? { request: Object.assign({}, request, { nas_root: result.nas_root, backup_drives: request.also_backup ? offlineCopies.drives.filter(function (d) { return d.root; }) : [] }), eject: !!request.eject } : null;
+    pending = cancelled && !job.cardDone ? { request: Object.assign({}, request, { nas_root: result.nas_root, backup_drives: request.also_backup ? offlineCopies.drives.filter(function (d) { return d.root; }) : [] }), eject: !!request.eject } : null;
     if (result.ejected) roots = roots.filter(function (r) { return r !== root; });
     return copy(result);
   }
@@ -598,6 +629,7 @@
 
   function openInLightroom(importId, shoot, trip) {
     var record = importById(importId);
+    if (running && !running.cardDone) return Promise.reject("Wait for the card to be read and checked.");
     if (!record) return Promise.reject("That import isn't in the history any more.");
     if (!lightroom.template) return Promise.reject("Choose an empty catalog as the template under Lightroom first.");
     var c;
@@ -615,10 +647,16 @@
     // Lightroom has one catalog open at a time: the one before is closed, and stays on this PC.
     catalogs.forEach(function (x) { if (x !== c && x.state === "open") x.state = "local"; });
     c.state = "open";
+    if (running && running.cardDone) {
+      running.catalogs = running.catalogs || [];
+      if (running.catalogs.indexOf(catalogPath(c)) < 0) running.catalogs.push(catalogPath(c));
+      record.lightroom_catalogs = running.catalogs.slice();
+    }
     return wait(800, { catalog: catalogPath(c), name: c.name, already_open: already });
   }
 
   function finishCatalog(importId, shoot) {
+    if (running) return Promise.reject("Wait for the NAS upload to finish before Finish.");
     var record = importById(importId), c = record && catalogOf(record.shoots[shoot]);
     if (!c) return Promise.reject("This shoot has no catalog yet.");
     if (c.state === "open") return Promise.reject("Close " + c.name + " in Lightroom first: open another catalog, or quit Lightroom.");
@@ -654,9 +692,9 @@
     args = args || {};
     switch (command) {
       case "list_cards":
-        return Promise.resolve(roots.map(function (r) { return { root: r, has_sony_video: r === CF }; }));
+        return Promise.resolve(roots.map(function (r) { return { root: r, id: reports[r].volume.id, has_sony_video: r === CF }; }));
       case "eject_card":
-        if (running) return Promise.reject("Wait for the import to finish, or stop it, before ejecting the card.");
+        if (running && !running.cardDone) return Promise.reject("Wait for the card to be read and checked before ejecting it.");
         return wait(700).then(function () { roots = roots.filter(function (r) { return r !== args.root; }); });
       case "read_card":
         if (roots.indexOf(args.root) < 0) return Promise.reject("The card isn't in the reader any more.");

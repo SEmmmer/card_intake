@@ -1,6 +1,6 @@
 //! Initial ratings from the card's attributes and shooting settings.
 
-use crate::{exiftool, scan, xmp};
+use crate::{scan, xmp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -169,11 +169,14 @@ impl InitialRating {
 
 /// Protect is a source-file attribute, independent of EXIF and destination permissions.
 pub fn locked_on_card(path: &Path) -> std::io::Result<bool> {
-    let meta = fs::metadata(path)?;
+    Ok(locked_attributes(&fs::metadata(path)?))
+}
+
+pub(crate) fn locked_attributes(meta: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        Ok(meta.file_attributes() & 1 != 0)
+        meta.file_attributes() & 1 != 0
     }
     #[cfg(unix)]
     {
@@ -183,13 +186,17 @@ pub fn locked_on_card(path: &Path) -> std::io::Result<bool> {
         {
             use std::os::macos::fs::MetadataExt;
             // UF_IMMUTABLE and SF_IMMUTABLE (Finder's Locked flag).
-            Ok(locked || meta.st_flags() & 0x0002_0002 != 0)
+            locked || meta.st_flags() & 0x0002_0002 != 0
         }
         #[cfg(not(target_os = "macos"))]
-        Ok(locked)
+        {
+            locked
+        }
     }
     #[cfg(not(any(windows, unix)))]
-    Ok(meta.permissions().readonly())
+    {
+        meta.permissions().readonly()
+    }
 }
 
 #[derive(Default)]
@@ -198,13 +205,19 @@ pub(crate) struct Readings {
     pub warnings: Vec<String>,
 }
 
-pub(crate) fn read_settings(tool: Option<&Path>, photos: &[PathBuf]) -> Readings {
+pub(crate) fn read_settings(
+    tool: Option<&Path>,
+    photos: &[PathBuf],
+    cancel: &std::sync::atomic::AtomicBool,
+    mut ready: impl FnMut(&[PathBuf], &HashMap<PathBuf, Settings>),
+) -> Readings {
     let mut result = Readings::default();
     if photos.is_empty() {
         return result;
     }
     let Some(tool) = tool else {
         result.warnings.push("Initial raw ratings need ExifTool. Install it or set CARD_INTAKE_EXIFTOOL, then import again; existing copies will be checked and rated.".into());
+        ready(photos, &result.settings);
         return result;
     };
     let tags = [
@@ -225,9 +238,21 @@ pub(crate) fn read_settings(tool: Option<&Path>, photos: &[PathBuf]) -> Readings
         "-Warning",
         "-Error",
     ];
-    for chunk in photos.chunks(256) {
+    let mut session = match reader::Session::start(tool) {
+        Ok(session) => session,
+        Err(error) => {
+            result
+                .warnings
+                .push(format!("Couldn't read initial raw ratings: {error}"));
+            ready(photos, &result.settings);
+            return result;
+        }
+    };
+    // Measured on 297 Sony ARWs: first settings 0.37 s, total 4.65 s on
+    // Windows. One process avoids paying ExifTool startup for every small batch.
+    for chunk in photos.chunks(16) {
         let requested: HashMap<_, _> = chunk.iter().map(|p| (path_key(p), p)).collect();
-        let parsed = exiftool::read_batch(tool, chunk, &tags).and_then(|bytes| {
+        let parsed = session.read(chunk, &tags, cancel).and_then(|bytes| {
             serde_json::from_slice::<Vec<Map<String, Value>>>(&bytes).map_err(std::io::Error::other)
         });
         match parsed {
@@ -260,9 +285,16 @@ pub(crate) fn read_settings(tool: Option<&Path>, photos: &[PathBuf]) -> Readings
                 .warnings
                 .push(format!("Couldn't read initial raw ratings: {error}")),
         }
+        ready(chunk, &result.settings);
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
     }
+    ready(photos, &result.settings);
     result
 }
+
+mod reader;
 
 fn readable_raw(obj: &Map<String, Value>) -> bool {
     obj.get("File:FileType")

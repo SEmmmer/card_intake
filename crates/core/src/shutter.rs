@@ -415,6 +415,14 @@ impl MyCameras {
             || (serial.is_none() && internal.is_none() && has(&self.serials, ""))
     }
 
+    /// Whether any of the cameras is this model, whatever its serial number.
+    pub fn has_model(&self, model: &str) -> bool {
+        self.serials
+            .iter()
+            .chain(&self.internals)
+            .any(|(m, _)| m.eq_ignore_ascii_case(model))
+    }
+
     pub fn owns_camera(&self, camera: &CameraHistory) -> bool {
         self.owns(
             &camera.model,

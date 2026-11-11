@@ -109,7 +109,7 @@ async function app(t, network = true, options = {}) {
         case 'open_in_lightroom': return Promise.resolve(fixture.launch || { catalog: 'D:\\LrC Catalogs\\2026\\2026-11-06_Tokyo\\2026-11-06_Tokyo.lrcat', name: '2026-11-06_Tokyo', already_open: false });
         case 'finish_catalog': return Promise.resolve({ name: '2026-11-06_Tokyo', stored: '\\\\NAS\\photos\\2026\\2026-11-06_Tokyo\\_catalog' });
         case 'get_cameras': return Promise.resolve(fixture.cameras);
-        case 'read_card_shutter': return Promise.resolve(fixture.cameras);
+        case 'read_card_shutter': return options.holdShutter ? new Promise(resolve => { fixture.finishShutter = resolve; }) : Promise.resolve(fixture.cameras);
         case 'register_camera':
           if (options.registerError) return Promise.reject(options.registerError);
           if (options.camerasAfterRegister) fixture.cameras = options.camerasAfterRegister;
@@ -408,9 +408,124 @@ test('through this computer, the card bar shows the full-speed read and a second
   assert.equal(a.$('#nas-pline').textContent, '300 of 1,290 files · 40.0 GB of 168.0 GB · 950 MB/s · about 2 min 15 s left');
   // The card is read: only the NAS has a speed and time left.
   a.fixture.channel.onmessage({ phase: 'sending', current_file: '2026\\2026-11-06_Tokyo\\DSC04000.ARW', completed_files: 1290, total_files: 1290, skipped_files: 0, processed_bytes: 168e9, total_bytes: 168e9, bytes_per_sec: 0, eta_secs: 0, nas: { ...nas, completed_files: 1000, processed_bytes: 130e9, eta_secs: 40 } });
-  assert.equal(a.$('#phase').textContent, 'Card read · the NAS is catching up');
+  assert.equal(a.$('#phase').textContent, 'Card read and checked on this computer · the NAS is catching up');
   assert.equal(a.$('#pline').textContent, 'DSC04000.ARW · 1,290 of 1,290 files');
   assert.equal(a.$('#nas-pct').textContent, '77%');
+});
+
+test('card done unlocks eject and Lightroom during upload; armed Lightroom opens once and Stop offers Send', async t => {
+  const a = await app(t);
+  a.type('#name-0', 'Tokyo');
+  a.$('#start').click();
+  a.$('#arm').click();
+  assert.equal(a.$('#eject').disabled, true);
+  const snapshot = result({ offline: true, nas_root: 'C:\\Pictures\\Card Intake Offline', offline_root: 'C:\\Pictures\\Card Intake Offline', local_complete: true, uploading: true, upload_to: '\\\\NAS\\photos' });
+  const progress = { phase: 'card_done', card_done: snapshot, completed_files: 4, total_files: 4, processed_bytes: 310, total_bytes: 310,
+    nas: { completed_files: 1, total_files: 3, processed_bytes: 100, total_bytes: 300, bytes_per_sec: 80e6, eta_secs: 3 } };
+  a.fixture.channel.onmessage(progress);
+  await settle();
+  assert.match(a.$('#card-done').textContent, /read and checked on this computer.*eject and remove.*NAS is catching up.*Lightroom fills in/);
+  assert.equal(a.$('#eject').disabled, false);
+  assert.deepEqual(a.last('open_in_lightroom'), { importId: snapshot.started_at, shoot: 0, trip: null });
+  a.fixture.channel.onmessage({ ...progress, phase: 'sending' });
+  await settle();
+  assert.equal(a.calls.filter(c => c.command === 'open_in_lightroom').length, 1);
+  assert.equal(a.$('#actions').hidden, true);
+  a.$('#eject').click();
+  await settle();
+  assert.match(a.$('#card-done').textContent, /card has been ejected/);
+  assert.equal(a.$('#progress').hidden, false);
+  a.$('#stop').click();
+  assert.match(a.$('#stopped').textContent, /photos are safe on this computer; Send to NAS/);
+  a.fixture.finish({ ...snapshot, uploading: false, ejected: true, status: 'cancelled', error: 'Upload stopped.' });
+  await settle();
+  assert.match(a.$('#progress').textContent, /photos are safe on this computer.*Send to NAS/);
+  assert.equal(a.$('#actions').hidden, true);
+  assert.doesNotMatch(a.$('#progress').textContent, /not ejected|Resume/);
+});
+
+test('card done enables Eject while the earlier shutter command finishes saving its history', async t => {
+  const a = await app(t, true, { holdShutter: true });
+  assert.equal(a.$('#eject').disabled, true);
+  a.$('#start').click();
+  a.fixture.channel.onmessage({ phase: 'card_done', card_done: result({ offline: true, local_complete: true, upload_to: '\\\\NAS\\photos' }) });
+  assert.equal(a.$('#eject').disabled, false);
+  a.fixture.finishShutter(a.fixture.cameras);
+  await settle();
+  assert.equal(a.$('#eject').disabled, false);
+});
+
+test('card done shows shoot and trip buttons with NAS paths, and the done screen has one timing line', async t => {
+  const a = await app(t, true, { groups: [cardDay('2026-11-06'), cardDay('2026-11-07')] });
+  a.$('#start').click();
+  const snapshot = result({ offline: true, local_complete: true, ejected: true, upload_to: '\\\\NAS\\photos', shoots: ['2026\\2026-11-06_Tokyo', '2026\\2026-11-07_Tokyo'] });
+  a.fixture.channel.onmessage({ phase: 'card_done', card_done: snapshot, total_bytes: 310, processed_bytes: 310, total_files: 4, completed_files: 4 });
+  assert.equal(a.window.document.querySelectorAll('[data-upload-open]').length, 2);
+  assert.match(a.$('#card-done code').textContent, /^\\\\NAS\\photos/);
+  assert.ok(a.$('#upload-trip'));
+  a.type('#upload-trip-name', 'Japan'); a.$('#upload-trip').click();
+  await settle();
+  assert.equal(a.last('open_in_lightroom').trip, 'Japan');
+  a.fixture.finish(result({ timings: { card_seconds: 2, card_bytes: 1624e6, upload_seconds: 4, uploaded_bytes: 960e6, writing_seconds: 25, flushing_seconds: 41, reading_back_seconds: 20, publishing_seconds: 4, nas_sidecar_seconds: 10 } }));
+  await settle();
+  assert.equal(a.$('#import-timings').textContent, 'Card 812 MB/s · NAS 240 MB/s · waiting on NAS flush 41%');
+  assert.equal(a.window.document.querySelectorAll('#import-timings').length, 1);
+  assert.doesNotMatch(a.$('#done').textContent, /format/i);
+});
+
+test('a second card waits on screen until the first upload ends, then is picked up', async t => {
+  const a = await app(t);
+  a.$('#start').click();
+  a.fixture.channel.onmessage({ phase: 'card_done', card_done: result({ local_complete: true, offline: true, upload_to: '\\\\NAS\\photos', ejected: true }) });
+  a.fixture.roots = [{ root: 'F:\\', has_sony_video: false }];
+  const reads = a.calls.filter(c => c.command === 'read_card').length;
+  a.timers.get(2000)(); await settle();
+  assert.equal(a.calls.filter(c => c.command === 'read_card').length, reads);
+  assert.ok(a.$('#card-done'));
+  a.fixture.finish(result({ ejected: true })); await settle();
+  assert.equal(a.last('read_card').root, 'F:\\');
+});
+
+test('a replacement card at the same drive letter is picked up after uploading', async t => {
+  const a = await app(t);
+  a.$('#start').click();
+  a.fixture.channel.onmessage({ phase: 'card_done', card_done: result({ local_complete: true, offline: true, upload_to: '\\\\NAS\\photos', ejected: true }) });
+  a.fixture.roots = [{ root: 'E:\\', id: 'REPLACEMENT-CARD', has_sony_video: false }];
+  const reads = a.calls.filter(c => c.command === 'read_card').length;
+  a.timers.get(2000)(); await settle();
+  assert.equal(a.calls.filter(c => c.command === 'read_card').length, reads);
+  a.fixture.finish(result({ ejected: true })); await settle();
+  assert.equal(a.calls.filter(c => c.command === 'read_card').length, reads + 1);
+});
+
+test('an uploading recovery entry after restart behaves as an ordinary offline import', async t => {
+  const recovery = result({ offline: true, local_complete: true, uploading: true, nas_root: 'C:\\Pictures\\Card Intake Offline', upload_to: '\\\\NAS\\photos' });
+  const a = await app(t, true, { ledger: { cards: [], cameras: [], imports: [recovery] } });
+  assert.ok(a.$('[data-send]'));
+  assert.equal(a.$('[data-send]').disabled, false);
+  assert.doesNotMatch(a.$('#history').textContent, /Uploading to NAS/);
+});
+
+test('Stop upload is disabled once the NAS has everything and local cleanup is finishing', async t => {
+  const a = await app(t);
+  a.$('#start').click();
+  a.fixture.channel.onmessage({ phase: 'card_done', card_done: result({ local_complete: true, offline: true, upload_to: '\\\\NAS\\photos' }),
+    nas: { completed_files: 3, total_files: 3, processed_bytes: 300, total_bytes: 300 } });
+  assert.equal(a.$('#stop').disabled, true);
+  assert.equal(a.$('#stop').textContent, 'Finishing…');
+  assert.equal(a.$('#phase').textContent, 'NAS files checked · finishing import');
+});
+
+test('the done screen retains the early catalog path when photos resolve to an earlier NAS folder', async t => {
+  const a = await app(t);
+  a.$('#start').click();
+  const catalog = 'D:\\LrC Catalogs\\2026\\2026-11-06_Tokyo\\2026-11-06_Tokyo.lrcat';
+  a.fixture.finish(result({ shoots: ['2026\\2026-11-06_Earlier'], lightroom_catalogs: [catalog] }));
+  await settle();
+  assert.match(a.$('#done-path-0').textContent, /2026-11-06_Earlier$/);
+  assert.equal(a.$('#done .dl-cat').textContent, 'Catalog: ' + catalog);
+  a.$('[data-open="0"]').click(); await settle();
+  assert.equal(a.last('open_in_lightroom').shoot, 0);
 });
 
 test('imports like the prototype: progress in the desk with the form locked, then the done panel and history row', async t => {
@@ -449,7 +564,7 @@ test('imports like the prototype: progress in the desk with the form locked, the
   assert.equal(done.hidden, false);
   assert.match(done.textContent, /Import complete/);
   assert.match(done.textContent, /Rated 2 raws: 1 locked in camera, 0 camera ratings, 1 computed\. Kept 1 existing rating\./);
-  assert.match(done.textContent, /All 2 photos and 1 clip are on the NAS and match the card\. You can format this card in the camera\./);
+  assert.match(done.textContent, /All 2 photos and 1 clip are on the NAS and match the card\./);
   assert.equal(a.$('#done-path-0').textContent, '\\\\NAS\\photos\\2026\\2026-11-06_Tokyo');
   assert.match(done.textContent, /Catalog: D:\\LrC Catalogs\\2026\\2026-11-06_Tokyo\\2026-11-06_Tokyo\.lrcat/);
   assert.ok(done.querySelector('[data-open="0"]'));
@@ -1128,18 +1243,18 @@ test('Lightroom: open a shoot or a trip from the done panel; Open, Reopen and Fi
   a.fixture.launch = { catalog: 'x', name: '2026-11-06_Japan', already_open: true };
   a.$('[data-open="0"]').click();
   await settle();
-  assert.match(a.$('#toast').textContent, /^2026-11-06_Japan is already open in Lightroom\. To add new files, choose Library → Plug-in Extras → Add new files from NAS\.$/);
+  assert.equal(a.$('#toast').textContent, '2026-11-06_Japan is already open in Lightroom. Card Intake asked it to add the new photos.');
   assert.match(a.$('#done').textContent, /Trip catalog: 2026-11-06_Japan/);
   assert.equal(a.$('#trip-name').value, 'Japan');
 });
 
-test('Open in Lightroom can be pressed during the import and opens when the import is verified', async t => {
+test('Open in Lightroom can be pressed during the import and opens when the card is read and checked', async t => {
   const a = await app(t);
   a.type('#name-0', 'Tokyo');
   a.$('#start').click();
   assert.equal(a.$('#arm-what'), null);
   a.$('#arm').click();
-  assert.equal(a.$('#lr-arm').textContent, 'Lightroom opens 2026-11-06_Tokyo when the import is verified.Don’t open');
+  assert.equal(a.$('#lr-arm').textContent, 'Lightroom opens 2026-11-06_Tokyo when the card is read and checked.Don’t open');
   assert.equal(a.calls.filter(c => c.command === 'open_in_lightroom').length, 0);
   a.fixture.finish(result());
   await settle();
@@ -1156,7 +1271,7 @@ test('Open in Lightroom can be pressed during the import and opens when the impo
   assert.equal(b.$('#toast').textContent, 'Name the trip first.');
   b.type('#arm-trip', 'Japan');
   b.$('#arm').click();
-  assert.match(b.$('#lr-arm').textContent, /^Lightroom opens the trip Japan when the import is verified\./);
+  assert.match(b.$('#lr-arm').textContent, /^Lightroom opens the trip Japan when the card is read and checked\./);
   b.fixture.finish(result({ status: 'cancelled', shoots: [] }));
   await settle();
   assert.equal(b.calls.filter(c => c.command === 'open_in_lightroom').length, 0);

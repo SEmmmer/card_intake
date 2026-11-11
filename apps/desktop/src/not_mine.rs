@@ -145,6 +145,7 @@ pub(super) fn mark_camera_for(
         .map_err(|e| e.to_string())?
         .cameras
         .retain(|c| !matching.owns_camera(c));
+    state.drop_held_wifi(&model);
     let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
     ledger
         .cameras

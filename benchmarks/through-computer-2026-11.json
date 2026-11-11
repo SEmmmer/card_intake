@@ -1,0 +1,132 @@
+{
+  "fixture": {
+    "raw_files": 297,
+    "raw_bytes": 12998172672,
+    "locked_fake_card_raws": 5,
+    "destinations": "Local folders on the same Windows NVMe volume",
+    "profile": "Rust dev (unoptimized), CARGO_TARGET_DIR=target/codex",
+    "exiftool": "13.59",
+    "publication_poll_interval_ms": 10
+  },
+  "before": {
+    "started_at": "2026-11-10T23:45:11.826899500",
+    "last_card_file_verified_seconds": 18.6098052,
+    "card_done_seconds": null,
+    "last_nas_photo_published_seconds": 19.1554435,
+    "finished_seconds": 21.3184326,
+    "post_publication_tail_seconds": 2.1629891,
+    "published_photos": 297,
+    "ratings": {
+      "rated": 297,
+      "locked": 5,
+      "camera": 2,
+      "computed": 290,
+      "kept": 0,
+      "stars": [
+        0,
+        0,
+        0,
+        0,
+        6,
+        291
+      ]
+    },
+    "warnings": [],
+    "timings": null
+  },
+  "after": {
+    "started_at": "2026-11-11T00:46:20.072930900",
+    "last_card_file_verified_seconds": 20.1389684,
+    "card_done_seconds": 20.2276615,
+    "last_nas_photo_published_seconds": 20.4496241,
+    "finished_seconds": 22.152405,
+    "post_publication_tail_seconds": 1.7027809,
+    "published_photos": 297,
+    "ratings": {
+      "rated": 297,
+      "locked": 5,
+      "camera": 2,
+      "computed": 290,
+      "kept": 0,
+      "stars": [
+        0,
+        0,
+        0,
+        0,
+        6,
+        291
+      ]
+    },
+    "warnings": [],
+    "timings": {
+      "card_seconds": 20.1796574,
+      "card_bytes": 12998172672,
+      "upload_seconds": 20.0057942,
+      "uploaded_bytes": 12998533906,
+      "uploaded_files": 594,
+      "writing_seconds": 36.803675300000016,
+      "flushing_seconds": 7.232163500000004,
+      "reading_back_seconds": 33.52477240000001,
+      "publishing_seconds": 0.07773549999999997,
+      "nas_sidecar_seconds": 3.9945320999999985,
+      "backlog_wait_seconds": 0.0,
+      "exiftool_seconds": 7.5027526
+    }
+  },
+  "exiftool_batch_measurements": [
+    {
+      "batch": 8,
+      "first_batch_seconds": 0.316,
+      "total_seconds": 5.122
+    },
+    {
+      "batch": 16,
+      "first_batch_seconds": 0.371,
+      "total_seconds": 4.65
+    },
+    {
+      "batch": 32,
+      "first_batch_seconds": 0.613,
+      "total_seconds": 4.886
+    }
+  ],
+  "delayed_flush_test": {
+    "files": 32,
+    "flush_delay_ms": 200,
+    "finishers": 8,
+    "serial_flush_seconds": 6.4,
+    "observed_seconds": 1.0496086,
+    "card_done_seconds": 0.3855845,
+    "maximum_backlog": 16
+  },
+  "checks": {
+    "cargo_fmt_all": "passed",
+    "cargo_clippy_workspace_all_targets_D_warnings": "passed",
+    "cargo_test_workspace": {
+      "core": 227,
+      "desktop": 35,
+      "server": 0,
+      "doc_tests": 0,
+      "failed": 0
+    },
+    "node_import_and_demo_tests": {
+      "import": 66,
+      "demo": 8,
+      "failed": 0
+    }
+  },
+  "notes": [
+    "The provided folder contained 297 ARWs, one MP4 and one XML; only the ARWs were copied to the fake card.",
+    "Benchmark elapsed times begin at import invocation; ImportResult.timings begin at copying after preparation.",
+    "The total post-publication tail includes local laptop cleanup. It remains proportional to the number of local files; the serial NAS rating pass has been removed.",
+    "Local NVMe timings do not predict real NAS throughput. No NAS was read or written for this work.",
+    "Existing already-open Lightroom catalogs whose prior loop ended still need the Add new files from NAS menu action to begin polling the new heartbeat."
+  ],
+  "scratch_cleanup": {
+    "removed": false,
+    "path": "C:\\Users\\emmmer.SUPERXLB\\AppData\\Local\\Temp\\card-intake-codex\\bench",
+    "remaining_bytes": 90989376102,
+    "reason": "Automatic approval review rejected recursive cleanup and narrower validated generated-file deletion: blocked by policy.",
+    "shared_lrc_folder": "Left untouched; owned by the other agent."
+  }
+}

@@ -1,4 +1,4 @@
--- Plug-in Manager panel: the presets applied to photos Card Intake adds.
+-- Plug-in Manager presets for start-up, menu imports, and upload fill-in passes.
 local LrApplication = import "LrApplication"
 local LrPrefs = import "LrPrefs"
 local LrView = import "LrView"
@@ -41,8 +41,8 @@ return {
         bind_to_object = prefs,
         f:static_text {
           title = "When a catalog made by Card Intake opens, or from Library > Plug-in Extras > Add new files from NAS, "
-            .. "new raw photos and DxO DNGs in its shoot folders are added with these presets.",
-          fill_horizontal = 1, height_in_lines = 2,
+            .. "new raw photos and DxO DNGs are added with these presets. Photos keep being added while Card Intake uploads.",
+          fill_horizontal = 1, height_in_lines = 3,
         },
         choice("Develop preset for raw photos:", "developPreset", develop),
         choice("Develop preset for DxO DNGs:", "dngDevelopPreset", develop),

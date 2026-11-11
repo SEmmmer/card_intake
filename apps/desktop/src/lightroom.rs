@@ -10,6 +10,8 @@
 //! Next to each catalog, `<name>.card-intake.txt` lists its shoot folders. The Card
 //! Intake plug-in, which this app installs in Lightroom's Modules folder, reads it when
 //! the catalog opens and adds new raw photos and DxO DNGs from those folders.
+//! Upload heartbeats let that pass continue as files arrive. An early catalog's
+//! local identity is saved with its import even when NAS folder resolution changes.
 //!
 //! **Finish** copies a closed catalog with its Smart Previews and mask data to the NAS
 //! (the shoot's `_catalog` folder, or `<year>/_trips/<trip>/`), checks the copy, and
@@ -22,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,12 +69,185 @@ const PLUGIN: &[(&str, &str)] = &[
         "PluginInfo.lua",
         include_str!("../../../lrplugin/CardIntake.lrplugin/PluginInfo.lua"),
     ),
+    (
+        "StartupService.lua",
+        include_str!("../../../lrplugin/CardIntake.lrplugin/StartupService.lua"),
+    ),
+    (
+        "PluginShutdown.lua",
+        include_str!("../../../lrplugin/CardIntake.lrplugin/PluginShutdown.lua"),
+    ),
+    (
+        "UrlHandler.lua",
+        include_str!("../../../lrplugin/CardIntake.lrplugin/UrlHandler.lua"),
+    ),
 ];
+
+/// The plug-in's own address (`URLHandler` in its `Info.lua`). Opening it asks the
+/// catalog Lightroom has open to add what's new.
+const PLUGIN_URL: &str = "lightroom://io.github.semmmer.cardintake/add";
 
 /// A trip's folder next to the year's shoots, on the NAS and on this computer.
 const TRIPS: &str = "_trips";
 /// In a shoot's `_catalog` folder: the trip catalog the shoot belongs to.
 const TRIP_NOTE: &str = "trip.txt";
+
+/// Catalogs opened for the one running upload. Owned by ImportControl so stop,
+/// errors, worker unwind and normal window exit all remove the heartbeat.
+#[derive(Default)]
+pub(super) struct UploadCatalogs {
+    entries: Vec<(PathBuf, Vec<PathBuf>)>,
+    refreshed: Option<Instant>,
+    errors: Vec<String>,
+}
+
+fn uploading_path(catalog: &Path) -> PathBuf {
+    catalog.with_extension("card-intake.uploading")
+}
+
+fn write_heartbeat(catalog: &Path) -> Result<(), String> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    atomic_write(&uploading_path(catalog), format!("{seconds}\n").as_bytes())
+}
+
+impl UploadCatalogs {
+    fn register(&mut self, catalog: PathBuf, folders: Vec<PathBuf>) -> Result<(), String> {
+        write_heartbeat(&catalog)?;
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.0 == catalog) {
+            entry.1 = folders;
+        } else {
+            self.entries.push((catalog, folders));
+        }
+        Ok(())
+    }
+    pub fn refresh(&mut self) {
+        if self
+            .refreshed
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(5))
+        {
+            return;
+        }
+        self.refreshed = Some(Instant::now());
+        for (catalog, _) in &self.entries {
+            if let Err(error) = write_heartbeat(catalog)
+                && !self.errors.contains(&error)
+            {
+                self.errors.push(error);
+            }
+        }
+    }
+    pub fn finish(&mut self, result: &mut card_intake_core::import::ImportResult) {
+        for (path, anticipated) in &self.entries {
+            if !result.lightroom_catalogs.contains(path) {
+                result.lightroom_catalogs.push(path.clone());
+            }
+            let catalog = Catalog {
+                name: path.file_stem().unwrap().to_string_lossy().into_owned(),
+                dir: path.parent().unwrap().to_path_buf(),
+                nas_dir: PathBuf::new(),
+                trip: false,
+            };
+            let nas = if result.offline && result.sent.is_none() {
+                result.upload_to.as_ref().unwrap_or(&result.nas_root)
+            } else {
+                &result.nas_root
+            };
+            let days: Vec<_> = anticipated
+                .iter()
+                .filter_map(|p| p.file_name())
+                .map(|n| n.to_string_lossy().chars().take(10).collect::<String>())
+                .collect();
+            let final_folders: Vec<_> = result
+                .shoots
+                .iter()
+                .filter(|p| {
+                    p.file_name()
+                        .is_some_and(|n| days.iter().any(|d| n.to_string_lossy().starts_with(d)))
+                })
+                .map(|s| nas.join(s))
+                .collect();
+            // Preserve unrelated folders already listed in an existing trip.
+            if let Ok(text) = fs::read_to_string(catalog.handoff()) {
+                let mut folders: Vec<_> = text
+                    .lines()
+                    .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+                    .map(PathBuf::from)
+                    .filter(|p| !anticipated.contains(p))
+                    .collect();
+                folders.extend(final_folders.iter().cloned());
+                if let Err(error) = replace_handoff(&catalog, &folders) {
+                    self.errors.push(error);
+                }
+            }
+            if catalog
+                .dir
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|n| n == TRIPS)
+            {
+                let year = catalog
+                    .dir
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    .unwrap()
+                    .to_string_lossy();
+                let note = format!("{year}/{TRIPS}/{}", catalog.name);
+                for folder in final_folders.into_iter().filter(|p| p.is_dir()) {
+                    let local_root = catalog.dir.ancestors().nth(3).unwrap();
+                    let assigned = Catalog::for_shoot(local_root, &folder);
+                    match assigned {
+                        Ok(assigned)
+                            if (assigned.trip && assigned.name != catalog.name)
+                                || (!assigned.trip
+                                    && (assigned.lrcat().exists()
+                                        || assigned.nas_lrcat().exists())) =>
+                        {
+                            self.errors.push(format!("{} already has a catalog; its catalog association was kept. The new trip's folder list still includes its photos.", folder.display()));
+                            continue;
+                        }
+                        Err(error) => {
+                            self.errors.push(error);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    let outcome = fs::create_dir_all(folder.join("_catalog"))
+                        .map_err(|e| e.to_string())
+                        .and_then(|()| {
+                            atomic_write(&folder.join("_catalog").join(TRIP_NOTE), note.as_bytes())
+                        });
+                    if let Err(error) = outcome {
+                        self.errors.push(error);
+                    }
+                }
+            }
+        }
+        self.clear();
+        result.warnings.extend(
+            self.errors
+                .drain(..)
+                .map(|e| format!("Lightroom upload handoff: {e}")),
+        );
+    }
+    pub fn clear(&mut self) {
+        for (path, _) in self.entries.drain(..) {
+            if let Err(error) = fs::remove_file(uploading_path(&path))
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                self.errors.push(error.to_string());
+            }
+        }
+    }
+}
+impl Drop for UploadCatalogs {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
 
 fn installed_executable() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -406,7 +582,37 @@ impl Catalog {
 
     /// The catalog a shoot opens in: its trip's, when it belongs to one.
     fn for_shoot(root: &Path, folder: &Path) -> Result<Catalog, String> {
-        match trip_of(folder)? {
+        let own = Self::shoot(root, folder)?;
+        let remote_trip = trip_of(folder)?;
+        // A trip can be opened before the first photo has made its NAS folder.
+        if remote_trip.is_none()
+            && let Ok(note) = fs::read_to_string(own.dir.join(".card-intake-trip.txt"))
+        {
+            let parts: Vec<_> = Path::new(note.trim())
+                .components()
+                .map(|c| c.as_os_str().to_owned())
+                .collect();
+            if parts.len() == 3
+                && parts[1] == TRIPS
+                && parts.iter().all(|p| {
+                    Path::new(p)
+                        .components()
+                        .all(|c| matches!(c, Component::Normal(_)))
+                })
+            {
+                let share = folder
+                    .parent()
+                    .and_then(Path::parent)
+                    .ok_or("Invalid shoot folder")?;
+                return Ok(Self::trip(
+                    root,
+                    share,
+                    &parts[0].to_string_lossy(),
+                    &parts[2].to_string_lossy(),
+                ));
+            }
+        }
+        match remote_trip {
             Some((year, name)) => {
                 let share = folder
                     .parent()
@@ -414,8 +620,112 @@ impl Catalog {
                     .ok_or("Invalid shoot folder.")?;
                 Ok(Catalog::trip(root, share, &year, &name))
             }
-            None => Catalog::shoot(root, folder),
+            None => Self::shoot_from_archive(root, folder),
         }
+    }
+
+    fn shoot_from_archive(root: &Path, folder: &Path) -> Result<Catalog, String> {
+        let mut own = Self::shoot(root, folder)?;
+        if own.lrcat().exists() || own.nas_lrcat().exists() {
+            return Ok(own);
+        }
+        let day: String = own.name.chars().take(10).collect();
+        let entries = match fs::read_dir(&own.nas_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(own),
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if entry.file_type().map_err(|e| e.to_string())?.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("lrcat"))
+                && let Some(name) = path
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .filter(|n| n.starts_with(&day))
+            {
+                names.push(name.to_string());
+            }
+        }
+        match names.as_slice() {
+            [] => {}
+            [name] => {
+                own.dir = root.join(name_of(folder.parent())?).join(name);
+                own.name.clone_from(name);
+            }
+            _ => {
+                return Err(format!(
+                    "{} has several catalogs. Choose the import that created the catalog.",
+                    folder.display()
+                ));
+            }
+        }
+        Ok(own)
+    }
+
+    /// An early catalog keeps its local identity when originals are found in an
+    /// earlier NAS folder. Archive it beside the actual files, with the same name.
+    fn for_record(
+        root: &Path,
+        folder: &Path,
+        record: &card_intake_core::import::ImportResult,
+    ) -> Result<Catalog, String> {
+        let day = folder
+            .file_name()
+            .ok_or("Missing shoot folder")?
+            .to_string_lossy()
+            .chars()
+            .take(10)
+            .collect::<String>();
+        for path in &record.lightroom_catalogs {
+            let name = name_of(path.file_stem().map(Path::new))?;
+            let dir = path.parent().ok_or("Missing catalog folder")?.to_path_buf();
+            let trip = dir
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|n| n == TRIPS);
+            if !trip && !name.starts_with(&day) {
+                continue;
+            }
+            check_local(path)?;
+            let nas = if record.offline && record.sent.is_none() {
+                record.upload_to.as_ref().unwrap_or(&record.nas_root)
+            } else {
+                &record.nas_root
+            };
+            let nas_dir = if trip {
+                nas.join(name.get(..4).ok_or("Invalid catalog year")?)
+                    .join(TRIPS)
+                    .join(&name)
+            } else {
+                let candidates: Vec<_> = record
+                    .shoots
+                    .iter()
+                    .filter(|s| {
+                        s.file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with(&day))
+                    })
+                    .collect();
+                let primary = candidates
+                    .iter()
+                    .find(|s| s.file_name().is_some_and(|n| n == name.as_str()))
+                    .copied()
+                    .or_else(|| candidates.first().copied())
+                    .ok_or("No shoot for this catalog")?;
+                nas.join(primary).join("_catalog")
+            };
+            return Ok(Catalog {
+                name,
+                dir,
+                nas_dir,
+                trip,
+            });
+        }
+        Self::for_shoot(root, folder)
     }
 
     fn lrcat(&self) -> PathBuf {
@@ -498,8 +808,8 @@ fn trip_of(folder: &Path) -> Result<Option<(String, String)>, String> {
 pub struct LightroomLaunch {
     catalog: PathBuf,
     name: String,
-    /// Lightroom already has it open, so the plug-in won't run by itself: use
-    /// Library > Plug-in Extras > Add new files from NAS.
+    /// Lightroom already has it open, so the plug-in's start-up won't run again:
+    /// it is asked through its URL to add what's new.
     already_open: bool,
 }
 
@@ -553,11 +863,19 @@ fn write_handoff(catalog: &Catalog, folders: &[PathBuf]) -> Result<(), String> {
             listed.push(folder);
         }
     }
+    replace_handoff(
+        catalog,
+        &listed.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+    )
+}
+
+fn replace_handoff(catalog: &Catalog, folders: &[PathBuf]) -> Result<(), String> {
+    let path = catalog.handoff();
     let mut text = String::from(
         "# Card Intake: when this catalog opens, Lightroom adds new raw photos and DxO DNGs from these shoot folders.\n",
     );
-    for folder in &listed {
-        text.push_str(folder);
+    for folder in folders {
+        text.push_str(&folder.to_string_lossy());
         text.push('\n');
     }
     if fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
@@ -613,6 +931,10 @@ fn prepare_trip(
     let note = format!("{year}/{TRIPS}/{}", trip.name);
     for folder in folders {
         let shoot = name_of(Some(folder))?;
+        let assigned = Catalog::for_shoot(root, folder)?;
+        if assigned.trip && assigned.lrcat() != trip.lrcat() {
+            return Err(format!("{shoot} is already in the trip {}.", assigned.name));
+        }
         match trip_of(folder)? {
             Some((y, n)) if y == year && n == trip.name => {}
             Some((_, other)) => {
@@ -630,6 +952,13 @@ fn prepare_trip(
     }
     let launch = prepare(settings, &trip, folders)?;
     for folder in folders {
+        let own = Catalog::shoot(root, folder)?;
+        fs::create_dir_all(&own.dir).map_err(|e| e.to_string())?;
+        atomic_write(&own.dir.join(".card-intake-trip.txt"), note.as_bytes())?;
+        // A listed folder is created on the NAS only when a photo lands there.
+        if !folder.is_dir() {
+            continue;
+        }
         let dir = folder.join("_catalog");
         if fs::read_to_string(dir.join(TRIP_NOTE)).ok().as_deref() != Some(note.as_str()) {
             fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -648,6 +977,21 @@ pub struct Finished {
 
 /// Copies a closed catalog to the NAS, checks the copy, and removes the local one.
 fn finish(catalog: &Catalog) -> Result<Finished, String> {
+    let marker = uploading_path(&catalog.lrcat());
+    let heartbeat = fs::read_to_string(&marker)
+        .ok()
+        .and_then(|s| s.lines().next()?.parse::<u64>().ok());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    if heartbeat.is_some_and(|t| now.saturating_sub(t) <= 45) {
+        return Err("Wait for this catalog's NAS upload to finish before Finish.".into());
+    }
+    // A crashed app's expired marker is neither live state nor a catalog asset.
+    if marker.exists() {
+        fs::remove_file(marker).map_err(|e| e.to_string())?;
+    }
     if !catalog.lrcat().is_file() {
         return Err(format!("{} isn't on this computer.", catalog.name));
     }
@@ -711,6 +1055,24 @@ fn launch_lightroom(exe: &Path, lrcat: &Path) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Couldn't open Lightroom: {e}"))?;
     Ok(())
+}
+
+/// A catalog that's already open doesn't start up again, so the plug-in is asked
+/// through its URL instead. Best effort: Library > Plug-in Extras does the same.
+fn ask_plugin_to_add() {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = card_intake_core::process::command(Path::new("rundll32.exe"));
+        command.arg("url.dll,FileProtocolHandler").arg(PLUGIN_URL);
+        command
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(PLUGIN_URL);
+        command
+    };
+    let _ = command.spawn();
 }
 
 /// Where an import's shoot folder is on the NAS now.
@@ -809,6 +1171,14 @@ pub(super) fn locate(nas_root: &Path, relative: &Path) -> Located {
 
 /// Each shoot folder of a completed import, in history order.
 fn record_folders(state: &AppState, import_id: NaiveDateTime) -> Result<Vec<Located>, String> {
+    if let Some(record) = state.imports.ready_import(import_id) {
+        let nas = record.upload_to.ok_or("Missing NAS destination")?;
+        return Ok(record
+            .shoots
+            .iter()
+            .map(|s| Located::Found(nas.join(s)))
+            .collect());
+    }
     let record = state
         .ledger
         .lock()
@@ -853,6 +1223,72 @@ fn import_folders(state: &AppState, import_id: NaiveDateTime) -> Result<Vec<Path
         .collect()
 }
 
+fn import_record(
+    state: &AppState,
+    id: NaiveDateTime,
+) -> Result<card_intake_core::import::ImportResult, String> {
+    if let Some(record) = state.imports.ready_import(id) {
+        return Ok(record);
+    }
+    state
+        .ledger
+        .lock()
+        .map_err(|e| e.to_string())?
+        .imports
+        .iter()
+        .find(|r| r.started_at == id)
+        .cloned()
+        .ok_or("Import no longer in history".into())
+}
+
+fn remember_catalog(
+    state: &AppState,
+    record: &mut card_intake_core::import::ImportResult,
+    path: &Path,
+) -> Result<(), String> {
+    let mut next = record.clone();
+    if !next.lightroom_catalogs.iter().any(|p| p == path) {
+        next.lightroom_catalogs.push(path.to_path_buf());
+    }
+    let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+    let mut updated = ledger.clone();
+    updated.record_import(next.clone());
+    state.save_ledger(&updated)?;
+    *ledger = updated;
+    *record = next;
+    Ok(())
+}
+
+/// A recovered import can finish with Send after its original process died.
+/// Reconcile the saved early catalog too, preserving a trip's unrelated shoots.
+pub(super) fn refresh_saved_handoffs(
+    record: &mut card_intake_core::import::ImportResult,
+    original_shoots: &[PathBuf],
+) {
+    let original_nas = record.upload_to.as_ref().unwrap_or(&record.nas_root);
+    let mut uploads = UploadCatalogs::default();
+    for path in &record.lightroom_catalogs {
+        let name = path.file_stem().unwrap_or_default().to_string_lossy();
+        let trip = path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == TRIPS);
+        let day: String = name.chars().take(10).collect();
+        let anticipated = original_shoots
+            .iter()
+            .filter(|s| {
+                trip || s
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(&day))
+            })
+            .map(|s| original_nas.join(s))
+            .collect();
+        uploads.entries.push((path.clone(), anticipated));
+    }
+    uploads.finish(record);
+}
+
 fn catalog_root(settings: &LightroomSettings) -> Result<PathBuf, String> {
     let root = settings
         .catalog_root
@@ -873,14 +1309,18 @@ pub async fn open_in_lightroom(
 ) -> Result<LightroomLaunch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        if state.imports.is_active() {
-            return Err("Wait for the import to finish before opening Lightroom.".into());
+        let during_upload = state.imports.ready_import(import_id).is_some();
+        if state.imports.is_active() && !during_upload && !state.imports.card_is_done() {
+            return Err(
+                "Wait for the card to be read and checked before opening Lightroom.".into(),
+            );
         }
         // A trip needs every shoot of the import; one shoot needs only its own folder.
         let folders = match trip {
             Some(_) => import_folders(&state, import_id)?,
             None => vec![import_folder(&state, import_id, shoot.unwrap_or(0))?],
         };
+        let record = import_record(&state, import_id)?;
         let setup = setup(&state)?;
         let settings = setup.settings;
         let exe = settings
@@ -892,11 +1332,52 @@ pub async fn open_in_lightroom(
         let launch = match trip {
             Some(name) => prepare_trip(&settings, &root, &folders, &name)?,
             None => {
-                let catalog = Catalog::for_shoot(&root, &folders[0])?;
+                let catalog = Catalog::for_record(&root, &folders[0], &record)?;
                 prepare(&settings, &catalog, &folders)?
             }
         };
+        // Registration and completion share the ready lock: completion cannot
+        // remove the marker just before this command writes it again.
+        let registered = {
+            let mut ready = state.imports.ready.lock().map_err(|e| e.to_string())?;
+            if let Some(record) = ready.as_mut().filter(|r| r.started_at == import_id) {
+                state
+                    .imports
+                    .catalogs
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .register(launch.catalog.clone(), folders.clone())?;
+                remember_catalog(&state, record, &launch.catalog)?;
+                true
+            } else {
+                false
+            }
+        };
+        if during_upload && !registered {
+            // Template preparation can outlast the upload. Its final history is
+            // durable before ready is cleared, so correct the list before launch.
+            let mut final_result = state
+                .ledger
+                .lock()
+                .map_err(|e| e.to_string())?
+                .imports
+                .iter()
+                .find(|r| r.started_at == import_id)
+                .cloned()
+                .ok_or("Import no longer in history")?;
+            let warnings = final_result.warnings.len();
+            let mut handoff = UploadCatalogs::default();
+            handoff.entries.push((launch.catalog.clone(), folders));
+            handoff.finish(&mut final_result);
+            if final_result.warnings.len() > warnings {
+                return Err(final_result.warnings[warnings..].join(" "));
+            }
+            remember_catalog(&state, &mut final_result, &launch.catalog)?;
+        }
         launch_lightroom(&exe, &launch.catalog)?;
+        if launch.already_open {
+            ask_plugin_to_add();
+        }
         Ok(launch)
     })
     .await
@@ -911,9 +1392,16 @@ pub async fn finish_catalog(
 ) -> Result<Finished, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        if state.imports.is_active() {
+            return Err("Wait for the NAS upload to finish before Finish.".into());
+        }
         let folder = import_folder(&state, import_id, shoot)?;
         let root = catalog_root(&resolved(&state)?)?;
-        finish(&Catalog::for_shoot(&root, &folder)?)
+        finish(&Catalog::for_record(
+            &root,
+            &folder,
+            &import_record(&state, import_id)?,
+        )?)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -927,6 +1415,8 @@ pub struct CatalogState {
     shoots: Vec<usize>,
     name: String,
     trip: bool,
+    /// The working catalog, including an early catalog's original local name.
+    catalog: Option<PathBuf>,
     /// "open" in Lightroom, "local", "nas" (finished), "none" (not created yet) or
     /// "missing" (the shoot folder is gone from the NAS).
     state: &'static str,
@@ -944,12 +1434,47 @@ pub(super) struct DeliveryTarget {
 /// is authoritative, including shoots imported on other cards or computers.
 pub(super) fn delivery_target(root: &Path, folder: &Path) -> Result<DeliveryTarget, String> {
     let c = Catalog::for_shoot(root, folder)?;
+    delivery_from_catalog(c, folder, false)
+}
+
+pub(super) fn delivery_target_for_import(
+    state: &AppState,
+    import_id: NaiveDateTime,
+    folder: &Path,
+) -> Result<DeliveryTarget, String> {
+    let record = import_record(state, import_id)?;
+    let c = Catalog::for_record(&delivery_root(state)?, folder, &record)?;
+    let day = folder
+        .file_name()
+        .ok_or("Missing shoot folder")?
+        .to_string_lossy()
+        .chars()
+        .take(10)
+        .collect::<String>();
+    let grouped = record.lightroom_catalogs.contains(&c.lrcat())
+        && record
+            .shoots
+            .iter()
+            .filter(|s| {
+                s.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(&day))
+            })
+            .count()
+            > 1;
+    delivery_from_catalog(c, folder, grouped)
+}
+
+fn delivery_from_catalog(
+    c: Catalog,
+    folder: &Path,
+    grouped: bool,
+) -> Result<DeliveryTarget, String> {
     let catalog = if c.lrcat().is_file() {
         Some(c.lrcat())
     } else {
         c.nas_lrcat().is_file().then(|| c.nas_lrcat())
     };
-    let folders = if c.trip {
+    let folders = if c.trip || grouped {
         let local = c.handoff();
         let list = if local.is_file() {
             local
@@ -1028,13 +1553,14 @@ pub async fn lightroom_catalogs(app: AppHandle) -> Result<Vec<CatalogState>, Str
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_default(),
                             trip: false,
+                            catalog: None,
                             state: "missing",
                             note: Some(note),
                         });
                         continue;
                     }
                 };
-                let Ok(catalog) = Catalog::for_shoot(&root, &folder) else {
+                let Ok(catalog) = Catalog::for_record(&root, &folder, record) else {
                     continue;
                 };
                 match mine.iter_mut().find(|c| {
@@ -1045,6 +1571,7 @@ pub async fn lightroom_catalogs(app: AppHandle) -> Result<Vec<CatalogState>, Str
                         import_id: record.started_at,
                         shoots: vec![i],
                         state: catalog.state(),
+                        catalog: Some(catalog.lrcat()),
                         name: catalog.name,
                         trip: catalog.trip,
                         note: None,
@@ -1062,6 +1589,183 @@ pub async fn lightroom_catalogs(app: AppHandle) -> Result<Vec<CatalogState>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_heartbeat_precedes_lightroom_refreshes_and_is_removed_for_every_outcome() {
+        for status in [
+            ImportStatus::Complete,
+            ImportStatus::Cancelled,
+            ImportStatus::Failed,
+        ] {
+            let f = fixture();
+            let anticipated = f.share.join("2026/2026-11-10_Test");
+            let catalog = Catalog::shoot(&f.root, &anticipated).unwrap();
+            let launch =
+                prepare(&f.settings, &catalog, std::slice::from_ref(&anticipated)).unwrap();
+            assert!(
+                !anticipated.exists(),
+                "preparing a catalog must not create a shoot on the NAS"
+            );
+            let mut uploads = UploadCatalogs::default();
+            uploads
+                .register(launch.catalog.clone(), vec![anticipated.clone()])
+                .unwrap();
+            let marker = uploading_path(&launch.catalog);
+            let heartbeat: u64 = fs::read_to_string(&marker)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .saturating_sub(heartbeat)
+                    <= 1
+            );
+            assert!(finish(&catalog).unwrap_err().contains("upload"));
+            fs::write(&marker, b"1\n").unwrap();
+            uploads.refreshed = Some(Instant::now() - Duration::from_secs(6));
+            uploads.refresh();
+            assert_ne!(fs::read_to_string(&marker).unwrap(), "1\n");
+            let final_folder = f.shoot("2026-11-10_Earlier");
+            let mut result = crate::imports::tests::recovery_result(f._dir.path());
+            result.upload_to = Some(f.share.clone());
+            result.shoots = vec![
+                PathBuf::from("2026/2026-11-10_Earlier"),
+                PathBuf::from("2026/2026-11-11_Unrelated"),
+            ];
+            result.status = status;
+            uploads.finish(&mut result);
+            assert!(!marker.exists());
+            assert_eq!(
+                listed(&catalog)
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>(),
+                vec![final_folder]
+            );
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            finish(&catalog).unwrap();
+            assert!(!catalog.nas_dir.join(marker.file_name().unwrap()).exists());
+            assert!(catalog.kept().iter().all(|n| !n.ends_with(".uploading")));
+        }
+    }
+
+    #[test]
+    fn dropping_upload_state_removes_its_heartbeat_on_exit() {
+        let f = fixture();
+        let folder = f.shoot("2026-11-10_Test");
+        let catalog = Catalog::shoot(&f.root, &folder).unwrap();
+        prepare(&f.settings, &catalog, std::slice::from_ref(&folder)).unwrap();
+        let mut uploads = UploadCatalogs::default();
+        uploads.register(catalog.lrcat(), vec![folder]).unwrap();
+        assert!(uploading_path(&catalog.lrcat()).exists());
+        drop(uploads);
+        assert!(!uploading_path(&catalog.lrcat()).exists());
+    }
+
+    #[test]
+    fn an_upload_trip_lists_future_nas_folders_without_creating_them() {
+        let f = fixture();
+        let folders = vec![
+            f.share.join("2026/2026-11-10_First"),
+            f.share.join("2026/2026-11-11_Second"),
+        ];
+        let launch = prepare_trip(&f.settings, &f.root, &folders, "Trip").unwrap();
+        assert!(folders.iter().all(|p| !p.exists()));
+        for folder in &folders {
+            assert_eq!(
+                Catalog::for_shoot(&f.root, folder).unwrap().lrcat(),
+                launch.catalog
+            );
+        }
+        assert!(prepare_trip(&f.settings, &f.root, &folders, "Another trip").is_err());
+    }
+
+    #[test]
+    fn an_early_catalog_keeps_its_edits_open_finish_reopen_and_deliver_when_every_photo_is_elsewhere()
+     {
+        let f = fixture();
+        let state = crate::tests::local_state(f._dir.path());
+        state.settings.lock().unwrap().lightroom = f.settings.clone();
+        let planned = f.share.join("2026/2026-11-10_Test");
+        let early = Catalog::shoot(&f.root, &planned).unwrap();
+        prepare(&f.settings, &early, std::slice::from_ref(&planned)).unwrap();
+        fs::write(
+            early.lrcat(),
+            b"SQLite format 3\0edits made while uploading",
+        )
+        .unwrap();
+        let actual = f.shoot("2026-11-10_Earlier");
+        let mut result = crate::imports::tests::recovery_result(f._dir.path());
+        result.offline = false;
+        result.uploading = false;
+        result.nas_root = f.share.clone();
+        result.shoots = vec![PathBuf::from("2026/2026-11-10_Earlier")];
+        let mut uploads = UploadCatalogs::default();
+        uploads.register(early.lrcat(), vec![planned]).unwrap();
+        uploads.finish(&mut result);
+        remember_catalog(&state, &mut result, &early.lrcat()).unwrap();
+        let loaded = card_intake_core::ledger::Ledger::load(&state.ledger_path)
+            .unwrap()
+            .imports
+            .remove(0);
+        assert_eq!(loaded.lightroom_catalogs, vec![early.lrcat()]);
+        let resolved = Catalog::for_record(&f.root, &actual, &loaded).unwrap();
+        assert_eq!(resolved.lrcat(), early.lrcat());
+        assert_eq!(resolved.nas_dir, actual.join("_catalog"));
+        assert_eq!(
+            delivery_target_for_import(&state, result.started_at, &actual)
+                .unwrap()
+                .catalog,
+            Some(early.lrcat())
+        );
+        finish(&resolved).unwrap();
+        assert_eq!(resolved.state(), "nas");
+        assert_eq!(
+            fs::read(resolved.nas_lrcat()).unwrap(),
+            b"SQLite format 3\0edits made while uploading"
+        );
+        // Another computer can identify the archived catalog's original name.
+        assert_eq!(
+            Catalog::for_shoot(&f.root, &actual).unwrap().nas_lrcat(),
+            resolved.nas_lrcat()
+        );
+        prepare(&f.settings, &resolved, std::slice::from_ref(&actual)).unwrap();
+        assert_eq!(
+            fs::read(resolved.lrcat()).unwrap(),
+            b"SQLite format 3\0edits made while uploading"
+        );
+    }
+
+    #[test]
+    fn sending_a_recovered_import_reconciles_its_saved_early_catalog_list() {
+        let f = fixture();
+        let planned = f.share.join("2026/2026-11-10_Test");
+        let catalog = Catalog::shoot(&f.root, &planned).unwrap();
+        prepare(&f.settings, &catalog, &[planned]).unwrap();
+        let actual = f.shoot("2026-11-10_Earlier");
+        let mut result = crate::imports::tests::recovery_result(f._dir.path());
+        result.offline = false;
+        result.upload_to = Some(f.share.clone());
+        result.nas_root = f.share.clone();
+        result.lightroom_catalogs = vec![catalog.lrcat()];
+        let original = result.shoots.clone();
+        result.shoots = vec![PathBuf::from("2026/2026-11-10_Earlier")];
+        refresh_saved_handoffs(&mut result, &original);
+        assert_eq!(
+            listed(&catalog)
+                .into_iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>(),
+            vec![actual]
+        );
+        assert!(!uploading_path(&catalog.lrcat()).exists());
+    }
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -1374,6 +2078,26 @@ mod tests {
         assert_eq!(plugin, adobe.join("Lightroom/Modules/CardIntake.lrplugin"));
         assert!(plugin.join("Info.lua").is_file() && plugin.join("Intake.lua").is_file());
         assert!(!old.exists());
+        // Every Lua file in the plug-in's folder is built in, or Lightroom would get a
+        // plug-in whose Info.lua names files that were never installed.
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lrplugin/CardIntake.lrplugin");
+        let mut lua: Vec<String> = fs::read_dir(source)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".lua"))
+            .collect();
+        lua.sort();
+        let mut built_in: Vec<String> = PLUGIN.iter().map(|(n, _)| n.to_string()).collect();
+        built_in.sort();
+        assert_eq!(built_in, lua);
+        let info = fs::read_to_string(plugin.join("Info.lua")).unwrap();
+        let id = PLUGIN_URL
+            .strip_prefix("lightroom://")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap();
+        assert!(info.contains(&format!("LrToolkitIdentifier = \"{id}\"")));
+        assert!(info.contains("URLHandler = \"UrlHandler.lua\""));
 
         let presets = dir.path().join("Profiles");
         fs::create_dir_all(presets.join("FroPack1")).unwrap();

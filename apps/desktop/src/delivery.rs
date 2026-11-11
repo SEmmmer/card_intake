@@ -141,7 +141,7 @@ fn job(state: &AppState, import_id: NaiveDateTime, shoot: usize) -> Result<Job, 
             "Set the finished photos folder (e.g. \\\\NAS\\Picture\\MyPhoto) under Deliver first.",
         )?;
     let folder = lightroom::import_folder(state, import_id, shoot)?;
-    let target = lightroom::delivery_target(&lightroom::delivery_root(state)?, &folder)?;
+    let target = lightroom::delivery_target_for_import(state, import_id, &folder)?;
     Ok(Job {
         shoots: target.folders,
         catalog: target.catalog,
@@ -287,7 +287,6 @@ pub async fn delivery_states(app: AppHandle) -> Result<Vec<HistoryState>, String
             .map_err(|e| e.to_string())?
             .imports
             .clone();
-        let root = lightroom::delivery_root(&state)?;
         let mut list = Vec::new();
         for record in records.iter().filter(|r| {
             r.status == card_intake_core::import::ImportStatus::Complete
@@ -310,7 +309,7 @@ pub async fn delivery_states(app: AppHandle) -> Result<Vec<HistoryState>, String
                         continue;
                     }
                 };
-                match lightroom::delivery_target(&root, &folder) {
+                match lightroom::delivery_target_for_import(&state, record.started_at, &folder) {
                     Ok(target) => {
                         for folder in target.folders {
                             match deliver::state(&folder) {

@@ -998,7 +998,27 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     }
 
     // The card is read; the NAS catches up.
-    if (behind) {
+    if (behind && !job.cancel) {
+      job.cardDone = true;
+      var doneRaws = files.filter(function (f) { return /\.ARW$/i.test(f.name); });
+      var newRaws = doneRaws.filter(function (f) { return !f.there; }).length;
+      job.ejected = !!request.eject;
+      var recovery = {
+        started_at: started, finished_at: now(), root: root, nas_root: offlineCopies.folder,
+        offline_root: offlineCopies.folder, offline: true, local_complete: true, uploading: true, upload_to: nas.root,
+        status: "complete", total_files: files.length, total_bytes: Math.round(total), copied_files: files.length - existing.length,
+        skipped_files: existing.length, verified_files: files.length, completed_bytes: Math.round(total),
+        photos: files.filter(function (f) { return f.kind === "photo"; }).length, videos: files.filter(function (f) { return f.kind === "video"; }).length,
+        shoots: shoots.map(function (s) { return s.relative; }), card_id: report.volume.id, card_key: report.card_key,
+        camera: request.camera, warnings: [], error: null, ejected: job.ejected,
+        ratings: ratings(newRaws, newRaws ? 1 : 0, Math.min(Math.max(0, newRaws - 1), Math.round(newRaws * 0.01)), doneRaws.length - newRaws),
+        timings: { card_seconds: total / speed, card_bytes: Math.round(total) }
+      };
+      ledger.imports.unshift(recovery);
+      pending = null;
+      if (job.ejected) roots = roots.filter(function (r) { return r !== root; });
+      p.card_done = copy(recovery); p.phase = "card_done"; p.nas = copy(behind);
+      channel.onmessage(copy(p)); delete p.card_done;
       NAS_SPEED = 1;
       for (var left = behind.total_bytes - behind.processed_bytes; left > 0 && !job.cancel; left = behind.total_bytes - behind.processed_bytes) {
         behind.processed_bytes = Math.min(behind.total_bytes, behind.processed_bytes + Math.max(behind.total_bytes / 25, 1));
@@ -1013,9 +1033,6 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var finished = files.filter(function (f) { return f.done; });
     var raws = finished.filter(function (f) { return /\.ARW$/i.test(f.name); });
     var rated = raws.filter(function (f) { return !f.there; }).length, kept = raws.length - rated;
-    if (!cancelled && raws.length) {
-      for (i = 0; i < 5; i++) { emit("rating", raws[Math.floor(i * raws.length / 5)]); await wait(110); }
-    }
 
     if (!cancelled && request.also_backup) {
       var drives = offlineCopies.drives.filter(function (d) { return d.root; });
@@ -1059,6 +1076,20 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       ratings: cancelled ? ratings(0, 0, 0) : ratings(rated, rated ? 1 : 0, Math.min(Math.max(0, rated - 1), Math.round(rated * 0.01)), kept),
       ejected: !cancelled && !!request.eject
     };
+    result.uploading = false;
+    result.lightroom_catalogs = job.catalogs || [];
+    if (viaLaptop) result.upload_to = nas.root;
+    result.timings = { card_seconds: total / speed, card_bytes: Math.round(total), upload_seconds: viaLaptop ? total / (speed * 0.6) : 0,
+      uploaded_bytes: viaLaptop ? Math.round(behind.processed_bytes) : 0, uploaded_files: viaLaptop ? behind.completed_files : 0,
+      writing_seconds: viaLaptop ? total / (speed * 0.8) : 0, flushing_seconds: viaLaptop ? files.length * 0.25 : 0,
+      reading_back_seconds: viaLaptop ? total / speed : 0, publishing_seconds: 0.1, nas_sidecar_seconds: raws.length * 0.04,
+      backlog_wait_seconds: viaLaptop ? 2 : 0, exiftool_seconds: raws.length * 0.015 };
+    if (job.cardDone && cancelled) {
+      result.offline = true; result.offline_root = offlineCopies.folder; result.nas_root = offlineCopies.folder; result.local_complete = true;
+      result.error = "Upload stopped. The photos are safe on this computer. Use Send to NAS in Recent imports to finish.";
+    }
+    result.ejected = job.ejected || result.ejected;
+    ledger.imports = ledger.imports.filter(function (r) { return r.started_at !== started; });
     ledger.imports.unshift(result);
     while (ledger.imports.length > 100) {
       var trim = -1;
@@ -1067,7 +1098,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       ledger.imports.splice(trim, 1);
     }
     cardRecord(root);
-    pending = cancelled ? { request: Object.assign({}, request, { nas_root: result.nas_root, backup_drives: request.also_backup ? offlineCopies.drives.filter(function (d) { return d.root; }) : [] }), eject: !!request.eject } : null;
+    pending = cancelled && !job.cardDone ? { request: Object.assign({}, request, { nas_root: result.nas_root, backup_drives: request.also_backup ? offlineCopies.drives.filter(function (d) { return d.root; }) : [] }), eject: !!request.eject } : null;
     if (result.ejected) roots = roots.filter(function (r) { return r !== root; });
     return copy(result);
   }
@@ -1181,6 +1212,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
   function openInLightroom(importId, shoot, trip) {
     var record = importById(importId);
+    if (running && !running.cardDone) return Promise.reject("Wait for the card to be read and checked.");
     if (!record) return Promise.reject("That import isn't in the history any more.");
     if (!lightroom.template) return Promise.reject("Choose an empty catalog as the template under Lightroom first.");
     var c;
@@ -1198,10 +1230,16 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     // Lightroom has one catalog open at a time: the one before is closed, and stays on this PC.
     catalogs.forEach(function (x) { if (x !== c && x.state === "open") x.state = "local"; });
     c.state = "open";
+    if (running && running.cardDone) {
+      running.catalogs = running.catalogs || [];
+      if (running.catalogs.indexOf(catalogPath(c)) < 0) running.catalogs.push(catalogPath(c));
+      record.lightroom_catalogs = running.catalogs.slice();
+    }
     return wait(800, { catalog: catalogPath(c), name: c.name, already_open: already });
   }
 
   function finishCatalog(importId, shoot) {
+    if (running) return Promise.reject("Wait for the NAS upload to finish before Finish.");
     var record = importById(importId), c = record && catalogOf(record.shoots[shoot]);
     if (!c) return Promise.reject("This shoot has no catalog yet.");
     if (c.state === "open") return Promise.reject("Close " + c.name + " in Lightroom first: open another catalog, or quit Lightroom.");
@@ -1237,9 +1275,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     args = args || {};
     switch (command) {
       case "list_cards":
-        return Promise.resolve(roots.map(function (r) { return { root: r, has_sony_video: r === CF }; }));
+        return Promise.resolve(roots.map(function (r) { return { root: r, id: reports[r].volume.id, has_sony_video: r === CF }; }));
       case "eject_card":
-        if (running) return Promise.reject("Wait for the import to finish, or stop it, before ejecting the card.");
+        if (running && !running.cardDone) return Promise.reject("Wait for the card to be read and checked before ejecting it.");
         return wait(700).then(function () { roots = roots.filter(function (r) { return r !== args.root; }); });
       case "read_card":
         if (roots.indexOf(args.root) < 0) return Promise.reject("The card isn't in the reader any more.");
@@ -1728,7 +1766,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   }
   function offlineCatalogCell(r, i) {
     var enabled = nasReady() && !state.copyJob && !state.delivering && !(state.run && state.run.active) && (r.local_complete || r.status === "complete");
-    return '<span class="cat-cell"><span class="chip">On this computer</span><button type="button" class="btn-quiet go" data-send="' + i + '"' + (enabled ? "" : " disabled") + '>Send to NAS</button></span>';
+    var uploading = r.uploading && state.run && state.run.active && state.run.cardDone && state.run.cardDone.started_at === r.started_at;
+    return '<span class="cat-cell"><span class="chip">On this computer</span>' + (uploading ? '<span class="chip live">Uploading to NAS</span>' : '') + '<button type="button" class="btn-quiet go" data-send="' + i + '"' + (enabled ? "" : " disabled") + '>Send to NAS</button></span>';
   }
   function laptopControls(r, i) {
     return r.laptop_deleted ? '<span class="chip muted">Laptop copy deleted</span>' : '<button type="button" class="btn-quiet" data-delete-laptop="' + i + '"' + (state.copyJob || state.delivering || (state.run && state.run.active) ? ' disabled' : '') + '>Delete laptop copy</button>';
@@ -1804,7 +1843,15 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       var changed = roots.join("|") !== state.roots.join("|");
       state.roots = roots;
       // Keep the result visible when a card is removed or automatically ejected.
-      if (state.run) return;
+      if (state.run) {
+        if (!state.run.active) {
+          var next = roots.filter(function (root) { return root !== state.current && state.run.initialRoots && state.run.initialRoots.indexOf(root) < 0; })[0];
+          var replacement = cards.filter(function (c) { return c.root === state.current && c.id && state.run.request.expected_card_id && c.id !== state.run.request.expected_card_id; })[0];
+          if (replacement) next = replacement.root;
+          if (next) selectCard(next);
+        }
+        return;
+      }
       if (state.current && roots.indexOf(state.current) < 0) {
         state.current = null; state.report = null; state.error = null; state.run = null;
         renderDesk();
@@ -2156,7 +2203,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (!b) return;
     var r = state.run && state.run.result;
     var ejected = !!(state.eject && state.eject.done) || !!(r && r.ejected);
-    b.disabled = ejected || !!state.eject || !!state.copyJob || state.loading || state.shutterBusy || state.healthBusy || !!(state.run && state.run.active);
+    var cardDone = !!(state.run && state.run.cardDone);
+    b.disabled = ejected || !!state.eject || !!state.copyJob || state.loading || ((state.shutterBusy || state.healthBusy) && !cardDone) || !!(state.run && state.run.active && !cardDone);
     b.textContent = ejected ? "Ejected" : state.eject ? "Ejecting…" : "Eject";
   }
 
@@ -2169,6 +2217,12 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       state.roots = state.roots.filter(function (r) { return r !== root; });
       toast("Ejected " + driveLabel(root) + ". You can take the card out.");
       if (state.current !== root || state.eject !== eject) return;
+      if (state.run && state.run.active && state.run.cardDone) {
+        eject.done = true;
+        state.run.cardDone.ejected = true;
+        renderArm(); renderEject();
+        return;
+      }
       var r = state.run && state.run.result;
       if (r && r.status === "complete") {
         // The import stays on screen, as after "Eject the card when done".
@@ -2653,6 +2707,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   }
 
   function stoppedText(result) {
+    if (result && result.error && result.error.indexOf("no longer matches the card's checksum") >= 0) return "The upload stopped because a laptop file changed after the card was checked. Check the reported file before using Send to NAS.";
+    if (result && result.local_complete && result.upload_to) return (result.status === "failed" ? "The NAS upload stopped by an error." : "The NAS upload stopped.") + " The photos are safe on this computer. Use Send to NAS in Recent imports to finish.";
     var done = result ? result.copied_files + result.skipped_files : null;
     var head = result && result.status === "failed" ? "Stopped by an error" : "Stopped";
     return (result && result.total_files ? head + " after " + fmt(done) + " of " + fmt(result.total_files) + " files." : head + ".") +
@@ -2702,7 +2758,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       return;
     }
     // Stopped or failed: say how far it got, and offer to resume the same selection.
-    actions.hidden = false;
+    actions.hidden = !!(run.cardDone || (r && r.local_complete && r.upload_to));
     progress.hidden = false;
     progress.innerHTML = '<p class="stopped">' + esc(stoppedText(r)) + '</p>' +
       (r && r.error && r.status === "failed" ? '<p class="health-note warn">' + esc(r.error) + '</p>' : "") +
@@ -2722,13 +2778,25 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var request = state.run && state.run.request ? state.run.request : importRequest();
     request.resume = !!state.resumable || !!(state.run && !state.run.active && state.pending && state.pending.request.expected_card_id === request.expected_card_id);
     var savedDestination = state.resumable ? state.resumable.request.nas_root : destinationRoot();
-    var run = state.run = { active: true, destination: savedDestination, request: request, progress: null, result: null, error: null, stopping: false, phase: null, arm: null };
+    var run = state.run = { initialRoots: state.roots.slice(), active: true, destination: savedDestination, request: request, progress: null, result: null, error: null, stopping: false, phase: null, arm: null };
     state.resumable = null;
     state.tripName = null;
     var channel = new tauri.core.Channel();
     channel.onmessage = function (progress) {
       if (state.run !== run || !run.active) return;
       run.progress = progress;
+      if (progress.card_done && !run.cardDone) {
+        run.cardDone = progress.card_done;
+        run.lightroomResult = Object.assign({}, progress.card_done, { offline: false, nas_root: progress.card_done.upload_to });
+        state.pending = null; state.resumable = null;
+        if (run.cardDone.ejected) state.eject = { root: request.root, done: true };
+        if (run.arm) {
+          var armed = run.arm; run.arm = null;
+          openLightroom(run.lightroomResult, armed.trip ? null : 0, armed.trip, null);
+        }
+        renderArm(); renderEject();
+        refreshLedger().catch(function (e) { console.error(e); });
+      }
       updateProgress();
     };
     renderDesk();
@@ -2751,6 +2819,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         refreshLedger().then(refreshCatalogs).catch(function (e) { toast("Couldn't refresh import history: " + e); });
         refreshNas().catch(function (e) { console.error(e); });
         invoke("get_pending_import").then(function (p) { state.pending = p; }).catch(function () {});
+        poll();
       });
   }
 
@@ -2761,7 +2830,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     rating: "Writing initial raw ratings",
     checking_existing: "Comparing with existing copies",
     backup: "Copying to backup drive",
-    sending: "Card read · the NAS is catching up"
+    card_done: "Card read and checked on this computer · the NAS is catching up",
+    sending: "Card read and checked on this computer · the NAS is catching up"
   };
 
   function updateProgress() {
@@ -2769,16 +2839,18 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (!run || !run.active || !$("#phase")) return;
     // "file_complete" marks a finished file; keep showing what the import is doing.
     if (p && PHASES[p.phase]) run.phase = p.phase;
-    var phaseText = PHASES[run.phase || "preparing"];
+    var phaseText = PHASES[run.cardDone ? "card_done" : run.phase || "preparing"];
+    var uploadDone = !!(run.cardDone && p && p.nas && p.nas.total_files && p.nas.completed_files === p.nas.total_files);
+    if (uploadDone) phaseText = "NAS files checked · finishing import";
     // Offline, or to the NAS through this computer (progress then has a NAS part).
     var viaLaptop = run.request.offline || !!(p && p.nas);
     if (viaLaptop && run.phase === "copying") phaseText = run.request.offline ? "Copying to this computer" : "Reading the card into this computer";
     if (viaLaptop && run.phase === "verifying") phaseText = "Checking files on this computer";
     $("#phase").textContent = phaseText + (run.phase === "backup" && p && p.current_file ? " · " + p.current_file : "");
-    $("#stop").disabled = run.stopping;
-    $("#stop").textContent = run.stopping ? "Stopping…" : "Stop";
+    $("#stop").disabled = run.stopping || uploadDone;
+    $("#stop").textContent = uploadDone ? "Finishing…" : run.stopping ? "Stopping…" : run.cardDone ? "Stop upload" : "Stop";
     $("#stopped").hidden = !run.stopping;
-    $("#stopped").textContent = run.stopping ? "Stopping after the files being copied now…" : "";
+    $("#stopped").textContent = run.stopping ? (run.cardDone ? "Stopping the upload. The photos are safe on this computer; Send to NAS finishes the job." : "Stopping after the files being copied now…") : "";
     if (!p) return;
     var frac = p.total_bytes ? p.processed_bytes / p.total_bytes : (p.total_files ? p.completed_files / p.total_files : 0);
     var percent = Math.min(100, Math.floor(frac * 100));
@@ -2790,8 +2862,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       if (p.current_file) line.push(baseName(p.current_file));
       line.push(fmt(p.completed_files) + " of " + fmt(p.total_files) + " files");
       // Once the card is read, only the NAS has a speed and time left.
-      if (p.bytes_per_sec != null && run.phase !== "sending") line.push(fmt(p.bytes_per_sec / 1e6) + " MB/s");
-      if (p.eta_secs != null && run.phase !== "sending") line.push("about " + dur(p.eta_secs) + " left");
+      if (p.bytes_per_sec != null && !run.cardDone && run.phase !== "sending") line.push(fmt(p.bytes_per_sec / 1e6) + " MB/s");
+      if (p.eta_secs != null && !run.cardDone && run.phase !== "sending") line.push("about " + dur(p.eta_secs) + " left");
       if (p.skipped_files) line.push(fmt(p.skipped_files) + " already on " + (run.phase === "backup" ? "the drive" : viaLaptop ? "this computer" : "NAS"));
     }
     $("#pline").textContent = line.length ? line.join(" · ") : "Scanning selected shoots…";
@@ -2824,7 +2896,20 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   function renderArm() {
     var run = state.run, box = $("#lr-arm");
     if (!box || !run || !run.active || run.request.offline) return;
-    var shoots = run.request.shoots, when = run.request.verify ? "when the import is verified" : "when the import finishes";
+    if (run.cardDone) {
+      var r = run.lightroomResult;
+      box.innerHTML = '<div id="card-done"><p class="health-note">The card is read and checked on this computer. ' + (run.cardDone.ejected ? "The card has been ejected." : "You can eject and remove the card.") + ' The NAS is catching up. Lightroom fills in as photos arrive.</p>' +
+        '<ul class="done-list">' + r.shoots.map(function (s, i) { return '<li><code>' + esc(importedPath(r.nas_root, s)) + '</code><button type="button" class="btn-open" data-upload-open="' + i + '">Open in Lightroom</button></li>'; }).join("") + '</ul>' +
+        (r.shoots.length > 1 ? '<div class="done-all"><input type="text" class="trip-name" id="upload-trip-name" aria-label="Trip name" placeholder="Trip name"><button type="button" class="btn-quiet" id="upload-trip">Open as a trip</button></div>' : "") + '</div>';
+      box.querySelectorAll("[data-upload-open]").forEach(function (b) { b.addEventListener("click", function () { openLightroom(r, Number(b.dataset.uploadOpen), null, b); }); });
+      if ($("#upload-trip")) $("#upload-trip").addEventListener("click", function () {
+        var name = $("#upload-trip-name").value.trim();
+        if (!name) { toast("Name the trip first."); return; }
+        openLightroom(r, null, name, this);
+      });
+      return;
+    }
+    var shoots = run.request.shoots, when = run.request.verify ? "when the card is read and checked" : "when the import finishes";
     if (run.arm) {
       box.innerHTML = '<span>Lightroom opens ' + esc(run.arm.trip ? "the trip " + run.arm.trip : firstShoot(shoots)) + ' ' + when + '.</span>' +
         '<button type="button" class="btn-quiet" id="arm-off">Don’t open</button>';
@@ -2883,6 +2968,16 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     return titles[0] && titles.every(function (t) { return t === titles[0]; }) ? titles[0] : "";
   }
 
+  function timingLine(r) {
+    var t = r.timings;
+    if (!t || !t.card_seconds) return "";
+    var parts = ["Card " + fmt(t.card_bytes / t.card_seconds / 1e6) + " MB/s"];
+    if (t.upload_seconds && t.uploaded_bytes) parts.push("NAS " + fmt(t.uploaded_bytes / t.upload_seconds / 1e6) + " MB/s");
+    var work = (t.writing_seconds || 0) + (t.flushing_seconds || 0) + (t.reading_back_seconds || 0) + (t.publishing_seconds || 0) + (t.nas_sidecar_seconds || 0);
+    if (work && t.flushing_seconds) parts.push("waiting on NAS flush " + Math.round(t.flushing_seconds / work * 100) + "%");
+    return '<p class="health-note muted" id="import-timings">' + esc(parts.join(" · ")) + '</p>';
+  }
+
   function renderDone() {
     var r = state.run.result, d = $("#done");
     var what = [];
@@ -2891,7 +2986,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     what = what.length ? andList(what) : plural(r.total_files, "file", "files");
     var checked = r.verified_files === r.total_files;
     var body = checked
-      ? "All " + what + " are on " + (r.offline ? "this computer" : "the NAS") + " and match the card. You can format this card in the camera."
+      ? "All " + what + " are on " + (r.offline ? "this computer" : "the NAS") + " and match the card."
       : "All " + what + " are copied. They weren't checked against the card, so keep the card until you've checked them.";
     if (r.skipped_elsewhere) {
       body += " " + plural(r.skipped_elsewhere, "file was", "files were") + " already in " + andList(r.found_in.map(baseName)) + " and weren't copied again.";
@@ -2904,7 +2999,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       fmt(ratings.locked) + " locked in camera, " + fmt(ratings.camera) + " camera ratings, " + fmt(ratings.computed) + " computed." +
       (ratings.kept ? " Kept " + plural(ratings.kept, "existing rating", "existing ratings") + "." : "") : "";
     var items = r.shoots.map(function (s, i) {
-      var c = catalogFor(r, i), path = catalogPath(s);
+      var c = catalogFor(r, i), path = (c && c.catalog) || (r.lightroom_catalogs || []).filter(function (p) { return baseName(p).slice(0, 10) === baseName(s).slice(0, 10); })[0] || catalogPath(s);
       var cat = r.offline ? "" : c && c.trip ? "Trip catalog: " + c.name : path ? "Catalog: " + path : "";
       return '<li><div class="dl-main"><code id="done-path-' + i + '">' + esc(importedPath(r.nas_root, s)) + '</code>' +
         (cat ? '<span class="dl-cat">' + esc(cat) + '</span>' : "") + '</div>' +
@@ -2913,6 +3008,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     }).join("");
     d.innerHTML = '<div class="done-head">' + CHECK + '<div><h3>Import complete</h3><p>' + esc(body) + '</p></div></div>' +
       (ratingText ? '<p class="health-note">' + esc(ratingText) + '</p>' : "") +
+      timingLine(r) +
       backupSummary(r) +
       r.warnings.map(function (w) { return '<p class="health-note warn">' + esc(w) + '</p>'; }).join("") +
       '<ul class="done-list">' + items + '</ul>' +
@@ -2963,7 +3059,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   function catalogCell(r, i) {
     if (r.offline && !r.sent) return offlineCatalogCell(r, i);
     var cats = r.status === "complete" ? state.catalogs[r.started_at] || [] : [];
-    var laptop = r.offline && r.sent ? laptopControls(r, i) : "";
+    var laptop = r.sent ? laptopControls(r, i) : "";
     if (!cats.length) return laptop || '<span class="muted">—</span>';
     return '<div class="cat-list">' + cats.map(function (c) {
       var key = i + ":" + c.shoots[0];
@@ -3031,7 +3127,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       '<td class="cam-cell">' + esc(uniq(all.map(function (x) { return x.camera; })).join(", ") || "—") + '</td>' +
       '<td class="r">' + photos + '</td><td class="r">' + esc(gbOf(sum(function (x) { return x.total_bytes; }))) + '</td>' +
       '<td class="r">' + (speed ? fmt(speed / 1e6) + " MB/s" : "—") + '</td>' +
-      '<td>' + checkChip(problem || r) + '</td><td class="folder-cell">' + folder + '</td><td>' + catalogCell(r, i) + all.slice(1).filter(function (x) { return x.offline && x.sent; }).map(function (x) { return laptopControls(x, state.ledger.imports.indexOf(x)); }).join("") + '</td></tr>';
+      '<td>' + checkChip(problem || r) + '</td><td class="folder-cell">' + folder + '</td><td>' + catalogCell(r, i) + all.slice(1).filter(function (x) { return !!x.sent; }).map(function (x) { return laptopControls(x, state.ledger.imports.indexOf(x)); }).join("") + '</td></tr>';
   }
 
   function renderHistory() {
@@ -3263,11 +3359,12 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   // Opens a shoot's catalog (its trip's, if it's in one), or a new trip catalog for
   // all of the import's shoots. The plug-in adds new photos as the catalog opens.
   function openLightroom(record, shoot, trip, button) {
-    if (state.run && state.run.active) { toast("Wait for the import to finish."); return; }
+    if (state.run && state.run.active && (!state.run.cardDone || state.run.cardDone.started_at !== record.started_at)) { toast("Wait for the card to be read and checked."); return; }
     if (button) button.disabled = true;
     invoke("open_in_lightroom", { importId: record.started_at, shoot: shoot, trip: trip }).then(function (launch) {
       toast(launch.already_open
-        ? launch.name + " is already open in Lightroom. To add new files, choose Library → Plug-in Extras → Add new files from NAS."
+        ? launch.name + " is already open in Lightroom. Card Intake asked it to add the new photos."
+        : state.run && state.run.active && state.run.cardDone ? "Lightroom is opening " + launch.name + ". Photos appear as the NAS catches up."
         : "Opening " + launch.name + " in Lightroom Classic. The Card Intake plug-in adds new photos from the NAS as it opens.");
       refreshCatalogs();
     }).catch(function (e) {

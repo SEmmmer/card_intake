@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, RwLock, RwLockReadGuard,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -17,11 +17,56 @@ use tauri::{AppHandle, Manager, State, ipc::Channel};
 #[derive(Default)]
 pub struct ImportControl {
     active: Mutex<Option<Arc<AtomicBool>>>,
+    card_done: AtomicBool,
+    pub(super) ready: Mutex<Option<ImportResult>>,
+    pub(super) card_reads: RwLock<()>,
+    pub(super) catalogs: Mutex<super::lightroom::UploadCatalogs>,
 }
 
 impl ImportControl {
     pub fn is_active(&self) -> bool {
         self.active.lock().map(|a| a.is_some()).unwrap_or(true)
+    }
+
+    pub fn card_is_done(&self) -> bool {
+        self.card_done.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn reading_card(&self) -> Result<RwLockReadGuard<'_, ()>, String> {
+        let reading = self.card_reads.read().map_err(|e| e.to_string())?;
+        if self.is_active() && self.card_is_done() {
+            return Err(
+                "The card is done. Wait for the NAS upload before reading a card again.".into(),
+            );
+        }
+        Ok(reading)
+    }
+
+    pub(super) fn eject_when_ready(
+        &self,
+        eject: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let _readers = self.card_reads.write().map_err(|e| e.to_string())?;
+        let active = self.active.lock().map_err(|e| e.to_string())?;
+        if active.is_some() && !self.card_is_done() {
+            return Err("Wait for the card to be read and checked before ejecting it.".into());
+        }
+        eject()
+    }
+
+    pub(super) fn ready_import(&self, id: chrono::NaiveDateTime) -> Option<ImportResult> {
+        self.ready
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|r| r.started_at == id)
+            .cloned()
+    }
+
+    pub(super) fn cleanup_catalogs(&self) {
+        if let Ok(mut catalogs) = self.catalogs.lock() {
+            catalogs.clear();
+        }
     }
 
     pub fn cancel(&self) -> Result<(), String> {
@@ -37,6 +82,8 @@ impl ImportControl {
             return Err("A copy job is already running. Stop it or wait for it to finish.".into());
         }
         let cancel = Arc::new(AtomicBool::new(false));
+        self.card_done.store(false, Ordering::Relaxed);
+        *self.ready.lock().map_err(|e| e.to_string())? = None;
         *active = Some(cancel.clone());
         Ok(ActiveImport {
             control: self.clone(),
@@ -53,8 +100,83 @@ pub(super) struct ActiveImport {
 
 impl Drop for ActiveImport {
     fn drop(&mut self) {
+        if let Ok(mut ready) = self.control.ready.lock() {
+            *ready = None;
+        }
+        self.control.cleanup_catalogs();
         if let Ok(mut active) = self.control.active.lock() {
+            self.control.card_done.store(false, Ordering::Relaxed);
             *active = None;
+        }
+    }
+}
+
+struct HeartbeatWorker {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl HeartbeatWorker {
+    fn start(control: Arc<ImportControl>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !done.load(Ordering::Relaxed) {
+                if let Ok(mut catalogs) = control.catalogs.lock() {
+                    catalogs.refresh();
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+impl Drop for HeartbeatWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Durable recovery always precedes ejection and the card-done notification.
+fn save_recovery(
+    state: &AppState,
+    result: &mut ImportResult,
+    pending: &Path,
+) -> Result<(), String> {
+    super::offline::save_import_manifest(state, result)
+        .map_err(|e| format!("The laptop copy is complete, but its file list couldn't be saved: {e}. Keep the card and Resume to retry."))?;
+    let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
+    let mut updated = ledger.clone();
+    result.card_key = result
+        .card_id
+        .as_deref()
+        .and_then(|id| updated.card_key_for_volume(id));
+    updated.record_import(result.clone());
+    state.save_ledger(&updated)?;
+    *ledger = updated;
+    match std::fs::remove_file(pending) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "Couldn't remove the card's resume record: {e}. Keep the card and Resume to retry."
+        )),
+    }
+}
+
+fn eject_original(request: &ImportRequest, result: &mut ImportResult) {
+    if volume_info::volume_info(&request.root).id != result.card_id {
+        result
+            .warnings
+            .push("The card changed after copying; it was not ejected.".into());
+    } else {
+        match eject::eject_card(&request.root) {
+            Ok(()) => result.ejected = true,
+            Err(error) => result.warnings.push(error),
         }
     }
 }
@@ -245,7 +367,21 @@ async fn run_import(
         let mut last = Instant::now();
         let mut phase = "";
         let exiftool = app.state::<AppState>().exiftool.clone();
-        let mut result = import::import_card(&request, exiftool.as_deref(), &active.cancel, |progress| {
+        let heartbeat = HeartbeatWorker::start(active.control.clone());
+        let mut result = import::import_card_with_recovery(&request, exiftool.as_deref(), &active.cancel, |snapshot| {
+            // Insertion may still be reading shutter counts or health. Wait for
+            // those readers too, then prevent any new card reads during upload.
+            let waiting = Instant::now();
+            let _readers = active.control.card_reads.write().map_err(|e| e.to_string())?;
+            snapshot.timings.card_seconds += waiting.elapsed().as_secs_f64();
+            snapshot.average_bytes_per_sec = (snapshot.timings.card_seconds > 0.0).then(|| (snapshot.timings.card_bytes as f64 / snapshot.timings.card_seconds) as u64);
+            let state = app.state::<AppState>();
+            save_recovery(&state, snapshot, &state.pending_path)?;
+            if eject && !active.cancel.load(Ordering::Relaxed) { eject_original(&request, snapshot); }
+            *active.control.ready.lock().map_err(|e| e.to_string())? = Some(snapshot.clone());
+            active.control.card_done.store(true, Ordering::Relaxed);
+            Ok(())
+        }, |progress| {
             if progress.phase != phase || progress.phase == "file_complete" || last.elapsed() >= Duration::from_millis(100) {
                 phase = progress.phase;
                 last = Instant::now();
@@ -254,8 +390,15 @@ async fn run_import(
                 }
             }
         });
+        drop(heartbeat);
+        // Serialize with Lightroom registration: a catalog prepared at the same
+        // instant either gets the final list here or sees the completed history.
+        let mut ready = active.control.ready.lock().unwrap_or_else(|e| e.into_inner());
+        let was_ready = ready.is_some();
+        if ready.as_ref().is_some_and(|r| r.ejected) { result.ejected = true; }
+        if let Ok(mut catalogs) = active.control.catalogs.lock() { catalogs.finish(&mut result); }
         let state = app.state::<AppState>();
-        if result.offline && result.local_complete && let Err(error) = super::offline::save_import_manifest(&state, &result) {
+        if !was_ready && result.offline && result.local_complete && let Err(error) = super::offline::save_import_manifest(&state, &result) {
             result.status = ImportStatus::Failed;
             result.error = Some(format!("The laptop copy is complete, but its file list couldn't be saved: {error}. Resume to retry. The card was not ejected."));
         }
@@ -264,16 +407,8 @@ async fn run_import(
         }
         result.sent_manifest = None;
         result.local_files.clear();
-        if eject && result.status == ImportStatus::Complete && !active.cancel.load(Ordering::Relaxed) {
-            // Never eject a replacement card inserted just after the last copy.
-            if volume_info::volume_info(&request.root).id != result.card_id {
-                result.warnings.push("The card changed after copying; it was not ejected.".into());
-            } else {
-                match eject::eject_card(&request.root) {
-                    Ok(()) => result.ejected = true,
-                    Err(error) => result.warnings.push(error),
-                }
-            }
+        if !was_ready && eject && result.status == ImportStatus::Complete && !active.cancel.load(Ordering::Relaxed) {
+            eject_original(&request, &mut result);
         }
         if result.status == ImportStatus::Complete
             && let Err(e) = std::fs::remove_file(&state.pending_path)
@@ -290,6 +425,8 @@ async fn run_import(
             }
             Err(error) => result.warnings.push(format!("Import history could not be saved: {error}")),
         }
+        *ready = None;
+        drop(ready);
         drop(active);
         result
     }).await.map_err(|e| format!("The import worker stopped unexpectedly: {e}. Retry to check existing copies."))
@@ -301,8 +438,91 @@ pub fn cancel_import(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn recovery_result(root: &Path) -> ImportResult {
+        serde_json::from_value(serde_json::json!({
+            "started_at":"2026-11-10T12:00:00", "finished_at":"2026-11-10T12:00:01",
+            "root":root.join("card"), "nas_root":root.join("laptop"), "offline_root":root.join("laptop"),
+            "card_id":null, "status":"complete", "total_files":1, "total_bytes":8,
+            "copied_files":1,"skipped_files":0,"verified_files":1,"completed_bytes":8,
+            "shoots":["2026/2026-11-10_Test"],"error":null,"warnings":[],"ejected":false,
+            "offline":true,"local_complete":true,"uploading":true,"upload_to":root.join("photos")
+        })).unwrap()
+    }
+
+    #[test]
+    fn card_done_saves_recovery_before_removing_resume_and_keeps_one_history_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::tests::local_state(dir.path());
+        let mut result = recovery_result(dir.path());
+        let relative = result.shoots[0].join("one.ARW");
+        std::fs::create_dir_all(result.nas_root.join(&result.shoots[0])).unwrap();
+        std::fs::write(result.nas_root.join(&relative), b"original").unwrap();
+        result
+            .local_files
+            .push(card_intake_core::copies::file(&result.nas_root, relative).unwrap());
+        std::fs::write(&state.pending_path, b"saved resume").unwrap();
+        save_recovery(&state, &mut result, &state.pending_path).unwrap();
+        assert!(!state.pending_path.exists());
+        let saved = card_intake_core::ledger::Ledger::load(&state.ledger_path).unwrap();
+        assert_eq!(saved.imports.len(), 1);
+        assert!(
+            saved.imports[0].uploading
+                && saved.imports[0].local_complete
+                && saved.imports[0].offline
+        );
+        let manifest_path = std::fs::read_dir(dir.path().join("offline-manifests"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let manifest = card_intake_core::send::Manifest::load(&manifest_path).unwrap();
+        assert_eq!(manifest.files.len(), 1);
+        assert_eq!(manifest.offline_root, result.nas_root);
+        result.uploading = false;
+        result.offline = false;
+        let mut ledger = state.ledger.lock().unwrap();
+        ledger.record_import(result);
+        assert_eq!(ledger.imports.len(), 1);
+        assert!(!ledger.imports[0].uploading);
+    }
+
+    #[test]
+    fn a_recovery_save_failure_keeps_resume_and_never_unlocks_the_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::tests::local_state(dir.path());
+        std::fs::write(dir.path().join("offline-manifests"), b"blocked").unwrap();
+        std::fs::write(&state.pending_path, b"saved resume").unwrap();
+        let active = state.begin_copy().unwrap();
+        let mut result = recovery_result(dir.path());
+        assert!(save_recovery(&state, &mut result, &state.pending_path).is_err());
+        assert!(state.pending_path.exists());
+        assert!(!state.imports.card_is_done());
+        assert!(state.imports.ready_import(result.started_at).is_none());
+        drop(active);
+    }
+
+    #[test]
+    fn card_done_blocks_new_card_readers_and_unlocks_only_ejection_while_the_job_stays_active() {
+        let control = Arc::new(ImportControl::default());
+        let active = control.begin().unwrap();
+        assert!(control.reading_card().is_ok());
+        assert!(
+            control
+                .eject_when_ready(|| panic!("must not eject a busy card"))
+                .is_err()
+        );
+        *control.ready.lock().unwrap() = Some(recovery_result(Path::new("local-fixture")));
+        control.card_done.store(true, Ordering::Relaxed);
+        assert!(control.reading_card().is_err());
+        assert!(control.eject_when_ready(|| Ok(())).is_ok());
+        assert!(control.begin().is_err());
+        drop(active);
+        assert!(control.reading_card().is_ok());
+    }
 
     #[test]
     fn saved_job_survives_restart_with_names_destination_and_options() {

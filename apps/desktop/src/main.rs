@@ -1,6 +1,7 @@
 // Hide the console window in Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod camera_wifi;
 mod delivery;
 mod immich;
 mod imports;
@@ -51,6 +52,11 @@ struct AppState {
     /// Readings of cameras not in My Cameras, from cards and NAS photos read since the
     /// app started. Never saved: registering a camera stores its readings.
     new_cameras: Mutex<ShutterDb>,
+    /// Camera Wi-Fi passwords, encrypted with this computer's login.
+    wifi: Mutex<card_intake_core::camera_wifi::Store>,
+    /// Camera Wi-Fi read from cards of models not in My Cameras. Never saved unless a
+    /// camera of the model is registered.
+    held_wifi: Mutex<Vec<camera_wifi::Held>>,
     library: library::LibraryControl,
     delivering: Arc<std::sync::atomic::AtomicBool>,
     /// Serialises starting imports, delivery, backup and Send jobs.
@@ -116,7 +122,9 @@ impl AppState {
         not_mine::filter(&ignored, &mut raw);
         store.retain_current(&mut raw).map_err(read)?;
         readings.merge(&raw);
-        *new_cameras = readings.split_off_new(&store.my_cameras().map_err(read)?);
+        let mine = store.my_cameras().map_err(read)?;
+        *new_cameras = readings.split_off_new(&mine);
+        self.settle_wifi(&mine);
         let changed = store
             .add(&readings)
             .map_err(|e| format!("Couldn't save the shutter counts: {e}"))?;
@@ -132,6 +140,7 @@ impl AppState {
                 cameras: store.load().map_err(read)?.views(),
                 new_cameras: new_cameras.views(),
                 shared,
+                wifi: self.wifi_views(),
             },
             left_out,
         ))
@@ -155,6 +164,8 @@ struct CamerasResponse {
     /// kept only until the app closes.
     new_cameras: Vec<CameraView>,
     shared: SharedStatus,
+    /// Camera Wi-Fi SSIDs read from cards, by model. Passwords come only on Show.
+    wifi: Vec<card_intake_core::camera_wifi::WifiView>,
 }
 
 /// The shared shutter count database in the photo share.
@@ -194,6 +205,8 @@ struct CardReport {
     destinations: Vec<DateDestination>,
     offline_destinations: Vec<DateDestination>,
     camera: Option<CameraSummary>,
+    /// What the card's `INFO\WIFI_INF.TXT` gave, without the password.
+    wifi: Option<camera_wifi::CardWifi>,
     scan_ms: u128,
 }
 
@@ -232,11 +245,26 @@ struct NasStatus {
 }
 
 /// Camera cards that are mounted right now. The UI polls this to spot a new card.
+#[derive(Serialize)]
+struct InsertedCard {
+    #[serde(flatten)]
+    card: CardVolume,
+    id: Option<String>,
+}
+
 #[tauri::command]
-async fn list_cards() -> Result<Vec<CardVolume>, String> {
-    tauri::async_runtime::spawn_blocking(volumes::find_camera_cards)
-        .await
-        .map_err(|e| e.to_string())
+async fn list_cards() -> Result<Vec<InsertedCard>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        volumes::find_camera_cards()
+            .into_iter()
+            .map(|card| {
+                let id = volume_info::volume_info(&card.root).id;
+                InsertedCard { card, id }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Safely ejects the card on screen when you ask, as "Eject the card when done" does
@@ -248,18 +276,28 @@ async fn eject_card(
     expected_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    if state.imports.is_active() {
-        return Err("Wait for the import to finish, or stop it, before ejecting the card.".into());
+    if state.imports.is_active() && !state.imports.card_is_done() {
+        return Err("Wait for the card to be read and checked before ejecting it.".into());
     }
     let root = PathBuf::from(root);
+    let control = state.imports.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if expected_id.is_some() && volume_info::volume_info(&root).id != expected_id {
-            return Err(
+        control.eject_when_ready(|| {
+            if expected_id.is_some() && volume_info::volume_info(&root).id != expected_id {
+                return Err(
                 "A different card is in that drive now, so it wasn't ejected. Eject it in Explorer."
                     .to_string(),
             );
-        }
-        eject::eject_card(&root)
+            }
+            eject::eject_card(&root)?;
+            if let Ok(mut ready) = control.ready.lock()
+                && let Some(record) = ready.as_mut()
+                && record.root == root
+            {
+                record.ejected = true;
+            }
+            Ok(())
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -276,12 +314,16 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
     let offline = imports::pending_offline_folder(&state, &root)
         .map(Ok)
         .unwrap_or_else(|| state.offline_root())?;
-    let mut report = tauri::async_runtime::spawn_blocking(move || {
-        build_report(&root, exiftool.as_deref(), nas.as_deref(), Some(&offline))
+    let control = state.imports.clone();
+    let (mut report, wifi) = tauri::async_runtime::spawn_blocking(move || {
+        let _reading = control.reading_card()?;
+        let report = build_report(&root, exiftool.as_deref(), nas.as_deref(), Some(&offline))?;
+        Ok::<_, String>((report, card_intake_core::camera_wifi::read_card(&root)))
     })
     .await
     .map_err(|e| e.to_string())??;
 
+    let mut camera_not_mine = false;
     if let Some(camera) = &mut report.camera {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         if settings.not_mine().owns(
@@ -289,6 +331,7 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
             camera.serial.as_deref(),
             camera.internal_serial.as_deref(),
         ) {
+            camera_not_mine = true;
             camera.shutter_count = None;
             camera.electronic_count = None;
         }
@@ -328,6 +371,18 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
         );
     }
     state.save_ledger(&ledger)?;
+    drop(ledger);
+    // A borrowed card or camera's Wi-Fi is never read.
+    let card_not_mine = report.card_key.as_ref().is_some_and(|key| {
+        state
+            .settings
+            .lock()
+            .is_ok_and(|s| s.not_mine_cards.iter().any(|c| &c.key == key))
+    });
+    if !card_not_mine && !camera_not_mine {
+        let card_model = report.camera.as_ref().map(|c| c.model.as_str());
+        report.wifi = state.take_card_wifi(wifi, card_model, chrono::Utc::now());
+    }
     Ok(report)
 }
 
@@ -347,14 +402,16 @@ async fn read_card_health(
     state: State<'_, AppState>,
 ) -> Result<HealthResponse, String> {
     let smartctl = state.smartctl.clone();
+    let control = state.imports.clone();
     let (volume, outcome) = tauri::async_runtime::spawn_blocking(move || {
+        let _reading = control.reading_card()?;
         let root = Path::new(&root);
         let volume = volume_info::volume_info(root);
         let outcome = health::read_health(root, &volume, smartctl.as_deref());
-        (volume, outcome)
+        Ok::<_, String>((volume, outcome))
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())??;
 
     let mut card_key = None;
     if let HealthOutcome::Read { health } = &outcome {
@@ -405,7 +462,9 @@ async fn read_card_shutter(
     let Some(exiftool) = state.exiftool.clone() else {
         return Err(exiftool_note());
     };
+    let control = state.imports.clone();
     let samples = tauri::async_runtime::spawn_blocking(move || {
+        let _reading = control.reading_card()?;
         let files = scan::scan_card(Path::new(&root))
             .map_err(|e| format!("Couldn't read the card: {e}"))?;
         let photos = exiftool::one_per_shot(
@@ -474,6 +533,13 @@ async fn remove_camera(
             store
                 .remove(&model, serial.as_deref(), internal_serial.as_deref())
                 .map_err(|e| format!("Couldn't remove the camera: {e}"))?;
+            // Its Wi-Fi goes with the last camera of the model.
+            let mine = store
+                .my_cameras()
+                .map_err(|e| format!("Couldn't read My Cameras: {e}"))?;
+            if let Err(e) = state.drop_wifi_unless_mine(&model, &mine) {
+                eprintln!("{e}");
+            }
             let mut camera = shutter::MyCameras::default();
             camera.add(&model, serial.as_deref(), internal_serial.as_deref());
             state
@@ -719,6 +785,7 @@ fn build_report(
             .map(|p| destinations::find(p, &files))
             .unwrap_or_default(),
         camera: camera_summary(&files, exiftool),
+        wifi: None,
         scan_ms: started.elapsed().as_millis(),
     })
 }
@@ -970,6 +1037,20 @@ fn run_cli(args: &[String]) -> Option<i32> {
     Some(0)
 }
 
+/// This computer's camera Wi-Fi passwords. An unreadable file is left alone, and
+/// nothing is saved over it.
+fn open_wifi(local_data: &Path) -> card_intake_core::camera_wifi::Store {
+    let path = local_data.join("camera-wifi.json");
+    card_intake_core::camera_wifi::Store::open(&path).unwrap_or_else(|e| {
+        let reason = format!(
+            "Couldn't read the saved camera Wi-Fi ({}): {e}",
+            path.display()
+        );
+        eprintln!("{reason}");
+        card_intake_core::camera_wifi::Store::unavailable(&path, reason)
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // The copy of the app Windows started with admin rights to read a card.
@@ -1008,6 +1089,8 @@ fn main() {
                 pictures: app.path().picture_dir().ok(),
                 shutter: Mutex::new(shutter),
                 new_cameras: Mutex::new(ShutterDb::default()),
+                wifi: Mutex::new(open_wifi(&app.path().app_local_data_dir()?)),
+                held_wifi: Mutex::new(Vec::new()),
                 library: library::LibraryControl::default(),
                 delivering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 activity_gate: Mutex::new(()),
@@ -1016,6 +1099,7 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                camera_wifi::clear_clipboard_now();
                 let state = window.state::<AppState>();
                 state.library.cancel();
                 if state.imports.is_active() {
@@ -1023,6 +1107,8 @@ fn main() {
                     // The completed/stopped screen remains visible; a second close exits.
                     let _ = state.imports.cancel();
                     api.prevent_close();
+                } else {
+                    state.imports.cleanup_catalogs();
                 }
             }
         })
@@ -1070,10 +1156,19 @@ fn main() {
             delivery::deliver,
             save_folded,
             delivery::delivery_states,
-            imports::cancel_import
+            imports::cancel_import,
+            camera_wifi::camera_wifi,
+            camera_wifi::reveal_camera_wifi,
+            camera_wifi::copy_camera_wifi,
+            camera_wifi::forget_camera_wifi
         ])
-        .run(tauri::generate_context!())
-        .expect("Card Intake failed to start");
+        .build(tauri::generate_context!())
+        .expect("Card Intake failed to start")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<AppState>().imports.cleanup_catalogs();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1082,7 +1177,7 @@ mod tests {
 
     /// Commands use only this fixture's files, with an in-memory shutter store
     /// and an unreachable local NAS path. No app or configured share is opened.
-    fn local_state(dir: &Path) -> AppState {
+    pub(crate) fn local_state(dir: &Path) -> AppState {
         AppState {
             ledger: Mutex::new(Ledger::default()),
             ledger_path: dir.join("ledger.json"),
@@ -1099,6 +1194,8 @@ mod tests {
             pictures: Some(dir.join("Pictures")),
             shutter: Mutex::new(shutter::Store::in_memory()),
             new_cameras: Mutex::new(ShutterDb::default()),
+            wifi: Mutex::new(open_wifi(dir)),
+            held_wifi: Mutex::new(Vec::new()),
             library: library::LibraryControl::default(),
             delivering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             activity_gate: Mutex::new(()),

@@ -115,6 +115,35 @@ test('the demo stops an import, then resumes it and skips what was copied', asyn
   assert.deepEqual(errors, []);
 });
 
+test('the demo reports card done, opens armed Lightroom during upload and saves timings', async t => {
+  const { $, until, errors } = await demo(t);
+  await until(() => $('#start') && !$('#start').disabled, 'the inserted card');
+  $('#opt-eject').click(); $('#start').click();
+  $('#arm').click();
+  await until(() => $('#card-done'), 'card done');
+  assert.match($('#card-done').textContent, /card has been ejected.*NAS is catching up/);
+  assert.equal($('#progress').hidden, false);
+  assert.equal($('#stop').textContent, 'Stop upload');
+  await until(() => /Photos appear as the NAS catches up/.test($('#toast').textContent), 'armed Lightroom');
+  await until(() => $('#done') && !$('#done').hidden, 'the upload');
+  assert.match($('#import-timings').textContent, /Card .* MB\/s · NAS .* MB\/s · waiting on NAS flush/);
+  assert.doesNotMatch($('#done').textContent, /format/i);
+  assert.deepEqual(errors, []);
+});
+
+test('stopping the demo after card done offers Send to NAS and keeps resume hidden', async t => {
+  const { $, until, errors } = await demo(t);
+  await until(() => $('#start') && !$('#start').disabled, 'the inserted card');
+  $('#start').click();
+  await until(() => $('#card-done'), 'card done');
+  $('#stop').click();
+  await until(() => !$('#stop'), 'the stopped upload');
+  assert.match($('#progress').textContent, /photos are safe on this computer.*Send to NAS/);
+  assert.equal($('#actions').hidden, true);
+  assert.ok($('[data-send]'));
+  assert.deepEqual(errors, []);
+});
+
 test('the demo sends the sample offline import and deletes its laptop copy with two clicks', async t => {
   const { $, until, errors } = await demo(t);
   await until(() => $('[data-send]') && !$('[data-send]').disabled, 'the offline history row');

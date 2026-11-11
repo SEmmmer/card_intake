@@ -121,6 +121,7 @@ pub struct CameraSighting {
 
 impl Ledger {
     pub fn record_import(&mut self, result: crate::import::ImportResult) {
+        self.imports.retain(|r| r.started_at != result.started_at);
         self.imports.insert(0, result);
         while self.imports.len() > 100 {
             let Some(index) = self
@@ -400,22 +401,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recording_the_final_result_replaces_its_uploading_recovery_entry() {
+        let mut ledger = Ledger::default();
+        let mut record = import_from("card");
+        record.offline = true;
+        record.local_complete = true;
+        record.uploading = true;
+        ledger.record_import(record.clone());
+        record.offline = false;
+        record.uploading = false;
+        ledger.record_import(record.clone());
+        assert_eq!(ledger.imports, vec![record]);
+    }
+
+    #[test]
     fn trimming_keeps_unsent_offline_imports_even_when_more_than_one_hundred() {
         let mut ledger = Ledger::default();
         for i in 0..105 {
             let mut r = import_from(&format!("card-{i}"));
             r.offline = true;
+            r.started_at += chrono::Duration::seconds(i);
             ledger.record_import(r);
         }
         assert_eq!(ledger.imports.len(), 105);
-        ledger.record_import(import_from("NAS"));
+        let mut nas = import_from("NAS");
+        nas.started_at += chrono::Duration::seconds(105);
+        ledger.record_import(nas);
         assert_eq!(ledger.imports.len(), 106);
         assert_eq!(ledger.imports.iter().filter(|r| r.offline).count(), 105);
         assert_eq!(ledger.imports[0].card_id.as_deref(), Some("NAS"));
         let mut old = import_from("old NAS");
         old.offline = false;
+        old.started_at -= chrono::Duration::seconds(1);
         ledger.imports.push(old);
-        ledger.record_import(import_from("new NAS"));
+        let mut new = import_from("new NAS");
+        new.started_at += chrono::Duration::seconds(106);
+        ledger.record_import(new);
         assert_eq!(ledger.imports.len(), 106);
         assert_eq!(ledger.imports.iter().filter(|r| r.offline).count(), 105);
         assert_eq!(ledger.imports[0].card_id.as_deref(), Some("new NAS"));
@@ -438,8 +459,10 @@ mod tests {
         });
         let mut ledger = Ledger::default();
         ledger.record_import(sent);
-        for _ in 0..100 {
-            ledger.record_import(old.clone());
+        for i in 1..=100 {
+            let mut entry = old.clone();
+            entry.started_at += chrono::Duration::seconds(i);
+            ledger.record_import(entry);
         }
         assert_eq!(ledger.imports.len(), 100);
         assert!(ledger.imports.iter().all(|r| !r.offline));
