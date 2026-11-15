@@ -2,7 +2,8 @@
 //!
 //! Sony cards are read from `DCIM` and `M4ROOT/CLIP`; other makers, including Nikon
 //! (whose Z 9 cards keep photos and videos in a folder such as `DCIM/100NCZ_9`), are
-//! read from the whole `DCIM` tree. Nikon raws are `.NEF` (`.NRW` on older bodies).
+//! read from the whole `DCIM` tree. Nikon raws are `.NEF` (`.NRW` on older bodies);
+//! Hasselblad's (the X2D II, in `DCIM/118HASBL`) are `.3FR`.
 
 use crate::exif;
 use chrono::{DateTime, Local, NaiveDateTime};
@@ -41,7 +42,9 @@ pub struct MediaFile {
     pub kind: MediaKind,
 }
 
-const PHOTO_EXTENSIONS: &[&str] = &["arw", "nef", "nrw", "dng", "jpg", "jpeg", "hif", "heic"];
+const PHOTO_EXTENSIONS: &[&str] = &[
+    "arw", "nef", "nrw", "3fr", "dng", "jpg", "jpeg", "hif", "heic",
+];
 // "nev" is Nikon's N-RAW video, which a Z 9 writes instead of, or beside, an MP4.
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mts", "nev"];
 
@@ -193,7 +196,10 @@ mod tests {
     fn only_proprietary_raw_photos_use_sidecar_ratings() {
         for ext in PHOTO_EXTENSIONS {
             let path = PathBuf::from(format!("photo.{}", ext.to_uppercase()));
-            assert_eq!(uses_raw_sidecar(&path), ["arw", "nef", "nrw"].contains(ext));
+            assert_eq!(
+                uses_raw_sidecar(&path),
+                ["arw", "nef", "nrw", "3fr"].contains(ext)
+            );
         }
         for name in ["clip.MP4", "clip.NEV", "photo.xmp", "photo.xml"] {
             assert!(!uses_raw_sidecar(Path::new(name)));
@@ -348,6 +354,7 @@ mod tests {
         assert_eq!(kind_of(Path::new("a/DSC00001.ARW")), Some(MediaKind::Photo));
         assert_eq!(kind_of(Path::new("a/DSC_0001.NEF")), Some(MediaKind::Photo));
         assert_eq!(kind_of(Path::new("a/SLOW.NRW")), Some(MediaKind::Photo));
+        assert_eq!(kind_of(Path::new("a/B0030873.3FR")), Some(MediaKind::Photo));
         assert_eq!(kind_of(Path::new("a/c0001.mp4")), Some(MediaKind::Video));
         assert_eq!(kind_of(Path::new("a/DSC_0001.NEV")), Some(MediaKind::Video));
         assert_eq!(kind_of(Path::new("a/AVIN0001.BNP")), None);

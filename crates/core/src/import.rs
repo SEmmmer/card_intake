@@ -2976,6 +2976,39 @@ mod tests {
     }
 
     #[test]
+    fn imports_a_hasselblad_x2d_ii_cards_3fr_raws_beside_their_jpegs() {
+        let mut f = Fixture::new();
+        // An X2D II card shooting RAW+JPEG: both in DCIM/118HASBL, raws as .3FR.
+        fs::remove_file(f.request.root.join("DCIM/100SONY/DSC00001.ARW")).unwrap();
+        let photo = crate::exif::tests::hasselblad_sample();
+        f.add("DCIM/118HASBL/B0030873.3FR", &photo);
+        f.add("DCIM/118HASBL/B0030873.JPG", &photo);
+        // Locked in camera, so the raw gets its rating sidecar without ExifTool.
+        let raw = f.request.root.join("DCIM/118HASBL/B0030873.3FR");
+        let permissions = fs::metadata(&raw).unwrap().permissions();
+        let mut locked = permissions.clone();
+        locked.set_readonly(true);
+        fs::set_permissions(&raw, locked).unwrap();
+        f.request.camera = Some("X2D II 100C".into());
+        f.request.shoots = vec![ShootSelection {
+            date: NaiveDate::from_ymd_opt(2026, 11, 15).unwrap(),
+            name: "x2d2".into(),
+        }];
+
+        let result = f.run();
+        fs::set_permissions(&raw, permissions).unwrap();
+        assert_eq!(result.status, ImportStatus::Complete, "{result:?}");
+        assert_eq!((result.photos, result.copied_files), (2, 2));
+        let folder = f.request.nas_root.join("2026/2026-11-15_x2d2");
+        assert_eq!(fs::read(folder.join("B0030873.3FR")).unwrap(), photo);
+        assert_eq!(fs::read(folder.join("B0030873.JPG")).unwrap(), photo);
+        assert_eq!(result.ratings.rated, 1);
+        let sidecar = fs::read_to_string(folder.join("B0030873.xmp")).unwrap();
+        assert!(sidecar.contains("Locked in camera"), "{sidecar}");
+        assert!(f.parts().is_empty());
+    }
+
+    #[test]
     fn retries_hash_and_skip_identical_files_even_when_verification_is_disabled() {
         let mut f = Fixture::new();
         assert_eq!(f.run().status, ImportStatus::Complete);

@@ -63,6 +63,14 @@ Zf photos read by an earlier Card Intake have no electronic count in the shutter
 cargo run -p card_intake_core --example count_photos -- --again \\NAS\photos "\\NAS\old\Nikon Transfer 2026 5"
 ```
 
+## Hasselblad X2D II cards
+
+A card from a Hasselblad X2D II 100C is read like a Nikon card: the whole `DCIM` tree, where the camera keeps its own folder (`DCIM/118HASBL`). The Android-style folders at the card's top level (`Android`, `Music`, `Pictures` and so on) aren't read.
+
+- **Files.** Raws are `.3FR`. Shooting RAW+JPEG puts a JPEG beside each one (`B0030873.3FR`, `B0030873.JPG`). The 3FR gets the rating sidecar, as any proprietary raw does, and the pair is rated through the raw.
+- **Serial number.** The X2D II writes it in `CameraSerialNumber` (IFD0, the DNG tag) and not in EXIF's `BodySerialNumber`; the app reads the first when the second is missing.
+- **Shutter count.** ExifTool 13.59 finds none in X2D II photos, so the card shows no count.
+
 ## Shutter counts
 
 The shutter count of every photo on an inserted card is read with ExifTool (in parallel, about a second for 200 raw files) and kept per camera, one count range per shooting day. **Read NAS photos** (under My Cameras) reads every photo already on the share too, so the graph goes back to the first imported shoot; folders read before are skipped unless their photos change.
@@ -168,7 +176,7 @@ At the bottom of **My Cards** and **My Cameras**, unfold **Not mine (n)** to und
 
 ## Initial raw ratings
 
-Every import gives proprietary raw photos an initial Lightroom Classic star rating in a same-stem `.xmp` sidecar beside the destination raw. This is always on for photos. The scanner currently recognises ARW, NEF and NRW as proprietary raws; any proprietary photo format added to the scanner also uses this rule. DNG (including the DJI Osmo Pocket 3), JPEG, HEIF/HIF and videos are skipped. RAW+JPEG pairs are rated through the raw. The source raw is only read, and neither originals nor sidecars on the card are changed.
+Every import gives proprietary raw photos an initial Lightroom Classic star rating in a same-stem `.xmp` sidecar beside the destination raw. This is always on for photos. The scanner currently recognises ARW, NEF, NRW and Hasselblad's 3FR as proprietary raws; any proprietary photo format added to the scanner also uses this rule. DNG (including the DJI Osmo Pocket 3), JPEG, HEIF/HIF and videos are skipped. RAW+JPEG pairs are rated through the raw. The source raw is only read, and neither originals nor sidecars on the card are changed.
 
 The rules run in this order:
 

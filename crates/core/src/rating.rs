@@ -612,7 +612,7 @@ mod tests {
             let tags = serde_json::json!({"File:FileType":kind});
             assert!(!readable_raw(tags.as_object().unwrap()));
         }
-        for kind in ["ARW", "NEF", "NRW", "TIFF"] {
+        for kind in ["ARW", "NEF", "NRW", "3FR", "TIFF"] {
             let tags = serde_json::json!({"File:FileType":kind});
             assert!(readable_raw(tags.as_object().unwrap()));
         }

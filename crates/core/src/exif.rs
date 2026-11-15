@@ -1,7 +1,7 @@
 //! A small EXIF reader for the fields Card Intake needs: camera make, model, serial
 //! number, firmware, lens and capture time.
 //!
-//! Reads TIFF-based raws (ARW, DNG, and Nikon's NEF/NRW) and JPEGs. It seeks straight
+//! Reads TIFF-based raws (ARW, DNG, Nikon's NEF/NRW, Hasselblad's 3FR) and JPEGs. It seeks straight
 //! to the few tags it needs, so it reads a few KB per file instead of the whole 60 MB
 //! raw.
 
@@ -29,6 +29,8 @@ const TAG_EXIF_IFD: u16 = 0x8769;
 const TAG_DATE_TIME_ORIGINAL: u16 = 0x9003;
 const TAG_BODY_SERIAL_NUMBER: u16 = 0xA431;
 const TAG_LENS_MODEL: u16 = 0xA434;
+/// DNG's serial tag, in IFD0. Hasselblad's 3FRs and JPEGs carry the serial only here.
+const TAG_CAMERA_SERIAL_NUMBER: u16 = 0xC62F;
 
 const TYPE_ASCII: u16 = 2;
 const MAX_ENTRIES: u16 = 1024;
@@ -63,6 +65,9 @@ pub fn read_basic_from<R: Read + Seek>(r: &mut R) -> io::Result<BasicExif> {
             .and_then(|s| NaiveDateTime::parse_from_str(&s, "%Y:%m:%d %H:%M:%S").ok());
         out.serial = tiff.ascii(&exif, TAG_BODY_SERIAL_NUMBER)?;
         out.lens = tiff.ascii(&exif, TAG_LENS_MODEL)?;
+    }
+    if out.serial.is_none() {
+        out.serial = tiff.ascii(&ifd0, TAG_CAMERA_SERIAL_NUMBER)?;
     }
     Ok(out)
 }
@@ -316,6 +321,24 @@ pub(crate) mod tests {
         )
     }
 
+    /// A Hasselblad X2D II 3FR (its JPEG has the same tags): a little-endian TIFF with
+    /// the serial in IFD0's CameraSerialNumber and no BodySerialNumber.
+    pub(crate) fn hasselblad_sample() -> Vec<u8> {
+        build_tiff(
+            true,
+            &[
+                (TAG_MAKE, "Hasselblad"),
+                (TAG_MODEL, "X2D II 100C"),
+                (TAG_SOFTWARE, "1.3.16.2"),
+                (TAG_CAMERA_SERIAL_NUMBER, "XU25000577"),
+            ],
+            &[
+                (TAG_DATE_TIME_ORIGINAL, "2026:11:15 15:42:53"),
+                (TAG_LENS_MODEL, "XCD 55V"),
+            ],
+        )
+    }
+
     fn expected() -> BasicExif {
         BasicExif {
             make: Some("SONY".into()),
@@ -352,6 +375,25 @@ pub(crate) mod tests {
             got.captured.map(|t| t.to_string()).as_deref(),
             Some("2026-11-07 09:15:22")
         );
+    }
+
+    #[test]
+    fn reads_a_hasselblad_serial_from_ifd0() {
+        let got = read_basic_from(&mut Cursor::new(hasselblad_sample())).unwrap();
+        assert_eq!(got.model.as_deref(), Some("X2D II 100C"));
+        assert_eq!(got.serial.as_deref(), Some("XU25000577"));
+        assert_eq!(
+            got.captured.map(|t| t.to_string()).as_deref(),
+            Some("2026-11-15 15:42:53")
+        );
+        // BodySerialNumber still wins where a camera writes both.
+        let both = build_tiff(
+            true,
+            &[(TAG_CAMERA_SERIAL_NUMBER, "OTHER")],
+            &[(TAG_BODY_SERIAL_NUMBER, "03506694")],
+        );
+        let got = read_basic_from(&mut Cursor::new(both)).unwrap();
+        assert_eq!(got.serial.as_deref(), Some("03506694"));
     }
 
     #[test]

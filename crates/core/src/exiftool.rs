@@ -25,6 +25,8 @@ const TAGS: &[&str] = &[
     "-Make",
     "-Model",
     "-SerialNumber",
+    // Hasselblad's serial, in DNG's IFD0 tag rather than EXIF's BodySerialNumber.
+    "-CameraSerialNumber",
     "-InternalSerialNumber",
     "-Software",
     "-LensModel",
@@ -104,7 +106,7 @@ fn details(obj: &Map<String, Value>) -> CameraDetails {
     CameraDetails {
         make: text("Make"),
         model,
-        serial: text("SerialNumber"),
+        serial: text("SerialNumber").or_else(|| text("CameraSerialNumber")),
         internal_serial: text("InternalSerialNumber"),
         firmware: text("Software"),
         lens: text("LensModel"),
@@ -194,7 +196,7 @@ pub(crate) fn read_batch(
 /// The photos worth reading in a folder: one per shot, preferring the raw file when
 /// the camera also saved a JPEG or HEIF.
 pub fn one_per_shot(photos: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
-    const RANK: &[&str] = &["arw", "nef", "nrw", "hif", "heic", "jpg", "jpeg"];
+    const RANK: &[&str] = &["arw", "nef", "nrw", "3fr", "hif", "heic", "jpg", "jpeg"];
     let rank = |p: &Path| {
         let ext = p.extension()?.to_str()?.to_ascii_lowercase();
         RANK.iter().position(|r| *r == ext)
@@ -319,13 +321,35 @@ mod tests {
                 "a/DSC4.dng",
                 "a/DSC_0005.JPG",
                 "a/DSC_0005.NEF",
+                "a/B0030873.JPG",
+                "a/B0030873.3FR",
                 "a/x.xmp",
             ]
             .map(PathBuf::from),
         );
         assert_eq!(
             picked,
-            ["a/DSC1.ARW", "a/DSC2.HIF", "a/DSC3.JPG", "a/DSC_0005.NEF"].map(PathBuf::from)
+            [
+                "a/B0030873.3FR",
+                "a/DSC1.ARW",
+                "a/DSC2.HIF",
+                "a/DSC3.JPG",
+                "a/DSC_0005.NEF"
+            ]
+            .map(PathBuf::from)
+        );
+    }
+
+    #[test]
+    fn a_hasselblad_serial_is_camera_serial_number() {
+        let json = br#"[{"Make":"Hasselblad","Model":"X2D II 100C",
+            "CameraSerialNumber":"XU25000577","Software":"1.3.16.2"}]"#;
+        let got = parse_json(json).unwrap();
+        assert_eq!(got.serial.as_deref(), Some("XU25000577"));
+        let both = br#"[{"SerialNumber":"03506694","CameraSerialNumber":"OTHER"}]"#;
+        assert_eq!(
+            parse_json(both).unwrap().serial.as_deref(),
+            Some("03506694")
         );
     }
 

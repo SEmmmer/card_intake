@@ -399,7 +399,7 @@ fn stars(
         } else {
             usize::from(!matches!(
                 ext.as_str(),
-                "arw" | "nef" | "nrw" | "cr2" | "cr3" | "raf" | "orf" | "rw2"
+                "arw" | "nef" | "nrw" | "3fr" | "cr2" | "cr3" | "raf" | "orf" | "rw2"
             ))
         }
     });
