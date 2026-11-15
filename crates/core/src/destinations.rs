@@ -22,25 +22,38 @@ pub struct FolderIndex {
     pub path: PathBuf,
     modified: Option<SystemTime>,
     /// Lower-case path inside the folder (`dsc00001.arw`, `video/c0001.mp4`) to the
-    /// file's size and real path.
+    /// file's size and real path. A clip is known as `video/<name>` whether it is in
+    /// `video` itself (imports before spec folders) or in a spec folder (`video/4k30`).
     files: HashMap<String, (u64, PathBuf)>,
 }
 
 impl FolderIndex {
     fn read(name: String, path: PathBuf) -> Self {
         let mut files = HashMap::new();
-        for (prefix, dir) in [("", path.clone()), ("video/", path.join("video"))] {
-            let Ok(entries) = fs::read_dir(&dir) else {
-                continue;
+        let mut add = |prefix: &str, dir: &Path, spec_folders: bool| {
+            let Ok(entries) = fs::read_dir(dir) else {
+                return Vec::new();
             };
+            let mut folders = Vec::new();
             for entry in entries.flatten() {
                 let Ok(meta) = entry.metadata() else { continue };
                 if meta.is_file() {
                     let key =
                         format!("{prefix}{}", entry.file_name().to_string_lossy()).to_lowercase();
-                    files.insert(key, (meta.len(), entry.path()));
+                    files.entry(key).or_insert((meta.len(), entry.path()));
+                } else if spec_folders
+                    && meta.is_dir()
+                    && !entry.file_name().to_string_lossy().starts_with('.')
+                    && !is_link(&meta)
+                {
+                    folders.push(entry.path());
                 }
             }
+            folders
+        };
+        add("", &path, false);
+        for spec in add("video/", &path.join("video"), true) {
+            add("video/", &spec, false);
         }
         let modified = fs::metadata(&path).and_then(|m| m.modified()).ok();
         FolderIndex {
@@ -51,11 +64,11 @@ impl FolderIndex {
         }
     }
 
-    /// The file at `inside` (e.g. `video/C0001.MP4`) if it has this size.
+    /// The file at `inside` (e.g. `DSC00001.ARW`) if it has this size. A clip
+    /// (`video/C0001.MP4`, or `video/4k30/C0001.MP4`) is found in any spec folder.
     pub fn find(&self, inside: &Path, size: u64) -> Option<&Path> {
-        let key = inside.to_string_lossy().replace('\\', "/").to_lowercase();
         self.files
-            .get(&key)
+            .get(&key(inside))
             .filter(|(s, _)| *s == size)
             .map(|(_, p)| p.as_path())
     }
@@ -102,7 +115,19 @@ fn is_link(meta: &fs::Metadata) -> bool {
     }
 }
 
-/// Where a card file goes inside its shoot folder.
+/// The lookup key for a path inside a shoot folder: lower case with `/`, and a clip's
+/// spec folder dropped (`video/4k30/C0001.MP4` is `video/c0001.mp4`).
+fn key(inside: &Path) -> String {
+    let key = inside.to_string_lossy().replace('\\', "/").to_lowercase();
+    match key.strip_prefix("video/") {
+        Some(rest) => format!("video/{}", rest.rsplit('/').next().unwrap_or(rest)),
+        None => key,
+    }
+}
+
+/// How a card file is looked up inside a shoot folder: a photo by its name, a clip as
+/// `video/<name>`, which [`FolderIndex::find`] matches in any of the shoot's spec
+/// folders. The import puts a clip in its spec folder (see [`crate::video`]).
 pub fn inside_shoot(file: &MediaFile) -> PathBuf {
     let name = PathBuf::from(file.path.file_name().unwrap_or_default());
     match file.kind {
@@ -274,6 +299,63 @@ mod tests {
         assert_eq!((nov6.photo_bytes_on_nas, nov6.video_bytes_on_nas), (10, 30));
         assert_eq!((nov6.folders[1].photos, nov6.folders[1].videos), (1, 1));
         assert_eq!(nov6.folders[0].photos, 0);
+    }
+
+    #[test]
+    fn finds_clips_in_spec_folders_and_in_a_flat_video_folder() {
+        let nas = tempfile::tempdir().unwrap();
+        put(nas.path(), "2026/2026-11-14_dian/video/4k30/C0007.MP4", 30);
+        put(
+            nas.path(),
+            "2026/2026-11-14_dian/video/4k30/C0007M01.XML",
+            3,
+        );
+        put(nas.path(), "2026/2026-11-14_dian/video/8k30/C0015.MP4", 80);
+        put(nas.path(), "2026/2026-11-14_flat/video/C0006.MP4", 60);
+        // Deeper folders and the shoot's other folders are not clip folders.
+        put(
+            nas.path(),
+            "2026/2026-11-14_dian/video/4k30/old/C0009.MP4",
+            9,
+        );
+        put(nas.path(), "2026/2026-11-14_dian/pick1/C0010.MP4", 10);
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let folders = date_folders(nas.path(), date);
+        let (dian, flat) = (&folders[0], &folders[1]);
+        let found = |f: &FolderIndex, inside: &str, size| {
+            f.find(Path::new(inside), size).map(|p| {
+                p.strip_prefix(&f.path)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+        };
+        assert_eq!(
+            found(dian, "video/C0007.MP4", 30).as_deref(),
+            Some("video/4k30/C0007.MP4")
+        );
+        // The card's own spec folder doesn't have to match the one it was put in.
+        assert_eq!(
+            found(dian, "video/4k60/c0015.mp4", 80).as_deref(),
+            Some("video/8k30/C0015.MP4")
+        );
+        assert_eq!(found(dian, "video/C0015.MP4", 81), None);
+        assert_eq!(
+            found(flat, "video/4k60/C0006.MP4", 60).as_deref(),
+            Some("video/C0006.MP4")
+        );
+        assert_eq!(found(dian, "video/C0009.MP4", 9), None);
+        assert_eq!(found(dian, "video/C0010.MP4", 10), None);
+
+        let files = [media(
+            "E:/M4ROOT/CLIP/C0007.MP4",
+            30,
+            "2026-11-14 13:54",
+            MediaKind::Video,
+        )];
+        let nov14 = &find(nas.path(), &files)[0];
+        assert_eq!((nov14.videos_on_nas, nov14.video_bytes_on_nas), (1, 30));
+        assert_eq!(nov14.suggested_title.as_deref(), Some("dian"));
     }
 
     #[test]

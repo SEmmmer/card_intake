@@ -117,7 +117,7 @@ fn a_jpeg_that_sorts_first_cannot_race_its_raws_card_sidecar_or_send_it_elsewher
     locked.set_readonly(true);
     fs::set_permissions(&raw, locked).unwrap();
     offline::prepare(&f.request.nas_root).unwrap();
-    let p = plan(&f.request, false).unwrap();
+    let p = plan(&f.request, false, None).unwrap();
     let jpeg = p
         .groups
         .iter()
@@ -608,4 +608,169 @@ fn destination_junctions_are_refused_and_checked_folders_cannot_be_replaced() {
     assert!(fs::rename(nas.join("2026"), nas.join("moved")).is_err());
     drop(folders);
     fs::rename(nas.join("2026"), nas.join("moved")).unwrap();
+}
+
+/// A Sony `M01.XML` for a clip shot on the fixture's date.
+fn sony_xml(width: u32, height: u32, capture: &str, format: &str) -> Vec<u8> {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<NonRealTimeMeta xmlns="urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.20">
+	<CreationDate value="2026-11-06T12:00:00+09:00"/>
+	<VideoFormat>
+		<VideoRecPort port="DIRECT"/>
+		<VideoFrame videoCodec="HEVC" captureFps="{capture}" formatFps="{format}"/>
+		<VideoLayout pixel="{width}" numOfVerticalLine="{height}" aspectRatio="16:9"/>
+	</VideoFormat>
+	<SubStream codec="AVC_Proxy_1280_720_MP@L4"/>
+</NonRealTimeMeta>"#
+    )
+    .into_bytes()
+}
+
+/// A clip as an α7R VI writes it: the clip and its XML in `M4ROOT/CLIP`, the proxy
+/// in `M4ROOT/SUB`.
+fn add_clip(f: &Fixture, name: &str, xml: &[u8]) {
+    f.add(
+        &format!("M4ROOT/CLIP/{name}.MP4"),
+        format!("{name} clip").as_bytes(),
+    );
+    f.add(&format!("M4ROOT/CLIP/{name}M01.XML"), xml);
+    f.add(
+        &format!("M4ROOT/SUB/{name}S03.MP4"),
+        format!("{name} proxy").as_bytes(),
+    );
+}
+
+fn assert_clip(folder: &Path, name: &str, xml: &[u8]) {
+    let read = |file: String| {
+        fs::read(folder.join(&file))
+            .unwrap_or_else(|e| panic!("{}: {e}", folder.join(file).display()))
+    };
+    assert_eq!(
+        read(format!("{name}.MP4")),
+        format!("{name} clip").as_bytes()
+    );
+    assert_eq!(read(format!("{name}M01.XML")), xml);
+    assert_eq!(
+        read(format!("{name}S03.MP4")),
+        format!("{name} proxy").as_bytes()
+    );
+}
+
+fn files_in(folder: &Path) -> Vec<String> {
+    let mut names: Vec<_> = fs::read_dir(folder)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.file_type().unwrap().is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn clips_go_into_spec_folders_with_their_xml_and_proxy() {
+    let f = Fixture::new();
+    let clips = [
+        ("C0001", sony_xml(3840, 2160, "29.97p", "29.97p"), "4k30"),
+        ("C0002", sony_xml(3840, 2160, "59.94p", "59.94p"), "4k60"),
+        ("C0003", sony_xml(7680, 4320, "29.97p", "29.97p"), "8k30"),
+        // Slow motion: shot at 120, saved at 30.
+        (
+            "C0004",
+            sony_xml(3840, 2160, "119.88p", "29.97p"),
+            "4k120-30",
+        ),
+        ("C0005", sony_xml(1920, 1080, "59.94p", "59.94p"), "1080p60"),
+    ];
+    for (name, xml, _) in &clips {
+        add_clip(&f, name, xml);
+    }
+    let r = f.run();
+    assert_eq!(r.status, ImportStatus::Complete, "{:?}", r.error);
+    assert_eq!((r.photos, r.videos, r.total_files), (1, 5, 16));
+    let video = f.folder().join("video");
+    for (name, xml, spec) in &clips {
+        assert_clip(&video.join(spec), name, xml);
+    }
+    let mut specs: Vec<_> = fs::read_dir(&video)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    specs.sort();
+    assert_eq!(specs, ["1080p60", "4k120-30", "4k30", "4k60", "8k30"]);
+
+    // Importing the card again finds every file where it went.
+    let again = f.run();
+    assert_eq!(again.status, ImportStatus::Complete, "{:?}", again.error);
+    assert_eq!(again.copied_files, 0);
+    assert_eq!(again.skipped_files, again.total_files);
+    assert!(
+        !again.warnings.iter().any(|w| w.contains("kept")),
+        "{:?}",
+        again.warnings
+    );
+}
+
+#[test]
+fn a_clip_already_in_the_flat_video_folder_gets_its_proxy_beside_it() {
+    let f = Fixture::new();
+    let xml = sony_xml(3840, 2160, "29.97p", "29.97p");
+    add_clip(&f, "C0001", &xml);
+    // An import from before spec folders left the clip and its XML in `video`.
+    let video = f.folder().join("video");
+    fs::create_dir_all(&video).unwrap();
+    fs::write(video.join("C0001.MP4"), b"C0001 clip").unwrap();
+    fs::write(video.join("C0001M01.XML"), &xml).unwrap();
+    let r = f.run();
+    assert_eq!(r.status, ImportStatus::Complete, "{:?}", r.error);
+    assert_clip(&video, "C0001", &xml);
+    assert!(!video.join("4k30").exists(), "the clip was copied twice");
+    assert_eq!(r.copied_files, 2, "the raw and the proxy");
+}
+
+#[test]
+fn a_clip_under_another_title_in_a_spec_folder_is_not_copied_again() {
+    let f = Fixture::new();
+    let xml = sony_xml(7680, 4320, "29.97p", "29.97p");
+    add_clip(&f, "C0001", &xml);
+    let other = f
+        .request
+        .nas_root
+        .join("2026/2026-11-06_first-card/video/8k30");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("C0001.MP4"), b"C0001 clip").unwrap();
+    let r = f.run();
+    assert_eq!(r.status, ImportStatus::Complete, "{:?}", r.error);
+    assert_clip(&other, "C0001", &xml);
+    assert!(!f.folder().join("video").exists());
+    assert_eq!(r.skipped_elsewhere, 1);
+}
+
+#[test]
+fn through_this_computer_clips_and_proxies_reach_their_spec_folders() {
+    let mut f = Fixture::new();
+    let (laptop, nas) = through_laptop(&mut f);
+    let shoot = PathBuf::from("2026/2026-11-06_Tokyo-秋");
+    let four_k = sony_xml(3840, 2160, "59.94p", "59.94p");
+    let eight_k = sony_xml(7680, 4320, "29.97p", "29.97p");
+    add_clip(&f, "C0001", &four_k);
+    add_clip(&f, "C0002", &eight_k);
+    // The NAS already has C0002 from before spec folders, without its proxy.
+    let flat = nas.join(&shoot).join("video");
+    fs::create_dir_all(&flat).unwrap();
+    fs::write(flat.join("C0002.MP4"), b"C0002 clip").unwrap();
+    fs::write(flat.join("C0002M01.XML"), &eight_k).unwrap();
+    let r = run(&f.request, false, &AtomicBool::new(false), |_| {});
+    assert_eq!(r.status, ImportStatus::Complete, "{:?}", r.error);
+    assert!(r.laptop_deleted, "{:?}", r.warnings);
+    assert_clip(&nas.join(&shoot).join("video/4k60"), "C0001", &four_k);
+    assert_clip(&flat, "C0002", &eight_k);
+    assert!(!flat.join("8k30").exists(), "C0002 was copied twice");
+    assert_eq!(
+        files_in(&flat),
+        ["C0002.MP4", "C0002M01.XML", "C0002S03.MP4"]
+    );
+    assert!(!laptop.join(&shoot).join("video/4k60/C0001S03.MP4").exists());
+    assert!(f.parts().is_empty());
 }

@@ -23,6 +23,7 @@ pub mod scan;
 pub mod send;
 pub mod shutter;
 pub mod storage;
+pub mod video;
 pub mod volume_info;
 pub mod volumes;
 mod xmp;

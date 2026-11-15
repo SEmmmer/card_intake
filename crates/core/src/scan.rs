@@ -67,8 +67,9 @@ pub fn uses_raw_sidecar(path: &Path) -> bool {
         })
 }
 
-/// Folders that hold the originals. Proxies (`M4ROOT/SUB`) and thumbnails
-/// (`M4ROOT/THMBNL`) are left out.
+/// Folders that hold the originals. Thumbnails (`M4ROOT/THMBNL`) are left out, and so
+/// are proxies (`M4ROOT/SUB`): an import copies each one next to its clip instead
+/// (see [`crate::video`]).
 fn source_dirs(root: &Path) -> [PathBuf; 3] {
     [
         root.join("DCIM"),
@@ -165,7 +166,7 @@ fn sidecar_device_attr(clip: &Path, attr: &str) -> Option<String> {
     xml_attr(&text, "<Device ", attr).map(str::to_string)
 }
 
-fn sidecar_path(clip: &Path) -> Option<PathBuf> {
+pub(crate) fn sidecar_path(clip: &Path) -> Option<PathBuf> {
     let stem = clip.file_stem()?.to_str()?;
     Some(clip.with_file_name(format!("{stem}M01.XML")))
 }

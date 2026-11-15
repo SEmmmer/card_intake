@@ -6,7 +6,7 @@ use crate::{
     copies::{self, CopyCounts, CopyFile},
     destinations,
     import::{self, ImportProgress, ImportStatus},
-    scan,
+    scan, video,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -155,7 +155,11 @@ pub(crate) fn nas_target(
         .strip_prefix(shoot)
         .map_err(|e| e.to_string())?;
     for folder in others {
-        let other = folder.path.join(inside);
+        // A clip may be in another spec folder there, or in `video` itself.
+        let other = folder
+            .find(inside, file.size)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| folder.path.join(inside));
         let relative = other.strip_prefix(nas).map_err(|e| e.to_string())?;
         copies::inspect(nas, relative)?;
         match fs::symlink_metadata(&other) {
@@ -215,10 +219,12 @@ pub fn relay_file(
     })
 }
 
+/// A sidecar, or a Sony clip's proxy: it follows its photo or clip.
 fn sidecar(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("xmp") || e.eq_ignore_ascii_case("xml"))
+        || video::is_proxy(path)
 }
 
 fn sibling_key(path: &Path) -> String {
@@ -232,6 +238,8 @@ fn sibling_key(path: &Path) -> String {
         .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
     {
         stem.strip_suffix("m01").unwrap_or(&stem)
+    } else if let Some(clip) = video::proxy_clip_stem(path) {
+        &clip.to_lowercase()
     } else {
         &stem
     };

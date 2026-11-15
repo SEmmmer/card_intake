@@ -17,7 +17,9 @@ mod upload;
 pub(crate) use upload::Folders as CheckedFolders;
 
 use crate::scan::MediaKind;
-use crate::{backup, copies, destinations, naming, nas, offline, rating, scan, send, volume_info};
+use crate::{
+    backup, copies, destinations, naming, nas, offline, rating, scan, send, video, volume_info,
+};
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -758,7 +760,7 @@ fn run_engine(
         if request.offline {
             offline::prepare(&request.nas_root)?;
         }
-        let plan = plan(request, require_network)?;
+        let plan = plan(request, require_network, exiftool)?;
         preflight_backups(request, &plan)?;
         if let Some(nas) = &request.relay_to {
             preflight_nas(&plan, nas)?;
@@ -1371,10 +1373,21 @@ fn local_companions(
     if kind == MediaKind::Video {
         wanted.extend([format!("{stem}.xml"), format!("{stem}m01.xml")]);
     }
-    Ok(wanted
+    let mut found: Vec<_> = wanted
         .into_iter()
         .filter_map(|name| folders[parent].get(&name).cloned())
-        .collect())
+        .collect();
+    // A Sony clip's proxy, copied next to it (`<clip>S03.MP4`).
+    if kind == MediaKind::Video && !video::is_proxy(path) {
+        let mut proxies: Vec<_> = folders[parent]
+            .iter()
+            .filter(|(name, _)| video::is_proxy_of(name, &stem))
+            .map(|(_, path)| path.clone())
+            .collect();
+        proxies.sort();
+        found.extend(proxies);
+    }
+    Ok(found)
 }
 
 fn collect_local_files(
@@ -1645,23 +1658,31 @@ fn copy_files<P: FnMut(ImportProgress)>(
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                // The card's checksums, from the copies just verified where possible:
+                // a clip's proxy is too big to read from the card a second time.
+                let folder = raw.parent().unwrap_or(&plan.destination);
                 let card_sidecars = group
                     .iter()
                     .skip(1)
                     .map(|&i| {
                         let entry = &plan.entries[i];
-                        Ok((
-                            entry
-                                .relative
-                                .file_name()
-                                .unwrap()
-                                .to_string_lossy()
-                                .to_lowercase(),
-                            (
-                                entry.size,
-                                copies::hash(&entry.source, entry.size, stop.user)?,
-                            ),
-                        ))
+                        let name = entry.relative.file_name().unwrap();
+                        let verified = folder
+                            .join(name)
+                            .strip_prefix(&plan.destination)
+                            .ok()
+                            .and_then(|relative| {
+                                lock()
+                                    .verified
+                                    .iter()
+                                    .find(|f| f.relative == relative && f.size == entry.size)
+                                    .and_then(|f| f.hash)
+                            });
+                        let hash = match verified {
+                            Some(hash) => hash,
+                            None => copies::hash(&entry.source, entry.size, stop.user)?,
+                        };
+                        Ok((name.to_string_lossy().to_lowercase(), (entry.size, hash)))
                     })
                     .collect::<Result<HashMap<_, _>, String>>()?;
                 let _ = queue.send(upload::Job {
@@ -1799,7 +1820,11 @@ pub(crate) fn check_destination(path: &Path, require_network: bool) -> Result<()
     Ok(())
 }
 
-fn plan(request: &ImportRequest, require_network: bool) -> Result<Plan, String> {
+fn plan(
+    request: &ImportRequest,
+    require_network: bool,
+    exiftool: Option<&Path>,
+) -> Result<Plan, String> {
     if !request.root.is_absolute() || !request.root.is_dir() {
         return Err("The card is no longer available. Insert it and scan again.".into());
     }
@@ -1848,21 +1873,42 @@ fn plan(request: &ImportRequest, require_network: bool) -> Result<Plan, String> 
     let mut names = HashMap::new();
     let mut shoots = BTreeSet::new();
     let mut companions: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    // A Sony card's proxies, by folder (`M4ROOT/SUB`).
+    let mut proxies: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
     // The date's other folders, where an earlier import may already hold these files.
     let mut others: HashMap<NaiveDate, Vec<destinations::FolderIndex>> = HashMap::new();
+    // The chosen folder itself, where a clip may sit outside its spec folder (in
+    // `video`, from an import before spec folders).
+    let mut chosen_folders: HashMap<NaiveDate, destinations::FolderIndex> = HashMap::new();
     for (date, folder) in &selections {
         let chosen = folder.file_name().unwrap().to_string_lossy().to_lowercase();
+        let (mine, found): (Vec<_>, Vec<_>) = destinations::date_folders(&destination, *date)
+            .into_iter()
+            .partition(|f| f.name.to_lowercase() == chosen);
+        if let Some(mine) = mine.into_iter().next() {
+            chosen_folders.insert(*date, mine);
+        }
         // Through this computer, the NAS's folders count, not the buffer's: every
         // file goes into the chosen local folder and the senders look on the NAS.
-        let found = match request.relay_to {
-            Some(_) => Vec::new(),
-            None => destinations::date_folders(&destination, *date)
-                .into_iter()
-                .filter(|f| f.name.to_lowercase() != chosen)
-                .collect(),
-        };
-        others.insert(*date, found);
+        others.insert(
+            *date,
+            if request.relay_to.is_some() {
+                Vec::new()
+            } else {
+                found
+            },
+        );
     }
+    let clips: Vec<PathBuf> = files
+        .iter()
+        .filter(|f| {
+            request.include_videos
+                && f.kind == MediaKind::Video
+                && selections.contains_key(&f.captured.date())
+        })
+        .map(|f| f.path.clone())
+        .collect();
+    let spec_folders = video::spec_folders(&clips, exiftool);
     for file in &files {
         let Some(shoot) = selections.get(&file.captured.date()) else {
             continue;
@@ -1870,15 +1916,16 @@ fn plan(request: &ImportRequest, require_network: bool) -> Result<Plan, String> 
         if file.kind == scan::MediaKind::Video && !request.include_videos {
             continue;
         }
-        let folder = if file.kind == scan::MediaKind::Video {
-            shoot.join("video")
-        } else {
-            shoot.clone()
+        let folder = match (file.kind, spec_folders.get(&file.path)) {
+            (MediaKind::Video, Some(spec)) => shoot.join("video").join(spec),
+            (MediaKind::Video, None) => shoot.join("video"),
+            (MediaKind::Photo, _) => shoot.clone(),
         };
+        let relative = folder.join(file.path.file_name().unwrap());
         let Some(main) = add_entry(
             &root,
             &file.path,
-            folder.join(file.path.file_name().unwrap()),
+            relative.clone(),
             &mut entries,
             &mut names,
         )?
@@ -1886,10 +1933,20 @@ fn plan(request: &ImportRequest, require_network: bool) -> Result<Plan, String> 
             continue;
         };
         let inside = destinations::inside_shoot(file);
+        let date = file.captured.date();
         entries[main].kind = Some(file.kind);
-        entries[main].elsewhere = others[&file.captured.date()]
-            .iter()
-            .filter_map(|f| f.find(&inside, file.size).map(Path::to_path_buf))
+        entries[main].elsewhere = chosen_folders
+            .get(&date)
+            .filter(|_| file.kind == MediaKind::Video)
+            .and_then(|f| f.find(&inside, file.size))
+            .filter(|found| send::key(found) != send::key(&destination.join(&relative)))
+            .into_iter()
+            .chain(
+                others[&date]
+                    .iter()
+                    .filter_map(|f| f.find(&inside, file.size)),
+            )
+            .map(Path::to_path_buf)
             .collect();
         let mut group = vec![main];
         shoots.insert(shoot.clone());
@@ -1926,6 +1983,37 @@ fn plan(request: &ImportRequest, require_network: bool) -> Result<Plan, String> 
                 )?
             {
                 group.push(index);
+            }
+        }
+        // A Sony clip's proxy (`M4ROOT/SUB/<clip>S03.MP4`) goes next to the clip.
+        if file.kind == MediaKind::Video
+            && let Some(sub) = video::card_proxy_folder(&file.path)
+        {
+            if !proxies.contains_key(&sub) {
+                let mut found = Vec::new();
+                match fs::read_dir(&sub) {
+                    Ok(items) => {
+                        for item in items {
+                            let path = item.map_err(|e| e.to_string())?.path();
+                            if video::is_proxy(&path) {
+                                found.push(path);
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(format!("Couldn't read {}: {e}", sub.display())),
+                }
+                found.sort();
+                proxies.insert(sub.clone(), found);
+            }
+            for proxy in &proxies[&sub] {
+                let name = proxy.file_name().unwrap();
+                if video::is_proxy_of(&name.to_string_lossy(), &stem)
+                    && let Some(index) =
+                        add_entry(&root, proxy, folder.join(name), &mut entries, &mut names)?
+                {
+                    group.push(index);
+                }
             }
         }
         groups.push(group);
@@ -2808,7 +2896,10 @@ mod tests {
         f.add("DCIM/100SONY/DSC00001.xmp", b"photo edits");
         f.add("M4ROOT/CLIP/C0001.MP4", b"video bytes");
         f.add("M4ROOT/CLIP/C0001M01.XML", SIDECAR);
-        f.add("M4ROOT/SUB/C0001S03.MP4", b"proxy, not an original");
+        f.add("M4ROOT/SUB/C0001S03.MP4", b"proxy");
+        // Another clip's proxy and the card's thumbnail stay on the card.
+        f.add("M4ROOT/SUB/C0002S03.MP4", b"orphan proxy");
+        f.add("M4ROOT/THMBNL/C0001T01.JPG", b"thumbnail");
         let source = f.request.root.join("DCIM/100SONY/DSC00001.ARW");
         let original = fs::read(&source).unwrap();
         let modified = fs::metadata(&source).unwrap().modified().unwrap();
@@ -2820,8 +2911,10 @@ mod tests {
                 result.verified_files,
                 result.total_files
             ),
-            (4, 4, 4)
+            (5, 5, 5)
         );
+        // The proxy is a companion, not a clip of its own.
+        assert_eq!((result.photos, result.videos), (1, 1));
         assert_eq!(result.completed_bytes, result.total_bytes);
         assert_eq!(fs::read(f.folder().join("DSC00001.ARW")).unwrap(), original);
         assert_eq!(
@@ -2836,6 +2929,13 @@ mod tests {
             fs::read(f.folder().join("video/C0001M01.XML")).unwrap(),
             SIDECAR
         );
+        // Its XML has no video format, so the clip and its proxy stay in `video`.
+        assert_eq!(
+            fs::read(f.folder().join("video/C0001S03.MP4")).unwrap(),
+            b"proxy"
+        );
+        assert!(!f.folder().join("video/C0002S03.MP4").exists());
+        assert!(!f.folder().join("video/C0001T01.JPG").exists());
         assert_eq!(fs::read(&source).unwrap(), original);
         assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(), modified);
         assert_eq!(
@@ -3009,7 +3109,7 @@ mod tests {
     #[test]
     fn a_source_changed_since_planning_is_rejected() {
         let f = Fixture::new();
-        let plan = plan(&f.request, false).unwrap();
+        let plan = plan(&f.request, false, None).unwrap();
         let entry = &plan.entries[0];
         fs::write(&entry.source, b"changed").unwrap();
         let cancel = AtomicBool::new(false);

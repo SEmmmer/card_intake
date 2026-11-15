@@ -109,8 +109,8 @@ Set the photo share's path in the app (NAS folder → Save). **Check** makes sur
 
 1. For a NAS import, connect the share in Explorer. Enter its UNC path (for example `\\NAS\photos`) or mapped drive path (`Z:\photos`) under **NAS folder**, then **Save**. NAS imports require an existing, confirmed network folder. Without the NAS, use **Copy to this computer** instead (see below).
 2. Insert a camera card. The app detects `DCIM`, `M4ROOT/CLIP`, and `PRIVATE/M4ROOT/CLIP`, including video-only Sony cards. Select capture dates and name the shoots. The displayed paths show the destinations.
-3. Leave **Check every file after copying** enabled. Choose whether to include videos and whether to attempt ejection, then click **Import to NAS** (or **Import to this computer**). Before importing, choose **Register** or **Not mine** for any new card or camera. Photos and their XMP files go in the shoot folder; clips and their XML/XMP sidecars go in its `video` folder.
-4. Check the result and **Recent imports**. The result distinguishes copied, identical/skipped, and verified files. Originals remain on the card. Unselected shoots, excluded videos, proxies and unrelated files are not imported.
+3. Leave **Check every file after copying** enabled. Choose whether to include videos and whether to attempt ejection, then click **Import to NAS** (or **Import to this computer**). Before importing, choose **Register** or **Not mine** for any new card or camera. Photos and their XMP files go in the shoot folder. Clips go in its `video` folder, sorted by spec (`video\4k30`, `video\8k30`, `video\1080p60`), each with its Sony XML and proxy next to it; see [Folder layout on the NAS](#folder-layout-on-the-nas).
+4. Check the result and **Recent imports**. The result distinguishes copied, identical/skipped, and verified files. Originals remain on the card. Unselected shoots, excluded videos, clip thumbnails (`M4ROOT/THMBNL`), `MEDIAPRO.XML`, LUTs and unrelated files are not imported.
 
 **Shoot folders that already exist.** When the card is read, the app looks up each capture date's folders on the NAS (`2026/2026-11-06` and `2026/2026-11-06_<title>`). A date that already has a folder gets that title in the shoot name, so another card from the same day goes into the same folder; the card shows how many of its photos and clips are already on the NAS (same name and size), and the summary counts only the new ones. Clear the name or type another one and a new folder is made, but files already in the date's other folders are not copied again: the import compares each one with the card (xxHash64) and skips it when identical, and copies it when it's a different photo with the same name. A photo's or clip's sidecar goes with it into the folder where it already is. The done panel lists every folder that holds the files.
 
@@ -224,7 +224,13 @@ The example refuses destinations outside the system temporary directory and veri
     2026-11-02_Yosemite\
       DSC03518.ARW, .xmp          originals + Lightroom edits
       DSC03518_DxO.dng            DxO PureRAW output, next to its ARW
-      video\                     original clips + Sony XML sidecars
+      video\
+        4k30\                     clips by spec, each with its Sony XML and proxy:
+          C0001.MP4                 the clip (from M4ROOT\CLIP)
+          C0001M01.XML              its Sony XML (from M4ROOT\CLIP)
+          C0001S03.MP4              its proxy (from M4ROOT\SUB)
+        8k30\, 4k60\, 1080p60\    ...
+        4k120-30\                 slow motion: shot at 120 fps, saved at 30
       topix\                     Lightroom JPEGs (choose any export folder names)
       final\                     PixCake JPEGs (FINAL or any other name works too)
       .card-intake-delivered.json the names Deliver gave each photo, and when
@@ -235,6 +241,8 @@ The example refuses destinations outside the system temporary directory and veri
 \\NAS\Picture\MyPhoto\              finished photos only: Immich's external library
   2026-11-02_Yosemite\             one folder per shoot, filled by Deliver
 ```
+
+A clip's spec folder is its size and frame rate, with rates rounded (29.97 is 30, 59.94 is 60, 23.976 is 24, 119.88 is 120). From 4K up the size is the long side in thousands (3840 and 4096 are `4k`, 7680 is `8k`); below that it is the short side in lines (`1080p`, `720p`). A slow-motion clip, shot at one rate and saved at another, names both (`4k120-30`). The spec comes from the clip's Sony XML, otherwise from ExifTool (which sees only the saved rate); a clip neither can read goes in `video` itself. Clips an earlier import left in `video` itself are recognised wherever a later import would put them, so they are never copied twice: their proxies are added next to them instead.
 
 Deliver looks through the whole shoot, including export folders named freely. It skips `_catalog`, `video`, hidden/system folders, `@eaDir`, `#recycle` and `.lrdata` folders. It recognises Lightroom and PixCake from each JPEG's metadata. PixCake replaces its Lightroom twin (DocumentID first, then the stem with PixCake's `_(N)` removed); the newest version wins. Camera JPEGs and unrecognised JPEGs are skipped, and the confirmation says why. Raws are never delivered. Names lose PixCake's `_(N)` and DxO's `-DxO_…` suffix, use `.jpg`, and get `-2`, `-3` only when two photos would share a name. The shoot's `.card-intake-delivered.json` keeps each photo's name across deliveries.
 

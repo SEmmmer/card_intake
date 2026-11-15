@@ -414,3 +414,57 @@ fn source_manifest_allows_later_edits_but_delete_uses_the_new_send_snapshot() {
     );
     assert!(delete_laptop(&r.manifest).unwrap().complete);
 }
+
+#[test]
+fn a_proxy_follows_its_clip_into_another_titles_flat_video_folder() {
+    let f = Fixture::new();
+    f.local("video/4k30/C0001.MP4", b"clip");
+    f.local("video/4k30/C0001M01.XML", b"xml");
+    f.local("video/4k30/C0001S03.MP4", b"proxy");
+    f.local("video/4k30/C0002.MP4", b"new clip");
+    f.local("video/4k30/C0002S03.MP4", b"new proxy");
+    // An earlier import under another title holds C0001 in `video` itself.
+    let other = PathBuf::from("2026/2026-11-08_first-card/video");
+    f.write(&f.nas, &other.join("C0001.MP4"), b"clip");
+    let r = f.send();
+    assert_eq!(r.status, ImportStatus::Complete, "{r:?}");
+    assert_eq!(
+        fs::read(f.nas.join(&other).join("C0001M01.XML")).unwrap(),
+        b"xml"
+    );
+    assert_eq!(
+        fs::read(f.nas.join(&other).join("C0001S03.MP4")).unwrap(),
+        b"proxy"
+    );
+    let mine = f.nas.join(&f.shoot).join("video/4k30");
+    assert!(!mine.join("C0001.MP4").exists() && !mine.join("C0001S03.MP4").exists());
+    assert_eq!(fs::read(mine.join("C0002.MP4")).unwrap(), b"new clip");
+    assert_eq!(fs::read(mine.join("C0002S03.MP4")).unwrap(), b"new proxy");
+    assert_eq!(
+        r.sent.unwrap().found_in,
+        vec![PathBuf::from("2026/2026-11-08_first-card")]
+    );
+}
+
+#[test]
+fn a_different_proxy_on_the_nas_is_kept_like_a_sidecar() {
+    let f = Fixture::new();
+    f.local("video/4k30/C0001.MP4", b"clip");
+    f.local("video/4k30/C0001S03.MP4", b"proxy");
+    f.write(&f.nas, &f.shoot.join("video/4k30/C0001.MP4"), b"clip");
+    f.write(
+        &f.nas,
+        &f.shoot.join("video/4k30/C0001S03.MP4"),
+        b"rebuilt proxy",
+    );
+    let r = f.send();
+    assert_eq!(r.status, ImportStatus::Complete, "{r:?}");
+    assert_eq!(
+        r.sent.unwrap().kept_sidecars,
+        vec![f.shoot.join("video/4k30/C0001S03.MP4")]
+    );
+    assert_eq!(
+        fs::read(f.nas.join(&f.shoot).join("video/4k30/C0001S03.MP4")).unwrap(),
+        b"rebuilt proxy"
+    );
+}
