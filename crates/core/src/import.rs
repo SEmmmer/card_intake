@@ -1837,6 +1837,11 @@ fn plan(
     if root.starts_with(&destination) || destination.starts_with(&root) {
         return Err("The card and destination must be separate folders.".into());
     }
+    // The shoots were chosen from what Windows showed: if that was another card's
+    // folders, nothing chosen from them is this card's.
+    if scan::check_card_shows_itself(&request.root)? {
+        return Err(scan::SHOWN_AFRESH.into());
+    }
     let card_id = volume_info::volume_info(&request.root).id;
     if request.expected_card_id.is_some() && request.expected_card_id != card_id {
         return Err(
@@ -1864,6 +1869,7 @@ fn plan(
         return Err("Select at least one shoot to import.".into());
     }
     let files = scan::scan_card(&root).map_err(|e| format!("Couldn't scan the card: {e}"))?;
+    scan::check_content(&files)?;
     let dates: BTreeSet<_> = files.iter().map(|f| f.captured.date()).collect();
     if selections.keys().any(|d| !dates.contains(d)) {
         return Err("A selected shoot is no longer on the card. Scan it again.".into());
@@ -2981,8 +2987,9 @@ mod tests {
         // An X2D II card shooting RAW+JPEG: both in DCIM/118HASBL, raws as .3FR.
         fs::remove_file(f.request.root.join("DCIM/100SONY/DSC00001.ARW")).unwrap();
         let photo = crate::exif::tests::hasselblad_sample();
+        let jpeg = crate::exif::tests::jpeg(&photo);
         f.add("DCIM/118HASBL/B0030873.3FR", &photo);
-        f.add("DCIM/118HASBL/B0030873.JPG", &photo);
+        f.add("DCIM/118HASBL/B0030873.JPG", &jpeg);
         // Locked in camera, so the raw gets its rating sidecar without ExifTool.
         let raw = f.request.root.join("DCIM/118HASBL/B0030873.3FR");
         let permissions = fs::metadata(&raw).unwrap().permissions();
@@ -3001,7 +3008,7 @@ mod tests {
         assert_eq!((result.photos, result.copied_files), (2, 2));
         let folder = f.request.nas_root.join("2026/2026-11-15_x2d2");
         assert_eq!(fs::read(folder.join("B0030873.3FR")).unwrap(), photo);
-        assert_eq!(fs::read(folder.join("B0030873.JPG")).unwrap(), photo);
+        assert_eq!(fs::read(folder.join("B0030873.JPG")).unwrap(), jpeg);
         assert_eq!(result.ratings.rated, 1);
         let sidecar = fs::read_to_string(folder.join("B0030873.xmp")).unwrap();
         assert!(sidecar.contains("Locked in camera"), "{sidecar}");
@@ -3074,11 +3081,34 @@ mod tests {
     }
 
     #[test]
+    fn a_card_whose_photos_hold_other_bytes_is_refused_before_anything_is_copied() {
+        let f = Fixture::new();
+        // Another card's folders over this card's data: right names, wrong bytes.
+        f.add("DCIM/100SONY/DSC00002.ARW", &[0x7D; 4096]);
+        f.add(
+            "DCIM/100SONY/DSC00002.JPG",
+            &crate::exif::tests::sample(true),
+        );
+        let result = f.run();
+        assert_eq!(result.status, ImportStatus::Failed, "{result:?}");
+        let error = result.error.unwrap();
+        // The JPEG is dated by its EXIF and the raw, with none, by its file's time,
+        // which is later: the JPEG comes first on the card and is the one named.
+        assert!(
+            error.starts_with("DSC00002.JPG and 1 other photo on this card don't hold"),
+            "{error}"
+        );
+        assert_eq!(result.copied_files, 0);
+        assert!(f.parts().is_empty());
+        assert!(!f.folder().exists());
+    }
+
+    #[test]
     fn shared_xmp_is_copied_once() {
         let f = Fixture::new();
         f.add(
             "DCIM/100SONY/DSC00001.JPG",
-            &crate::exif::tests::sample(true),
+            &crate::exif::tests::jpeg(&crate::exif::tests::sample(true)),
         );
         f.add("DCIM/100SONY/DSC00001.XMP", b"shared edits");
         let result = f.run();

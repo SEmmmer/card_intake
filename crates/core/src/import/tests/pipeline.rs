@@ -109,7 +109,7 @@ fn a_jpeg_that_sorts_first_cannot_race_its_raws_card_sidecar_or_send_it_elsewher
     fs::rename(f.request.root.join("DCIM/100SONY/DSC00001.ARW"), &raw).unwrap();
     f.add(
         "DCIM/100SONY/DSC00001.JPG",
-        &crate::exif::tests::sample(true),
+        &crate::exif::tests::jpeg(&crate::exif::tests::sample(true)),
     );
     f.add("DCIM/100SONY/DSC00001.xmp", br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:custom="urn:card" custom:Keep="card setting"/></rdf:RDF></x:xmpmeta>"#);
     let original = fs::metadata(&raw).unwrap().permissions();

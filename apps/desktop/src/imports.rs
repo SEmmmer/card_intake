@@ -351,6 +351,7 @@ pub async fn start_import(
     state: State<'_, AppState>,
 ) -> Result<ImportResult, String> {
     let active = state.begin_copy()?;
+    state.check_card_is_itself(Path::new(&request.root))?;
     let job = core_request(request, &state)?;
     job.save(&state.pending_path)?;
     run_import(job, active, on_progress, app).await

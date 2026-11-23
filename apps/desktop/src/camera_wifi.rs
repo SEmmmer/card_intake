@@ -134,7 +134,10 @@ impl AppState {
             match store.put(&h.model, &h.pair, h.read_at) {
                 Ok(_) => false,
                 Err(e) => {
-                    eprintln!("Couldn't save the Wi-Fi password of {}: {e}", h.model);
+                    super::log::line(format!(
+                        "Couldn't save the Wi-Fi password of {}: {e}",
+                        h.model
+                    ));
                     true
                 }
             }

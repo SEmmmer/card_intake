@@ -1,12 +1,14 @@
 // Hide the console window in Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod alert;
 mod camera_wifi;
 mod delivery;
 mod immich;
 mod imports;
 mod library;
 mod lightroom;
+mod log;
 mod not_mine;
 mod offline;
 mod settings;
@@ -252,13 +254,17 @@ struct InsertedCard {
     id: Option<String>,
 }
 
+/// The cards in readers. A card's ID is the one in its own boot sector when the app
+/// can read it, so a card swapped in at the same drive gets a new ID even while
+/// Windows still shows the one before (see [`scan::check_card_shows_itself`]).
 #[tauri::command]
 async fn list_cards() -> Result<Vec<InsertedCard>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         volumes::find_camera_cards()
             .into_iter()
             .map(|card| {
-                let id = volume_info::volume_info(&card.root).id;
+                let id = card_intake_core::card_details::volume_serial_on_card(&card.root)
+                    .or_else(|| volume_info::volume_info(&card.root).id);
                 InsertedCard { card, id }
             })
             .collect()
@@ -317,6 +323,13 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
     let control = state.imports.clone();
     let (mut report, wifi) = tauri::async_runtime::spawn_blocking(move || {
         let _reading = control.reading_card()?;
+        if scan::check_card_shows_itself(&root)? {
+            log::line(format!(
+                "Windows was showing another card's folders for the card in {}; it now \
+                 shows the card's own.",
+                root.display()
+            ));
+        }
         let report = build_report(&root, exiftool.as_deref(), nas.as_deref(), Some(&offline))?;
         Ok::<_, String>((report, card_intake_core::camera_wifi::read_card(&root)))
     })
@@ -338,10 +351,9 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
     }
     let now = Local::now().naive_local();
     let mut ledger = state.ledger.lock().map_err(|e| e.to_string())?;
-    report.card_key = ledger.record_card(
-        sighting(&report.volume, &report.drive, &report.details),
-        now,
-    );
+    let seen = sighting(&report.volume, &report.drive, &report.details);
+    refuse_another_cards_folders(&ledger, &seen)?;
+    report.card_key = ledger.record_card(seen, now);
     if let Some(card) = report
         .card_key
         .as_ref()
@@ -437,6 +449,43 @@ async fn read_card_health(
 }
 
 /// What the ledger needs to recognise a card.
+/// Stops before a card is read or copied while Windows shows another card's folders
+/// for it (see [`Ledger::shown_instead`]): the names would be that card's and the
+/// bytes this one's.
+fn refuse_another_cards_folders(ledger: &Ledger, seen: &CardSighting) -> Result<(), String> {
+    let Some(other) = ledger.shown_instead(seen) else {
+        return Ok(());
+    };
+    let name = other
+        .name
+        .as_deref()
+        .or(other.model.as_deref())
+        .unwrap_or("another card");
+    Err(format!(
+        "Windows is still showing the folders of the card that was in this reader before \
+         ({name}, last seen {}), not this card's own. Nothing was read or copied. Take the \
+         card out, wait a few seconds, and put it back in.",
+        other.last_seen.format("%H:%M")
+    ))
+}
+
+impl AppState {
+    /// The same checks for the card in `root` as it is now, before an import starts:
+    /// first the card's own volume ID against the one Windows shows, then the ledger's
+    /// for cards whose first sector the app can't read.
+    fn check_card_is_itself(&self, root: &Path) -> Result<(), String> {
+        if scan::check_card_shows_itself(root)? {
+            return Err(scan::SHOWN_AFRESH.into());
+        }
+        let seen = sighting(
+            &volume_info::volume_info(root),
+            &storage::identify(root),
+            &CardDetails::default(),
+        );
+        refuse_another_cards_folders(&*self.ledger.lock().map_err(|e| e.to_string())?, &seen)
+    }
+}
+
 fn sighting(volume: &VolumeInfo, drive: &DriveIdentity, details: &CardDetails) -> CardSighting {
     CardSighting {
         volume_id: volume.id.clone(),
@@ -538,7 +587,7 @@ async fn remove_camera(
                 .my_cameras()
                 .map_err(|e| format!("Couldn't read My Cameras: {e}"))?;
             if let Err(e) = state.drop_wifi_unless_mine(&model, &mine) {
-                eprintln!("{e}");
+                log::line(e);
             }
             let mut camera = shutter::MyCameras::default();
             camera.add(&model, serial.as_deref(), internal_serial.as_deref());
@@ -748,6 +797,7 @@ fn build_report(
 ) -> Result<CardReport, String> {
     let started = Instant::now();
     let files = scan::scan_card(root).map_err(|e| format!("Couldn't read the card: {e}"))?;
+    scan::check_content(&files)?;
 
     let photos = files.iter().filter(|f| f.kind == MediaKind::Photo);
     let videos = files.iter().filter(|f| f.kind == MediaKind::Video);
@@ -1046,9 +1096,76 @@ fn open_wifi(local_data: &Path) -> card_intake_core::camera_wifi::Store {
             "Couldn't read the saved camera Wi-Fi ({}): {e}",
             path.display()
         );
-        eprintln!("{reason}");
+        log::line(&reason);
         card_intake_core::camera_wifi::Store::unavailable(&path, reason)
     })
+}
+
+/// The saved cards, imports and settings. A file that can't be read is left as it is.
+fn load_saved(ledger: &Path, settings: &Path) -> Result<(Ledger, Settings), String> {
+    let unread = |what: &str, path: &Path, e: std::io::Error| {
+        format!(
+            "Couldn't read {what} ({}): {e}. The file was left as it is.",
+            path.display()
+        )
+    };
+    Ok((
+        Ledger::load(ledger).map_err(|e| unread("the list of cards and imports", ledger, e))?,
+        Settings::load(settings).map_err(|e| unread("the settings", settings, e))?,
+    ))
+}
+
+/// Everything the app keeps while it runs, read from this computer's folders.
+fn open_state(app: &tauri::App) -> Result<AppState, String> {
+    let folder = |found: tauri::Result<PathBuf>| {
+        found.map_err(|e| format!("Couldn't find the app's folders on this computer: {e}"))
+    };
+    let data_dir = folder(app.path().app_data_dir())?;
+    let local_data = folder(app.path().app_local_data_dir())?;
+    let ledger_path = data_dir.join("ledger.json");
+    let settings_path = folder(app.path().app_config_dir())?.join("settings.json");
+    let (ledger, settings) = load_saved(&ledger_path, &settings_path)?;
+    let mut shutter =
+        shutter::Store::open(&data_dir.join(shutter::SHARED_DB)).unwrap_or_else(|e| {
+            log::line(format!(
+                "{e} Keeping shutter counts in memory for this session."
+            ));
+            shutter::Store::in_memory()
+        });
+    // Counts kept by an older build of this app.
+    if let Err(e) = shutter.import_json(&data_dir.join(shutter::SHARED_FILE)) {
+        log::line(format!("Couldn't bring in the old shutter counts: {e}"));
+    }
+    let resource_dir = app.path().resource_dir().ok();
+    Ok(AppState {
+        ledger: Mutex::new(ledger),
+        ledger_path,
+        settings: Mutex::new(settings),
+        settings_path,
+        exiftool: find_exiftool(resource_dir.as_deref()),
+        smartctl: find_smartctl(resource_dir.as_deref()),
+        imports: Arc::new(imports::ImportControl::default()),
+        pending_path: data_dir.join("pending-import.json"),
+        wifi: Mutex::new(open_wifi(&local_data)),
+        local_data,
+        pictures: app.path().picture_dir().ok(),
+        shutter: Mutex::new(shutter),
+        new_cameras: Mutex::new(ShutterDb::default()),
+        held_wifi: Mutex::new(Vec::new()),
+        library: library::LibraryControl::default(),
+        delivering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        activity_gate: Mutex::new(()),
+    })
+}
+
+/// Says why the app can't start, in the log and in a message box, then exits.
+fn fail_to_start(reason: &str) -> ! {
+    log::line(format!("Card Intake couldn't start. {reason}"));
+    let log = log::path()
+        .map(|path| format!("\n\nThe log is {}.", path.display()))
+        .unwrap_or_default();
+    alert::error("Card Intake couldn't start", &format!("{reason}{log}"));
+    std::process::exit(1)
 }
 
 fn main() {
@@ -1061,40 +1178,34 @@ fn main() {
         std::process::exit(code);
     }
 
-    tauri::Builder::default()
-        .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
-            let ledger_path = data_dir.join("ledger.json");
-            let mut shutter = shutter::Store::open(&data_dir.join(shutter::SHARED_DB))
-                .unwrap_or_else(|e| {
-                    eprintln!("{e} Keeping shutter counts in memory for this session.");
-                    shutter::Store::in_memory()
-                });
-            // Counts kept by an older build of this app.
-            if let Err(e) = shutter.import_json(&data_dir.join(shutter::SHARED_FILE)) {
-                eprintln!("Couldn't bring in the old shutter counts: {e}");
+    let context = tauri::generate_context!();
+    log::open(&log::folder(&context.config().identifier));
+    let mut builder = tauri::Builder::default();
+    // The installed app opens once: starting it again shows the window that's already
+    // open, so two copies never save over each other's cards and imports. `cargo run`
+    // builds start regardless, to run beside the installed app.
+    if !cfg!(debug_assertions) {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
             }
-            let settings_path = app.path().app_config_dir()?.join("settings.json");
-            let resource_dir = app.path().resource_dir().ok();
-            app.manage(AppState {
-                ledger: Mutex::new(Ledger::load(&ledger_path)?),
-                ledger_path,
-                settings: Mutex::new(Settings::load(&settings_path)?),
-                settings_path,
-                exiftool: find_exiftool(resource_dir.as_deref()),
-                smartctl: find_smartctl(resource_dir.as_deref()),
-                imports: Arc::new(imports::ImportControl::default()),
-                pending_path: data_dir.join("pending-import.json"),
-                local_data: app.path().app_local_data_dir()?,
-                pictures: app.path().picture_dir().ok(),
-                shutter: Mutex::new(shutter),
-                new_cameras: Mutex::new(ShutterDb::default()),
-                wifi: Mutex::new(open_wifi(&app.path().app_local_data_dir()?)),
-                held_wifi: Mutex::new(Vec::new()),
-                library: library::LibraryControl::default(),
-                delivering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                activity_gate: Mutex::new(()),
-            });
+        }));
+    }
+    builder
+        .setup(|app| {
+            log::line(format!("Card Intake {} started", env!("CARGO_PKG_VERSION")));
+            let state = open_state(app).unwrap_or_else(|reason| fail_to_start(&reason));
+            app.manage(state);
+            // The window opens only now (`create` is false in tauri.conf.json), so its
+            // page never asks for what isn't there yet.
+            for window in &app.config().app.windows {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), window)
+                    .and_then(|window| window.build())
+                    .unwrap_or_else(|e| {
+                        fail_to_start(&format!("The app's window couldn't be opened: {e}"))
+                    });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1162,11 +1273,13 @@ fn main() {
             camera_wifi::copy_camera_wifi,
             camera_wifi::forget_camera_wifi
         ])
-        .build(tauri::generate_context!())
-        .expect("Card Intake failed to start")
+        .build(context)
+        .unwrap_or_else(|e| fail_to_start(&format!("The app's window couldn't be opened: {e}")))
         .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                app.state::<AppState>().imports.cleanup_catalogs();
+            if matches!(event, tauri::RunEvent::Exit)
+                && let Some(state) = app.try_state::<AppState>()
+            {
+                state.imports.cleanup_catalogs();
             }
         });
 }
@@ -1393,6 +1506,51 @@ mod tests {
         // Other bodies keep the generic explanation when ExifTool finds nothing.
         assert_eq!(no_shutter_note("ILCE-7RM6"), None);
         assert_eq!(no_shutter_note("NIKON Z 8"), None);
+    }
+
+    #[test]
+    fn a_saved_file_that_cant_be_read_is_named_and_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("ledger.json");
+        let settings = dir.path().join("settings.json");
+        assert!(load_saved(&ledger, &settings).is_ok());
+        std::fs::write(&settings, "{ not json").unwrap();
+        let error = load_saved(&ledger, &settings).err().unwrap();
+        assert!(error.starts_with("Couldn't read the settings ("), "{error}");
+        assert!(error.contains("settings.json"), "{error}");
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{ not json");
+        std::fs::write(&ledger, "[]").unwrap();
+        let error = load_saved(&ledger, &settings).err().unwrap();
+        assert!(
+            error.starts_with("Couldn't read the list of cards and imports ("),
+            "{error}"
+        );
+        assert!(error.contains("ledger.json"), "{error}");
+    }
+
+    #[test]
+    fn a_card_shown_with_another_cards_folders_is_refused_by_name() {
+        let cfexpress = |volume: &str, serial: &str| CardSighting {
+            volume_id: Some(volume.into()),
+            hardware_serial: Some(serial.into()),
+            model: Some("CEA-G240T".into()),
+            ..CardSighting::default()
+        };
+        let mut ledger = Ledger::default();
+        let seen = chrono::NaiveDate::from_ymd_opt(2026, 11, 23)
+            .unwrap()
+            .and_hms_opt(13, 18, 43)
+            .unwrap();
+        ledger.record_card(cfexpress("02BE-8994", "ONE"), seen);
+        ledger.record_card(cfexpress("72A5-5856", "TWO"), seen);
+        assert_eq!(
+            refuse_another_cards_folders(&ledger, &cfexpress("72A5-5856", "TWO")),
+            Ok(())
+        );
+        let error =
+            refuse_another_cards_folders(&ledger, &cfexpress("02BE-8994", "TWO")).unwrap_err();
+        assert!(error.contains("(CEA-G240T, last seen 13:18)"), "{error}");
+        assert!(error.contains("Nothing was read or copied"), "{error}");
     }
 
     #[test]

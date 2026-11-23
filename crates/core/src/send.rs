@@ -179,46 +179,6 @@ pub(crate) fn nas_target(
     Ok((target, None))
 }
 
-/// Sends one photo or clip of an import to the NAS as soon as its laptop copy is
-/// verified, with Send's rules: an identical copy (here or in the date's other
-/// folders) is skipped, a different photo with the same name stops the import, and a
-/// new one is copied and read back against the card's checksum.
-pub fn relay_file(
-    nas: &Path,
-    file: &CopyFile,
-    require_network: bool,
-    cache: &DateFolders,
-    cancel: &AtomicBool,
-    progress: impl FnMut(u64),
-) -> Result<Relayed, String> {
-    copies::cancelled(cancel)?;
-    import::check_destination(nas, require_network)?;
-    let shoot: PathBuf = file.relative.components().take(2).collect();
-    let date = shoot_date(&shoot)?;
-    let others = date_folders(nas, date, cache);
-    let (target, found_in) = nas_target(nas, &shoot, file, &others, cancel)?;
-    copies::inspect(nas, &target)?;
-    let mut candidate = file.clone();
-    candidate.relative = target.clone();
-    let copied = match copies::compare(&candidate, nas, false, cancel)? {
-        Some(true) => false,
-        Some(false) => return Err(copies::conflict(&nas.join(&target))),
-        None => {
-            import::check_destination(nas, require_network)?;
-            let mut progress = progress;
-            copies::copy(&candidate, nas, cancel, |_, n| progress(n))?;
-            true
-        }
-    };
-    Ok(Relayed {
-        target,
-        copied,
-        found_in,
-        size: file.size,
-        modified: file.modified,
-    })
-}
-
 /// A sidecar, or a Sony clip's proxy: it follows its photo or clip.
 fn sidecar(path: &Path) -> bool {
     path.extension()

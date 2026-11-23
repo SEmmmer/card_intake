@@ -92,8 +92,8 @@ body {
   line-height: 1.5;
 }
 h1, h2, h3 { text-wrap: balance; }
-code, .mono { font-family: var(--font-mono); }
-.num { font-variant-numeric: tabular-nums; }
+p, li, .eyebrow, .opt, .item-sub { text-wrap: pretty; }
+code { font-family: var(--font-mono); }
 .muted { color: var(--muted); }
 .wrap { max-width: 1240px; margin: 0 auto; padding-left: 20px; padding-right: 20px; }
 @media (max-width: 640px) { .wrap { padding-left: 16px; padding-right: 16px; } }
@@ -115,6 +115,7 @@ code, .mono { font-family: var(--font-mono); }
 .sec-title { font-family: var(--font-display); font-weight: 600; font-size: 22px; line-height: 1.2; margin: 0; }
 .sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .sec-head .muted { font-size: 13px; }
+.sec-head .sec-title { white-space: nowrap; }
 
 /* Desk: the inserted card */
 .desk { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 18px 40px -28px var(--shadow); overflow: hidden; }
@@ -132,6 +133,7 @@ code, .mono { font-family: var(--font-mono); }
 .picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
 .picker button { font: 500 13px var(--font-body); color: var(--accent); background: var(--accent-soft); border: 1px solid transparent; border-radius: 999px; padding: 3px 12px; cursor: pointer; }
 .picker button:hover { border-color: currentColor; }
+.picker button:focus-visible, .item-head .fold:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .picker button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 
 .card-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 16px 18px; align-items: center; }
@@ -220,6 +222,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .btn:hover:not(:disabled) { filter: brightness(1.08); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn:focus-visible, .btn-quiet:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn, .btn-small, .btn-quiet, .btn-open, .picker button, .item-head .fold { transition: background-color 0.12s, border-color 0.12s, color 0.12s, filter 0.12s; }
 /* Secondary buttons are tinted by what they do: blue, amber to stop, red to remove, green to finish. */
 .btn-quiet { font: 500 13px var(--font-body); color: var(--accent); background: var(--accent-soft); border: 1px solid transparent; border-radius: 6px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
 .btn-quiet:hover:not(:disabled) { border-color: currentColor; }
@@ -297,8 +300,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .item + .item { border-top: 1px solid var(--line); }
 .item-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .item-name { font-family: var(--font-display); font-weight: 600; font-size: 20px; line-height: 1.2; }
-.item-name small { font-family: var(--font-body); font-weight: 400; font-size: 13px; color: var(--muted); margin-left: 6px; }
+.item-name small { display: inline-block; font-family: var(--font-body); font-weight: 400; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.item-tools { display: flex; align-items: center; justify-content: flex-end; gap: 6px 8px; flex-wrap: wrap; margin-left: auto; }
 .item-sub { font-size: 13px; color: var(--muted); margin-top: 1px; }
 .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 10px; margin: 12px 0 0; }
 .facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); line-height: 1.3; }
@@ -311,7 +315,6 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .shutter b { font-family: var(--font-display); font-weight: 700; font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums; }
 .shutter b.none { color: var(--stripe); }
 .shutter .lbl { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
-.shutter-note { font-size: 13px; color: var(--muted); max-width: 34ch; text-align: right; }
 .spark { width: 100%; height: auto; display: block; margin-top: 12px; }
 .spark .grid { stroke: var(--line); stroke-width: 1; }
 .spark .area { fill: var(--accent-soft); }
@@ -332,8 +335,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .nas-panel { padding: 14px 16px; }
 .nas-panel label { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-bottom: 4px; }
 .nas-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.nas-row input { flex: 1 1 180px; min-width: 0; font: 500 14px var(--font-mono); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
-.nas-row input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.nas-row input, .nas-panel > input { flex: 1 1 180px; min-width: 0; font: 500 14px var(--font-mono); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
+.nas-row input:focus-visible, .nas-panel > input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.nas-panel > input { display: block; }
 .btn-small { font: 600 13px var(--font-body); color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; white-space: nowrap; }
 .btn-small:hover:not(:disabled) { filter: brightness(1.08); }
 .btn-small:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
@@ -374,7 +378,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 32px); background: var(--ink); color: var(--bg); font-size: 13.5px; line-height: 1.45; padding: 10px 16px; border-radius: 8px; box-shadow: 0 10px 30px -10px var(--shadow); z-index: 20; }
 
 @media (prefers-reduced-motion: reduce) {
-  .bar i { transition: none; }
+  .bar i, .btn, .btn-small, .btn-quiet, .btn-open, .picker button, .item-head .fold { transition: none; }
   .pulse { animation: none; }
 }
 </style>
@@ -418,9 +422,16 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 .not-mine-label { font-size: 13.5px; color: var(--muted); }
 .not-mine-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 8px 0 0 34px; font-size: 13.5px; }
 .not-mine-item .actions { display: flex; gap: 8px; }
-#ownership-body fieldset { border: 0; padding: 0; margin: 0 0 20px; }
-#ownership-body legend { font-weight: 500; }
-#ownership-body label { display: inline-flex; gap: 6px; margin-right: 16px; align-items: center; }
+#ownership-dialog .dialog { width: min(520px, 100%); }
+#ownership-body { padding-top: 10px; }
+#ownership-body fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px 14px; margin: 0 0 12px; min-width: 0; }
+#ownership-body legend { float: left; width: 100%; padding: 0; font-weight: 600; }
+#ownership-body p { clear: both; margin: 0 0 10px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+#ownership-body label { display: inline-flex; gap: 8px; margin-right: 8px; align-items: center; font-size: 13.5px; font-weight: 500; border: 1px solid var(--line); border-radius: 6px; padding: 6px 14px 6px 10px; cursor: pointer; }
+#ownership-body label:hover { border-color: var(--muted); }
+#ownership-body label:has(input:checked) { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+#ownership-body label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+#ownership-body input { margin: 0; accent-color: var(--accent); }
 #ownership-error { margin: 0 22px 16px; }
 .nas-panel select { display: block; width: 100%; box-sizing: border-box; font: 500 14px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; margin-bottom: 8px; }
 .nas-panel select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
@@ -1856,7 +1867,13 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         state.current = null; state.report = null; state.error = null; state.run = null;
         renderDesk();
       }
-      if (!state.current && roots.length) selectCard(roots[0]);
+      // Another card at the same drive letter, swapped in too quickly for the letter to
+      // go, or one Windows still shows the card before for: its ID (read from the card
+      // itself) isn't the one on screen. Read it again.
+      var shown = cards.filter(function (c) { return c.root === state.current; })[0];
+      var onScreen = state.report && state.report.volume && state.report.volume.id;
+      if (shown && shown.id && onScreen && shown.id !== onScreen && !state.loading) selectCard(state.current);
+      else if (!state.current && roots.length) selectCard(roots[0]);
       else if (changed) renderDesk();
     }).catch(function (e) { console.error(e); }).finally(function () { state.polling = false; });
   }
@@ -2325,9 +2342,10 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         (v.free_bytes != null ? '<span>Free ' + esc(gbOf(v.free_bytes)) + '</span>' : "") + '</div>';
     }
 
+    var monthDay = function (sh) { return dayLabel(sh.date).split(", ")[1].replace(" ", "\u00a0"); };
     var dates = state.shoots.length
-      ? (state.shoots.length === 1 ? dayLabel(state.shoots[0].date).split(", ")[1]
-        : dayLabel(state.shoots[0].date).split(", ")[1] + " – " + dayLabel(state.shoots[state.shoots.length - 1].date).split(", ")[1])
+      ? (state.shoots.length === 1 ? monthDay(state.shoots[0])
+        : monthDay(state.shoots[0]) + "\u00a0– " + monthDay(state.shoots[state.shoots.length - 1]))
       : "—";
     var year = state.shoots.length ? state.shoots[0].date.slice(0, 4) : "";
     html += '<div class="stats">' +
@@ -3432,7 +3450,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var inReader = currentKey != null && currentKey === c.id;
     var last = c.health && c.health.length ? c.health[c.health.length - 1] : null;
     var name = c.name || c.model || (inReader ? (state.report.volume.name || baseName(state.current)) : "Card");
-    var serial = c.hardware_serial ? '<small>SN ' + esc(c.hardware_serial) + '</small>' : "";
+    var serial = c.hardware_serial ? ' <small>SN ' + esc(c.hardware_serial) + '</small>' : "";
     var fresh = c.registered === false;
     var chips = (fresh ? '<span class="chip new">New Card</span>' : "") +
       (inReader ? '<span class="chip live">In reader</span>' : "") +
@@ -3455,8 +3473,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     }
     var key = "card:" + c.id, folded = !fresh && !!state.folded[key];
     var head = '<div class="item-head"><span class="item-title">' + (fresh ? "" : foldButton(key)) + '<span class="item-name">' + esc(name) + serial + '</span></span>' +
-      '<span class="chips">' + chips + '</span>' +
-      (fresh ? "" : '<button type="button" class="btn-quiet danger" data-remove-card="' + esc(c.id) + '" title="Removes this card from this computer. Its import history stays.">Remove</button>') + '</div>';
+      '<span class="item-tools"><span class="chips">' + chips + '</span>' +
+      (fresh ? "" : '<button type="button" class="btn-quiet danger" data-remove-card="' + esc(c.id) + '" title="Removes this card from this computer. Its import history stays.">Remove</button>') + '</span></div>';
     if (folded) return '<article class="item folded">' + head + '</article>';
     return '<article class="item' + (fresh ? " new" : "") + '">' + head +
       (fresh ? '<div class="register"><button type="button" class="btn-small" data-register-card="' + esc(c.id) + '">Register to My Cards</button></div>' : "") +
@@ -3572,11 +3590,11 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var foldKey = "camera:" + (c.serial || c.internal_serial || c.model);
     // A new camera: its serial number, and Register below it.
     var head = isNew
-      ? '<div class="item-head"><span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span>' +
+      ? '<div class="item-head"><span class="item-name">' + esc(c.model) + (c.name ? ' <small>' + esc(c.name) + '</small>' : "") + '</span>' +
         '<span class="chip new">New Camera</span></div><div class="item-id">' + sn + '</div>' +
         '<div class="register"><button type="button" class="btn-small" data-register-camera="' + newIndex + '">Register to My Cameras</button></div>'
-      : '<div class="item-head"><span class="item-title">' + foldButton(foldKey) + '<span class="item-name">' + esc(c.model) + (c.name ? '<small>' + esc(c.name) + '</small>' : "") + '</span></span>' + sn +
-        '<button type="button" class="btn-quiet danger" data-remove-camera="' + state.cameras.indexOf(c) + '" title="Removes this camera and its shutter history from every computer when they sync.">Remove</button></div>';
+      : '<div class="item-head"><span class="item-title">' + foldButton(foldKey) + '<span class="item-name">' + esc(c.model) + (c.name ? ' <small>' + esc(c.name) + '</small>' : "") + '</span></span><span class="item-tools">' + sn +
+        '<button type="button" class="btn-quiet danger" data-remove-camera="' + state.cameras.indexOf(c) + '" title="Removes this camera and its shutter history from every computer when they sync.">Remove</button></span></div>';
     if (!isNew && state.folded[foldKey]) return '<article class="item folded">' + head + '</article>';
     var shutter = count != null
       ? '<div class="shutter"><div><span class="lbl">' + (c.has_mechanical_shutter === false ? "Electronic shutter count" : "Shutter count") +

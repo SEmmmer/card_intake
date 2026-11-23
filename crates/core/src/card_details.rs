@@ -81,12 +81,33 @@ pub struct FileSystemDetails {
     pub percent_in_use: Option<u8>,
     /// Where the data area starts, from the start of the file system.
     pub data_offset_bytes: Option<u64>,
+    /// The volume ID in the boot sector, written as Windows shows it ("0B35-ECD9").
+    /// Read from the card itself, so it's the card in the reader's even while Windows
+    /// still shows another card's folders.
+    pub volume_serial: Option<String>,
 }
 
 /// Reads what the card and its reader reveal. Never asks for admin rights; facts
 /// Windows doesn't give a normal user are left out.
 pub fn card_details(root: &Path) -> CardDetails {
     platform::card_details(root)
+}
+
+/// The volume ID the card in the reader at `root` (a drive root such as `E:\`) has in
+/// its own boot sector, read past Windows' cache. `None` when Windows doesn't let a
+/// normal user read the card's first sector (a fixed disk), or off Windows.
+///
+/// Windows can go on showing the file system of the card that was in a reader before,
+/// when the reader doesn't report that the card was swapped: names, sizes and volume
+/// ID are the old card's, while reads return what the new card has at those places.
+/// This ID is the new card's own, so it differs from the one Windows shows.
+pub fn volume_serial_on_card(root: &Path) -> Option<String> {
+    platform::volume_serial_on_card(root)
+}
+
+/// A volume ID as Windows writes it, "0B35-ECD9".
+fn volume_id_text(serial: u32) -> String {
+    format!("{:04X}-{:04X}", serial >> 16, serial & 0xFFFF)
 }
 
 /// SD cards count their capacity in 512 KiB steps (SDHC and larger).
@@ -147,6 +168,7 @@ pub fn parse_boot_sector(sector: &[u8]) -> Option<BootSector> {
                 media_failure: Some(flags & 0b100 != 0),
                 percent_in_use: (sector[112] <= 100).then_some(sector[112]),
                 data_offset_bytes: Some(u32_at(88) << sector_shift),
+                volume_serial: Some(volume_id_text(u32_at(100) as u32)),
             },
             fat_offset: None,
         });
@@ -179,11 +201,17 @@ pub fn parse_boot_sector(sector: &[u8]) -> Option<BootSector> {
         4085..65525 => "FAT16",
         _ => "FAT32",
     };
+    // The extended parameter block, after FAT32's longer one or right after FAT16's:
+    // its signature 0x29 says the volume ID that follows is there.
+    let extended = if u16_at(22) == 0 { 64 } else { 36 };
+    let volume_serial =
+        (sector[extended + 2] == 0x29).then(|| volume_id_text(u32_at(extended + 3) as u32));
     Some(BootSector {
         details: FileSystemDetails {
             name: name.into(),
             cluster_bytes: Some(sectors_per_cluster * bytes_per_sector),
             data_offset_bytes: Some(metadata * bytes_per_sector),
+            volume_serial,
             ..FileSystemDetails::default()
         },
         fat_offset: Some(reserved * bytes_per_sector),
@@ -269,7 +297,7 @@ mod platform {
         IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2,
     };
     use windows_sys::Win32::Foundation::ERROR_WRITE_PROTECT;
-    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceW;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_NO_BUFFERING, GetDiskFreeSpaceW};
     use windows_sys::Win32::Storage::IscsiDisc::IOCTL_SCSI_GET_ADDRESS;
     use windows_sys::Win32::System::Ioctl::{
         FSCTL_IS_VOLUME_DIRTY, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
@@ -379,6 +407,35 @@ mod platform {
     #[repr(C, align(4096))]
     struct Sector([u8; 4096]);
 
+    /// The card's volume for raw reads that go to the card, not to what Windows has
+    /// cached of it: reads must then be whole sectors into an aligned buffer.
+    fn open_volume(drive: &str) -> std::io::Result<File> {
+        File::options()
+            .read(true)
+            .share_mode(3)
+            .custom_flags(FILE_FLAG_NO_BUFFERING)
+            .open(format!(r"\\.\{drive}"))
+    }
+
+    pub fn volume_serial_on_card(root: &Path) -> Option<String> {
+        // Only a drive root: `C:\Users\…` must never read the C: drive.
+        let text = root.to_string_lossy();
+        let bytes = text.as_bytes();
+        if bytes.len() != 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || !matches!(bytes[2], b'\\' | b'/')
+        {
+            return None;
+        }
+        let volume = open_volume(&text[..2]).ok()?;
+        let mut buffer = Box::new(Sector([0; 4096]));
+        // 4 KiB is a whole number of sectors whatever the card's sector size, and the
+        // boot sector's signature sits at byte 510 in either.
+        volume.seek_read(&mut buffer.0, 0).ok()?;
+        parse_boot_sector(&buffer.0)?.details.volume_serial
+    }
+
     /// The file system's boot sector facts. Windows lets a normal user read the first
     /// sectors of a removable card's volume; for a fixed disk only the cluster size
     /// and Windows' own dirty flag are left.
@@ -388,14 +445,12 @@ mod platform {
         sector_bytes: Option<u32>,
     ) -> Option<FileSystemDetails> {
         let len = sector_bytes.unwrap_or(512).clamp(512, 4096) as usize;
-        let volume = File::options()
-            .read(true)
-            .share_mode(3)
-            .open(format!(r"\\.\{drive}"));
+        let volume = open_volume(drive);
         let mut buffer = Box::new(Sector([0; 4096]));
         let boot = volume.as_ref().ok().and_then(|v| {
-            v.seek_read(&mut buffer.0[..len], 0).ok()?;
-            parse_boot_sector(&buffer.0[..len])
+            // All 4 KiB: whole sectors even when the sector size isn't known.
+            v.seek_read(&mut buffer.0, 0).ok()?;
+            parse_boot_sector(&buffer.0)
         });
         if let Some(mut boot) = boot {
             if let (Some(offset), Ok(v)) = (boot.fat_offset, &volume)
@@ -571,6 +626,10 @@ mod platform {
     pub fn card_details(_root: &Path) -> CardDetails {
         CardDetails::default()
     }
+
+    pub fn volume_serial_on_card(_root: &Path) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -624,6 +683,8 @@ mod tests {
         assert_eq!(fs.media_failure, Some(false));
         assert_eq!(fs.percent_in_use, Some(81));
         assert_eq!(fs.data_offset_bytes, Some(15_616 * 512));
+        // The ID Windows gave this card: the same one, read from the card.
+        assert_eq!(fs.volume_serial.as_deref(), Some("0B35-ECD9"));
 
         // Pulled out while writing, and bad sectors met.
         let fs = parse_boot_sector(&exfat_boot(0b110)).unwrap().details;
@@ -658,6 +719,29 @@ mod tests {
         assert_eq!(boot.details.cluster_bytes, Some(32 * 1024));
         assert_eq!(boot.fat_offset, Some(32 * 512));
         assert_eq!(boot.details.data_offset_bytes, Some((32 + 2 * 7_607) * 512));
+        // No extended boot signature: no volume ID to read.
+        assert_eq!(boot.details.volume_serial, None);
+        let mut signed = fat32_boot();
+        signed[66] = 0x29;
+        signed[67..71].copy_from_slice(&0x1A2B_3C4Du32.to_le_bytes());
+        let fs = parse_boot_sector(&signed).unwrap().details;
+        assert_eq!(fs.volume_serial.as_deref(), Some("1A2B-3C4D"));
+        // FAT16 keeps it earlier, right after its shorter parameter block.
+        let mut fat16 = vec![0u8; 512];
+        fat16[11..13].copy_from_slice(&512u16.to_le_bytes());
+        fat16[13] = 64;
+        fat16[14..16].copy_from_slice(&1u16.to_le_bytes());
+        fat16[16] = 2;
+        fat16[17..19].copy_from_slice(&512u16.to_le_bytes());
+        fat16[22..24].copy_from_slice(&250u16.to_le_bytes());
+        fat16[32..36].copy_from_slice(&3_900_000u32.to_le_bytes());
+        fat16[38] = 0x29;
+        fat16[39..43].copy_from_slice(&0x0000_00FFu32.to_le_bytes());
+        fat16[510] = 0x55;
+        fat16[511] = 0xAA;
+        let fs = parse_boot_sector(&fat16).unwrap().details;
+        assert_eq!(fs.name, "FAT16");
+        assert_eq!(fs.volume_serial.as_deref(), Some("0000-00FF"));
 
         let mut fat = vec![0u8; 512];
         fat[4..8].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
@@ -678,6 +762,15 @@ mod tests {
         let mut nonsense = fat32_boot();
         nonsense[11..13].copy_from_slice(&700u16.to_le_bytes());
         assert!(parse_boot_sector(&nonsense).is_none());
+    }
+
+    #[test]
+    fn reads_a_volume_id_only_at_a_drive_root() {
+        // A folder on C: must never read the C: drive's first sector.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(volume_serial_on_card(dir.path()), None);
+        assert_eq!(volume_serial_on_card(Path::new(r"\\NAS\photos")), None);
+        assert_eq!(volume_serial_on_card(Path::new("E:")), None);
     }
 
     #[test]

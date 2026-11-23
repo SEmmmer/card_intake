@@ -186,6 +186,21 @@ impl Ledger {
         })
     }
 
+    /// Another card whose folders Windows is showing in place of this card's. After a
+    /// card is swapped in a reader Windows didn't see empty, it can keep the old
+    /// card's file system: the old volume ID and file names over the new card's data,
+    /// while the card itself gives its own serial number. Two cards never share a
+    /// volume ID otherwise.
+    pub fn shown_instead(&self, seen: &CardSighting) -> Option<&CardRecord> {
+        let (serial, volume) = (seen.hardware_serial.as_ref()?, seen.volume_id.as_deref()?);
+        self.cards.iter().find(|c| {
+            c.current_volume_id() == volume
+                && c.hardware_serial
+                    .as_ref()
+                    .is_some_and(|other| other != serial)
+        })
+    }
+
     /// Remembers a card and returns its record's key, or `None` when there's nothing
     /// to recognise it by (no serial number and no volume ID).
     pub fn record_card(&mut self, seen: CardSighting, now: NaiveDateTime) -> Option<String> {
@@ -657,6 +672,46 @@ mod tests {
         assert!(ledger.record_health("A", health, at("2026-11-01 10:05")));
         assert_eq!(ledger.cards[0].hardware_serial.as_deref(), Some("ABC123"));
         assert_eq!(ledger.cards[0].health.len(), 1);
+    }
+
+    #[test]
+    fn a_card_under_another_cards_volume_id_is_the_other_cards_folders() {
+        let mut ledger = Ledger::default();
+        ledger.record_card(cfexpress("02BE-8994", "SN-ONE"), at("2026-11-23 13:18"));
+        ledger.record_card(cfexpress("72A5-5856", "SN-TWO"), at("2026-11-23 13:20"));
+        // The second card, swapped in while Windows still shows the first one's folders.
+        let stale = cfexpress("02BE-8994", "SN-TWO");
+        assert_eq!(
+            ledger
+                .shown_instead(&stale)
+                .unwrap()
+                .hardware_serial
+                .as_deref(),
+            Some("SN-ONE")
+        );
+        // Each card under its own volume ID, formatted or new, is itself.
+        assert!(
+            ledger
+                .shown_instead(&cfexpress("02BE-8994", "SN-ONE"))
+                .is_none()
+        );
+        assert!(
+            ledger
+                .shown_instead(&cfexpress("72A5-5856", "SN-TWO"))
+                .is_none()
+        );
+        assert!(
+            ledger
+                .shown_instead(&cfexpress("AAAA-0001", "SN-TWO"))
+                .is_none()
+        );
+        assert!(
+            ledger
+                .shown_instead(&cfexpress("02BE-8994-x", "SN-NEW"))
+                .is_none()
+        );
+        // Without the card's own serial there is nothing to tell by.
+        assert!(ledger.shown_instead(&card("02BE-8994")).is_none());
     }
 
     /// A card behind a USB bridge: only its volume ID is known on insertion.

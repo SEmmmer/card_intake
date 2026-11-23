@@ -498,6 +498,21 @@ test('a replacement card at the same drive letter is picked up after uploading',
   assert.equal(a.calls.filter(c => c.command === 'read_card').length, reads + 1);
 });
 
+test('a card swapped in at the same drive letter is read again before anything is imported', async t => {
+  const a = await app(t);
+  const reads = () => a.calls.filter(c => c.command === 'read_card').length;
+  const before = reads();
+  // The card on screen, by the ID in its own boot sector: nothing to do.
+  a.fixture.roots = [{ root: 'E:\\', id: 'CARD-ID', has_sony_video: true }];
+  a.timers.get(2000)(); await settle();
+  assert.equal(reads(), before);
+  // Another card at E:, though Windows may still show the first one's folders.
+  a.fixture.roots = [{ root: 'E:\\', id: '72A5-5856', has_sony_video: true }];
+  a.timers.get(2000)(); await settle();
+  assert.equal(reads(), before + 1);
+  assert.equal(a.last('read_card').root, 'E:\\');
+});
+
 test('an uploading recovery entry after restart behaves as an ordinary offline import', async t => {
   const recovery = result({ offline: true, local_complete: true, uploading: true, nas_root: 'C:\\Pictures\\Card Intake Offline', upload_to: '\\\\NAS\\photos' });
   const a = await app(t, true, { ledger: { cards: [], cameras: [], imports: [recovery] } });
@@ -967,7 +982,7 @@ test('a Nikon Zf shows its mechanical count against Nikon’s rating, and its el
   await settle();
   // The inserted card's α7R VI isn't in My Cameras here, so it's listed first as new.
   const [zf] = a.window.document.querySelectorAll('#cameras .item:not(.new)');
-  assert.match(zf.querySelector('.item-name').textContent, /NIKON Z fZf/);
+  assert.match(zf.querySelector('.item-name').textContent, /NIKON Z f Zf/);
   assert.match(zf.textContent, /Shutter count28,948/);
   assert.match(zf.querySelector('.electronic').textContent, /Electronic34,004/);
   assert.match(zf.textContent, /14\.5% of 200,000 rated life/);

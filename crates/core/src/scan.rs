@@ -123,6 +123,93 @@ pub fn scan_card(root: &Path) -> io::Result<Vec<MediaFile>> {
     Ok(files)
 }
 
+/// Refuses a card whose photos don't hold what their names say. Windows can show the
+/// folders of the card that was in the reader before over the new card's data: every
+/// name and size is the old card's, and the bytes are whatever the new card has there.
+/// A copy of that would pass its read-back, so it must not start.
+pub fn check_content(files: &[MediaFile]) -> Result<(), String> {
+    let wrong: Vec<&MediaFile> = files
+        .iter()
+        .filter(|f| f.kind == MediaKind::Photo && !exif::content_matches(&f.path).unwrap_or(true))
+        .collect();
+    let Some(first) = wrong.first() else {
+        return Ok(());
+    };
+    let name = first.path.file_name().unwrap_or_default().to_string_lossy();
+    Err(format!(
+        "{name}{} on this card {} what the name says. Windows may still be showing the \
+         folders of the card that was in this reader before. Nothing was copied. Take the \
+         card out, wait a few seconds, and put it back in.",
+        match wrong.len() - 1 {
+            0 => String::new(),
+            1 => " and 1 other photo".into(),
+            more => format!(" and {more} other photos"),
+        },
+        if wrong.len() == 1 {
+            "doesn't hold"
+        } else {
+            "don't hold"
+        },
+    ))
+}
+
+/// Said when a card was only now shown with its own folders: whatever was chosen from
+/// the ones before (shoots, names) was chosen from another card's.
+pub const SHOWN_AFRESH: &str = "Windows was showing another card's folders for the card \
+     in this reader, and now shows its own. Nothing was copied. Check its shoots, then \
+     import again.";
+
+/// Makes sure Windows shows the card in the reader at `root`, not the one that was in
+/// it before.
+///
+/// A reader that doesn't tell Windows a card was swapped leaves the old card's file
+/// system mounted: the old card's names, sizes and volume ID over the new card's
+/// bytes. That happens to a card swapped for another (the second card of a camera
+/// that records to both), and to a card formatted in the camera and put back. Copies
+/// made then would hold the wrong bytes under the right names, and pass their
+/// read-back. The card's own boot sector tells: its volume ID differs from the one
+/// Windows shows. Windows is then made to read the card afresh, as on insertion.
+///
+/// `Ok(true)` when it was showing another card and now shows this one; an error when
+/// it still doesn't. Cards whose first sector Windows doesn't let the app read are
+/// left to the other checks (see [`check_content`]).
+pub fn check_card_shows_itself(root: &Path) -> Result<bool, String> {
+    shows_itself(
+        || crate::volume_info::volume_info(root).id,
+        || crate::card_details::volume_serial_on_card(root),
+        || crate::eject::remount_card(root),
+    )
+}
+
+/// [`check_card_shows_itself`] with what Windows shows, what the card holds and the
+/// remount passed in.
+fn shows_itself(
+    shown: impl Fn() -> Option<String>,
+    own: impl Fn() -> Option<String>,
+    remount: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    let differs = || match (shown(), own()) {
+        (Some(shown), Some(own)) if shown != own => Some((shown, own)),
+        _ => None,
+    };
+    let Some((shown, own)) = differs() else {
+        return Ok(false);
+    };
+    let why = match remount() {
+        Ok(()) => match differs() {
+            None => return Ok(true),
+            Some((still, _)) => format!("it still shows volume {still}"),
+        },
+        Err(why) => why,
+    };
+    Err(format!(
+        "Windows is showing the folders of another card (volume {shown}) for the card in \
+         this reader (volume {own}), and couldn't be made to read this card again: {why}. \
+         Nothing was read or copied. Close any window or app that has the card open and \
+         try again, or take the card out, wait a few seconds, and put it back in."
+    ))
+}
+
 fn capture_time(
     path: &Path,
     kind: MediaKind,
@@ -335,6 +422,106 @@ mod tests {
             .find(|f| f.path.extension().unwrap().eq_ignore_ascii_case("NEF"))
             .unwrap();
         assert_eq!(raw.captured.to_string(), "2026-11-07 09:15:22");
+    }
+
+    #[test]
+    fn a_card_shown_with_another_cards_file_system_is_read_again() {
+        use std::cell::{Cell, RefCell};
+        let id = |text: &str| Some(text.to_string());
+        let never = || -> Result<(), String> { panic!("a card showing itself was remounted") };
+        // Windows and the card agree, or one of them can't say: nothing to do.
+        assert_eq!(
+            shows_itself(|| id("72A5-5856"), || id("72A5-5856"), never),
+            Ok(false)
+        );
+        assert_eq!(shows_itself(|| id("02BE-8994"), || None, never), Ok(false));
+        assert_eq!(shows_itself(|| None, || id("72A5-5856"), never), Ok(false));
+
+        // 2026-11-23: the second card in, Windows still on the first one's volume. Read
+        // afresh, Windows shows the card's own.
+        let shown = RefCell::new("02BE-8994");
+        let remounts = Cell::new(0);
+        let remount = || {
+            remounts.set(remounts.get() + 1);
+            *shown.borrow_mut() = "72A5-5856";
+            Ok(())
+        };
+        let fixed = shows_itself(|| id(*shown.borrow()), || id("72A5-5856"), remount);
+        assert_eq!((fixed, remounts.get()), (Ok(true), 1));
+
+        // Another app has the card open, so Windows can't let go of the old volume.
+        let busy = shows_itself(
+            || id("02BE-8994"),
+            || id("72A5-5856"),
+            || Err("another app may have the card open: Access is denied.".into()),
+        )
+        .unwrap_err();
+        assert!(
+            busy.starts_with(
+                "Windows is showing the folders of another card (volume 02BE-8994) for the \
+                 card in this reader (volume 72A5-5856)"
+            ),
+            "{busy}"
+        );
+        assert!(
+            busy.contains("another app may have the card open"),
+            "{busy}"
+        );
+        assert!(busy.contains("Nothing was read or copied"), "{busy}");
+
+        // Read afresh and still the other volume: refused all the same.
+        let stuck = shows_itself(|| id("02BE-8994"), || id("72A5-5856"), || Ok(())).unwrap_err();
+        assert!(stuck.contains("it still shows volume 02BE-8994"), "{stuck}");
+    }
+
+    #[test]
+    fn a_folder_that_isnt_a_drive_root_is_never_remounted() {
+        let card = tempfile::tempdir().unwrap();
+        assert_eq!(check_card_shows_itself(card.path()), Ok(false));
+    }
+
+    #[test]
+    fn a_card_showing_another_cards_folders_is_refused() {
+        let card = tempfile::tempdir().unwrap();
+        let root = card.path();
+        let raw = crate::exif::tests::sample(true);
+        write(&root.join("DCIM/100MSDCF/DSC00001.ARW"), &raw, 60);
+        write(
+            &root.join("DCIM/100MSDCF/DSC00001.HIF"),
+            &crate::exif::tests::heif(&raw),
+            60,
+        );
+        write(&root.join("M4ROOT/CLIP/C0001.MP4"), b"clip", 60);
+        assert_eq!(check_content(&scan_card(root).unwrap()), Ok(()));
+        // The same names over another card's bytes.
+        write(&root.join("DCIM/100MSDCF/DSC00002.ARW"), &[0x7D; 64], 50);
+        let one = check_content(&scan_card(root).unwrap()).unwrap_err();
+        assert!(
+            one.starts_with("DSC00002.ARW on this card doesn't hold"),
+            "{one}"
+        );
+        write(&root.join("DCIM/100MSDCF/DSC00002.HIF"), &raw, 50);
+        write(&root.join("DCIM/100MSDCF/DSC00003.JPG"), &raw, 40);
+        let more = check_content(&scan_card(root).unwrap()).unwrap_err();
+        assert!(
+            more.contains("and 2 other photos on this card don't hold"),
+            "{more}"
+        );
+        assert!(more.contains("Nothing was copied"), "{more}");
+    }
+
+    #[test]
+    fn a_heif_photo_is_dated_by_its_exif() {
+        let card = tempfile::tempdir().unwrap();
+        let photo = card.path().join("DCIM/100MSDCF/DSC00001.HIF");
+        write(
+            &photo,
+            &crate::exif::tests::heif(&crate::exif::tests::sample(true)),
+            60,
+        );
+        let files = scan_card(card.path()).unwrap();
+        assert_eq!(files[0].time_source, TimeSource::Exif);
+        assert_eq!(files[0].captured.to_string(), "2026-11-06 17:21:04");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Shared logic for Card Intake, used by the desktop app and the NAS service.
+//! Shared logic for Card Intake, used by the desktop app.
 
 pub mod backup;
 pub mod camera_wifi;

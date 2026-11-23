@@ -20,3 +20,7 @@ ureq = { version = "2.12", default-features = false, features = ["json", "tls"] 
 url = "2"
 arboard = { version = "3", default-features = false }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+tauri-plugin-single-instance = "2.5"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
