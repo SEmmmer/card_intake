@@ -118,7 +118,7 @@ Under **Deliver → Finished photos folder and Immich**, choose the folder Immic
 | Windows | Read on insertion, without admin rights | Read by the app, which asks for admin rights each time | With [smartctl](https://www.smartmontools.org), with admin rights |
 | macOS | With smartmontools installed | No | No |
 
-A card the app can reach itself is known by its serial number, so formatting it in the camera keeps its record. Behind other USB bridges, and for SD cards in USB readers, only the volume ID is known, and a formatted card shows up as new. SD cards keep no health log. **Card details** shows what any card and its reader reveal without admin rights: the reader, its link speed, the SD size class and lock switch, and file system warnings.
+A card the app can reach itself is known by its serial number, so formatting it in the camera keeps its record. Behind other USB bridges, and for SD cards in USB readers, only the volume ID is known, and a formatted card shows up as new (a Sony MRW-G3 on a plain USB port, rather than USB4, is such a bridge). The next time the app reads the card's serial number, on insertion or with **Read card health**, that record folds back into the card's own, with its imports. SD cards keep no health log. **Card details** shows what any card and its reader reveal without admin rights: the reader, its link speed, the SD size class and lock switch, and file system warnings.
 
 **Shutter counts.** ExifTool reads the count of every photo on an inserted card, and the app keeps one count range per camera and shooting day. **Read NAS photos** reads every photo already on the share, so the graph goes back to the first shoot.
 

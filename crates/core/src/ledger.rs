@@ -186,6 +186,27 @@ impl Ledger {
         })
     }
 
+    /// A record of the same card made when only its volume ID could be read: the card,
+    /// formatted since, was inserted through a reader that couldn't reach its serial
+    /// number (a USB bridge, e.g. an MRW-G3 on a plain USB port), so it looked new.
+    /// `card` is the card's own record, recognised by `seen`'s serial number. A record
+    /// of another size is another card.
+    fn volume_only_twin(&self, card: usize, seen: &CardSighting) -> Option<usize> {
+        let volume = seen.volume_id.as_deref()?;
+        let own = &self.cards[card];
+        if seen.hardware_serial.is_none() || own.hardware_serial != seen.hardware_serial {
+            return None;
+        }
+        self.cards.iter().enumerate().position(|(i, c)| {
+            i != card
+                && c.hardware_serial.is_none()
+                && c.current_volume_id() == volume
+                && (c.capacity_bytes.is_none()
+                    || seen.capacity_bytes.is_none()
+                    || c.capacity_bytes == seen.capacity_bytes)
+        })
+    }
+
     /// Another card whose folders Windows is showing in place of this card's. After a
     /// card is swapped in a reader Windows didn't see empty, it can keep the old
     /// card's file system: the old volume ID and file names over the new card's data,
@@ -204,7 +225,15 @@ impl Ledger {
     /// Remembers a card and returns its record's key, or `None` when there's nothing
     /// to recognise it by (no serial number and no volume ID).
     pub fn record_card(&mut self, seen: CardSighting, now: NaiveDateTime) -> Option<String> {
-        let key = match self.find_card(&seen) {
+        // The card as it looked when its serial couldn't be read folds into its own
+        // record, imports and registration included.
+        let found = self
+            .find_card(&seen)
+            .map(|i| match self.volume_only_twin(i, &seen) {
+                Some(twin) => self.fold_into(twin, i),
+                None => i,
+            });
+        let key = match found {
             Some(i) => {
                 let card = &mut self.cards[i];
                 if let Some(volume) = seen.volume_id {
@@ -321,11 +350,18 @@ impl Ledger {
                 .iter()
                 .position(|c| c.hardware_serial.as_ref() == Some(s))
         });
+        // A record without a serial first: when the card's own record already has this
+        // volume ID too, that one is the card as inserted and folds in.
         let by_volume = volume_id.and_then(|volume| {
-            self.cards.iter().position(|c| {
-                c.current_volume_id() == volume
-                    && (c.hardware_serial.is_none() || c.hardware_serial == serial)
-            })
+            let on_volume = |c: &CardRecord| c.current_volume_id() == volume;
+            self.cards
+                .iter()
+                .position(|c| on_volume(c) && c.hardware_serial.is_none())
+                .or_else(|| {
+                    self.cards
+                        .iter()
+                        .position(|c| on_volume(c) && c.hardware_serial == serial)
+                })
         });
         let index = match (by_serial, by_volume) {
             (Some(card), Some(sighting)) if card != sighting => self.fold_into(sighting, card),
@@ -822,6 +858,87 @@ mod tests {
             ledger.card_key_for_volume("3333-CCCC").as_deref(),
             Some(key.as_str())
         );
+    }
+
+    #[test]
+    fn a_card_read_without_its_serial_folds_back_once_its_serial_is_read_on_insertion() {
+        let mut ledger = Ledger::default();
+        let key = ledger
+            .record_card(cfexpress("0E44-0B28", "BF7F0763"), at("2026-11-23 21:18"))
+            .unwrap();
+        ledger.register_card(&key);
+        // Formatted in the camera, then inserted in an MRW-G3 on a plain USB port: only
+        // the volume ID is known, so it looks new, and was registered and imported.
+        let as_inserted = ledger
+            .record_card(bridged("3B97-0C92"), at("2026-11-27 17:33"))
+            .unwrap();
+        assert_ne!(as_inserted, key);
+        ledger.register_card(&as_inserted);
+        ledger.record_import(import_from(&as_inserted));
+        // Back in a USB4 port the card is on the NVMe bus and gives its serial.
+        assert_eq!(
+            ledger.record_card(cfexpress("3B97-0C92", "BF7F0763"), at("2026-11-28 10:00")),
+            Some(key.clone())
+        );
+        assert_eq!(ledger.cards.len(), 1);
+        let card = &ledger.cards[0];
+        assert!(card.registered);
+        assert_eq!(card.formats, 1);
+        assert_eq!(card.insertions, 3);
+        assert_eq!(card.volume_id.as_deref(), Some("3B97-0C92"));
+        assert_eq!(card.bus.as_deref(), Some("NVMe"));
+        assert_eq!(card.first_seen, at("2026-11-23 21:18"));
+        assert_eq!(card.last_seen, at("2026-11-28 10:00"));
+        assert_eq!(ledger.imports[0].card_key.as_deref(), Some(key.as_str()));
+        assert_eq!(
+            ledger.card_key_for_volume("3B97-0C92").as_deref(),
+            Some(key.as_str())
+        );
+    }
+
+    #[test]
+    fn a_record_of_another_size_under_the_same_volume_id_stays_its_own() {
+        let mut ledger = Ledger::default();
+        ledger.record_card(cfexpress("0E44-0B28", "BF7F0763"), at("2026-11-23 21:18"));
+        let other = ledger
+            .record_card(
+                CardSighting {
+                    capacity_bytes: Some(64_000_000_000),
+                    ..bridged("3B97-0C92")
+                },
+                at("2026-11-27 17:33"),
+            )
+            .unwrap();
+        ledger.record_card(cfexpress("3B97-0C92", "BF7F0763"), at("2026-11-28 10:00"));
+        assert_eq!(ledger.cards.len(), 2);
+        assert!(ledger.cards.iter().any(|c| c.id == other));
+    }
+
+    #[test]
+    fn a_reading_folds_in_the_card_as_inserted_when_both_records_have_its_volume_id() {
+        let mut ledger = Ledger::default();
+        let key = ledger
+            .record_card(cfexpress("0E44-0B28", "P640"), at("2026-11-23 21:18"))
+            .unwrap();
+        let as_inserted = ledger
+            .record_card(bridged("3B97-0C92"), at("2026-11-27 17:33"))
+            .unwrap();
+        ledger.record_import(import_from(&as_inserted));
+        // As a ledger saved before insertions folded the card as inserted in left it.
+        let own = ledger.cards.iter_mut().find(|c| c.id == key).unwrap();
+        own.volume_id = Some("3B97-0C92".into());
+        own.last_seen = at("2026-11-28 10:00");
+        ledger.cards.sort_by_key(|c| std::cmp::Reverse(c.last_seen));
+        assert_eq!(
+            ledger.record_reading(
+                Some("3B97-0C92"),
+                reading("P640", 1),
+                at("2026-11-28 10:01")
+            ),
+            Some(key.clone())
+        );
+        assert_eq!(ledger.cards.len(), 1);
+        assert_eq!(ledger.imports[0].card_key.as_deref(), Some(key.as_str()));
     }
 
     #[test]
