@@ -61,6 +61,10 @@ pub struct ImportRequest {
     /// NAS has verified every file; if the NAS fails, it stays as an offline import.
     #[serde(default)]
     pub relay_to: Option<PathBuf>,
+    /// Card files left out, relative to the card's root: photos the camera's FTP
+    /// folder already has (see [`crate::ftp`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip: Vec<PathBuf>,
 }
 
 /// Four writers keep reads/writes flowing while limiting NAS write contention and
@@ -166,6 +170,9 @@ pub struct ImportResult {
     /// the files verified on the NAS, which Delete laptop copy may remove later.
     #[serde(skip)]
     pub sent_manifest: Option<send::Manifest>,
+    /// What the import did with the camera's FTP folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ftp: Option<crate::ftp::Summary>,
 }
 
 /// Seconds are wall time except the named upload stages, summed over workers.
@@ -669,19 +676,10 @@ fn run_with_exiftool(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_engine(
-    request: &ImportRequest,
-    require_network: bool,
-    nas_network: bool,
-    exiftool: Option<&Path>,
-    cancel: &AtomicBool,
-    mut card_ready: impl FnMut(&mut ImportResult) -> Result<(), String> + Send,
-    mut progress: impl FnMut(ImportProgress) + Send,
-    hooks: upload::Hooks,
-) -> ImportResult {
+/// An import that hasn't copied anything yet.
+fn new_result(request: &ImportRequest) -> ImportResult {
     let now = Local::now().naive_local();
-    let mut result = ImportResult {
+    ImportResult {
         started_at: now,
         finished_at: now,
         root: request.root.clone(),
@@ -718,7 +716,36 @@ fn run_engine(
         timings: Default::default(),
         local_files: Vec::new(),
         sent_manifest: None,
-    };
+        ftp: None,
+    }
+}
+
+/// A complete import of a card whose selected photos the camera's FTP folder already
+/// has all of: nothing is copied from the card. To the NAS through this computer, it's
+/// a NAS import with nothing left on this computer to send.
+pub fn nothing_to_copy(request: &ImportRequest) -> ImportResult {
+    let mut result = new_result(request);
+    if let Some(nas) = &request.relay_to {
+        result.nas_root = nas.clone();
+        result.offline = false;
+        result.offline_root = None;
+    }
+    result.status = ImportStatus::Complete;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_engine(
+    request: &ImportRequest,
+    require_network: bool,
+    nas_network: bool,
+    exiftool: Option<&Path>,
+    cancel: &AtomicBool,
+    mut card_ready: impl FnMut(&mut ImportResult) -> Result<(), String> + Send,
+    mut progress: impl FnMut(ImportProgress) + Send,
+    hooks: upload::Hooks,
+) -> ImportResult {
+    let mut result = new_result(request);
     progress(ImportProgress {
         card_done: None,
         phase: "preparing",
@@ -1915,11 +1942,21 @@ fn plan(
         .map(|f| f.path.clone())
         .collect();
     let spec_folders = video::spec_folders(&clips, exiftool);
+    // Photos the camera's FTP folder already has stay on the card.
+    let skip: BTreeSet<String> = request.skip.iter().map(|p| send::key(p)).collect();
     for file in &files {
         let Some(shoot) = selections.get(&file.captured.date()) else {
             continue;
         };
         if file.kind == scan::MediaKind::Video && !request.include_videos {
+            continue;
+        }
+        if !skip.is_empty()
+            && file
+                .path
+                .strip_prefix(&root)
+                .is_ok_and(|relative| skip.contains(&send::key(relative)))
+        {
             continue;
         }
         let folder = match (file.kind, spec_folders.get(&file.path)) {
@@ -2868,6 +2905,7 @@ mod tests {
                     // One at a time, so the progress hooks below see a fixed order.
                     workers: 1,
                     camera: Some("ILCE-7RM6".into()),
+                    skip: Vec::new(),
                 },
             }
         }
@@ -2895,6 +2933,26 @@ mod tests {
 
     const SIDECAR: &[u8] =
         br#"<NonRealTimeMeta><CreationDate value="2026-11-06T12:00:00+09:00"/></NonRealTimeMeta>"#;
+
+    #[test]
+    fn photos_the_cameras_ftp_folder_has_stay_on_the_card() {
+        let mut f = Fixture::new();
+        f.add(
+            "DCIM/100SONY/DSC00002.ARW",
+            &crate::exif::tests::sample(true),
+        );
+        f.request.skip = vec![PathBuf::from("DCIM\\100SONY\\DSC00001.ARW")];
+        let result = f.run();
+        assert_eq!(result.status, ImportStatus::Complete, "{result:?}");
+        assert_eq!((result.photos, result.copied_files), (1, 1));
+        assert!(!f.folder().join("DSC00001.ARW").exists());
+        assert!(f.folder().join("DSC00002.ARW").is_file());
+        let nothing = nothing_to_copy(&f.request);
+        assert_eq!(
+            (nothing.status, nothing.total_files),
+            (ImportStatus::Complete, 0)
+        );
+    }
 
     #[test]
     fn copies_and_verifies_photos_videos_and_companions_without_touching_the_card() {

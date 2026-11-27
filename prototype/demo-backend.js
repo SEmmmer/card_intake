@@ -327,6 +327,15 @@
 
   /* ---------- Import ---------- */
   var running = null;
+  // The camera's FTP folder: none until one is saved. Today's shoot on the CFexpress
+  // card was sent over FTP as it was taken, along with a few photos since deleted.
+  var demoFtp = { root: null };
+  function demoFtpDays(report) {
+    return (report ? report.groups : []).map(function (g) {
+      var sent = report.root === CF && g.date === day(0) ? Math.round(g.photos * 0.4) : 0;
+      return { date: g.date, on_card: sent, on_card_bytes: sent * ARW, ftp_only: sent ? 6 : 0, ftp_only_bytes: sent ? 6 * ARW : 0 };
+    });
+  }
 
   function startImport(request, channel) {
     var root = request.root, report = reports[root];
@@ -506,6 +515,12 @@
       result.error = "Upload stopped. The photos are safe on this computer. Use Send to NAS in Recent imports to finish.";
     }
     result.ejected = job.ejected || result.ejected;
+    // The demo FTP folder's photos of the card, as ftp_preview counts them.
+    if (!cancelled && (request.ftp_skip || request.ftp_merge) && demoFtp.root) {
+      var ftpDays = demoFtpDays(report).filter(function (d) { return request.shoots.some(function (s) { return s.date === d.date; }); });
+      var onCard = ftpDays.reduce(function (n, d) { return n + d.on_card; }, 0), ftpOnly = ftpDays.reduce(function (n, d) { return n + d.ftp_only; }, 0);
+      result.ftp = { root: demoFtp.root, skipped: request.ftp_skip ? onCard : 0, moved: request.ftp_merge ? onCard + ftpOnly : 0, already_there: 0, duplicates_removed: request.ftp_merge ? 1 : 0, left: 0 };
+    }
     ledger.imports = ledger.imports.filter(function (r) { return r.started_at !== started; });
     ledger.imports.unshift(result);
     while (ledger.imports.length > 100) {
@@ -748,7 +763,15 @@
       case "get_ledger":
         return Promise.resolve(copy(ledger));
       case "get_settings":
-        return Promise.resolve(Object.assign({ nas_root: nas.root, lightroom: copy(lightroom), deliver_to: deliverySetup.deliver_to, folded: folded.slice() }, notMineResponse()));
+        return Promise.resolve(Object.assign({ nas_root: nas.root, lightroom: copy(lightroom), deliver_to: deliverySetup.deliver_to, folded: folded.slice(), ftp_root: demoFtp.root }, notMineResponse()));
+      case "save_ftp_folder":
+        var ftpPath = String(args.path || "").trim();
+        if (ftpPath && !isNetwork(ftpPath)) return wait(300, { ok: false, root: null, detail: "Couldn't open " + ftpPath + ": the demo's FTP folder is on the NAS, e.g. \\\\NAS\\FTP." });
+        demoFtp.root = ftpPath || null;
+        return wait(300, { ok: true, root: demoFtp.root, detail: ftpPath ? "Saved. Photos in " + ftpPath + " are compared with each card you import to the NAS." : "No FTP folder: every photo is copied from the card." });
+      case "ftp_preview":
+        if (!demoFtp.root) return Promise.resolve({ root: null, preview: null, error: null });
+        return wait(500, { root: demoFtp.root, preview: { root: demoFtp.root, photos: 186, dates: demoFtpDays(reports[args.root]) }, error: null });
       case "get_offline_copies": return Promise.resolve(copy(offlineCopies));
       case "check_offline_folder": return wait(400, offlineCheck(args.path));
       case "save_offline_folder":

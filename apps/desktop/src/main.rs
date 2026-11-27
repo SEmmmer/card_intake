@@ -4,6 +4,7 @@
 mod alert;
 mod camera_wifi;
 mod delivery;
+mod ftp;
 mod immich;
 mod imports;
 mod library;
@@ -1227,6 +1228,8 @@ fn main() {
             offline::get_offline_copies,
             offline::check_offline_folder,
             offline::save_offline_folder,
+            ftp::save_ftp_folder,
+            ftp::ftp_preview,
             offline::check_init_backup,
             offline::forget_backup,
             offline::eject_backup,
@@ -1430,6 +1433,7 @@ mod tests {
             camera: None,
             offline: true,
             backup_drives: Vec::new(),
+            skip: Vec::new(),
             relay_to: None,
         };
         let result = card_intake_core::import::import_card(

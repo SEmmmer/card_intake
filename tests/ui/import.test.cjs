@@ -148,6 +148,10 @@ async function app(t, network = true, options = {}) {
           fixture.pending = { request: { ...args.request, nas_root: fixture.nas.root }, eject: args.request.eject };
           fixture.channel = args.onProgress;
           return new Promise(resolve => { fixture.finish = result => { fixture.ledger.imports.unshift(result); if (result.status === 'complete') fixture.pending = null; resolve(result); }; });
+        case 'ftp_preview': return Promise.resolve(plain(options.ftpPreview || { root: null, preview: null, error: null }));
+        case 'save_ftp_folder':
+          fixture.settings.ftp_root = args.path || null;
+          return Promise.resolve({ ok: true, root: args.path || null, detail: 'Saved.' });
         default: throw new Error('Unexpected command: ' + command);
       }
     }
@@ -529,6 +533,55 @@ test('Stop upload is disabled once the NAS has everything and local cleanup is f
   assert.equal(a.$('#stop').disabled, true);
   assert.equal(a.$('#stop').textContent, 'Finishing…');
   assert.equal(a.$('#phase').textContent, 'NAS files checked · finishing import');
+});
+
+test('photos already in the camera FTP folder stay on the card, and Merge needs Skip', async t => {
+  const FTP = '\\\\NAS\\FTP';
+  const ftpPreview = { root: FTP, preview: { root: FTP, photos: 3, dates: [{ date: '2026-11-06', on_card: 1, on_card_bytes: 100, ftp_only: 2, ftp_only_bytes: 200 }] }, error: null };
+  const a = await app(t, true, { settings: { folded: [], not_mine_cards: [], not_mine_cameras: [], ftp_root: FTP }, ftpPreview });
+  await settle();
+  assert.equal(a.$('#ftp-path').value, FTP);
+  assert.deepEqual(a.last('ftp_preview'), { root: 'E:\\' });
+  assert.equal(a.$('#opt-ftp-skip').checked, true);
+  assert.equal(a.$('#opt-ftp-merge').checked, false);
+  assert.equal(a.$('#opt-ftp-merge').disabled, false);
+  assert.match(a.$('#summary').textContent, /^1 photo \+ 1 clip/);
+  assert.match(a.$('#estimate').textContent, /1 photo stays on the card: the FTP folder has it\./);
+  // Without Skip, Merge can't be chosen and the card's photo is copied.
+  a.$('#opt-ftp-skip').click();
+  assert.equal(a.$('#opt-ftp-merge').disabled, true);
+  assert.match(a.$('#summary').textContent, /^2 photos \+ 1 clip/);
+  a.$('#opt-ftp-skip').click();
+  a.$('#opt-ftp-merge').click();
+  assert.match(a.$('#estimate').textContent, /Then 3 photos move from the FTP folder into the shoots\./);
+  a.$('#start').click();
+  assert.equal(a.fixture.request.ftp_skip, true);
+  assert.equal(a.fixture.request.ftp_merge, true);
+  assert.equal(a.$('#opt-ftp-merge').disabled, true);
+  a.fixture.channel.onmessage({ phase: 'ftp_merging', current_file: 'EM_04446.ARW', completed_files: 1, total_files: 3, skipped_files: 0, processed_bytes: 0, total_bytes: 0 });
+  assert.equal(a.$('#phase').textContent, 'Moving photos from the FTP folder into the shoots');
+  assert.equal(a.$('#pline').textContent, 'EM_04446.ARW · 1 of 3 files');
+  a.fixture.finish(result({ ftp: { root: FTP, skipped: 1, moved: 3, already_there: 0, duplicates_removed: 1, left: 0 } }));
+  await settle();
+  assert.match(a.$('#done').textContent, /FTP folder \\\\NAS\\FTP: 1 photo was already there and stayed on the card, 3 photos were moved into the shoots and 1 duplicate copy was deleted\./);
+});
+
+test('the FTP options stay hidden for a trip import and for shoots FTP has nothing of', async t => {
+  const FTP = '\\\\NAS\\FTP';
+  const ftpPreview = { root: FTP, preview: { root: FTP, photos: 0, dates: [{ date: '2026-11-06', on_card: 0, on_card_bytes: 0, ftp_only: 0, ftp_only_bytes: 0 }] }, error: null };
+  const a = await app(t, true, { settings: { folded: [], not_mine_cards: [], not_mine_cameras: [], ftp_root: FTP }, ftpPreview });
+  await settle();
+  assert.equal(a.$('#opt-ftp-merge'), null);
+  assert.match(a.$('#ftp-opts').textContent, /Nothing from the selected shoots is in/);
+  a.$('#start').click();
+  assert.equal('ftp_skip' in a.fixture.request, false);
+  const b = await app(t, false, { settings: { folded: [], not_mine_cards: [], not_mine_cameras: [], ftp_root: FTP }, ftpPreview });
+  await settle();
+  assert.equal(b.$('#ftp-opts').textContent, '');
+  b.type('#ftp-path', '');
+  b.$('#ftp-save').click(); await settle();
+  assert.deepEqual(b.last('save_ftp_folder'), { path: '' });
+  assert.equal(b.$('#ftp-status').textContent, 'Saved.');
 });
 
 test('the done screen retains the early catalog path when photos resolve to an earlier NAS folder', async t => {

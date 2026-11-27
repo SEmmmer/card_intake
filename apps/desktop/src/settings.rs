@@ -28,6 +28,9 @@ pub struct Settings {
     pub not_mine_cards: Vec<NotMineCard>,
     #[serde(default)]
     pub not_mine_cameras: Vec<NotMineCamera>,
+    /// The folder the camera sends photos to over FTP, e.g. `\\NAS\FTP`.
+    #[serde(default)]
+    pub ftp_root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

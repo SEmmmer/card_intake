@@ -21,6 +21,18 @@ pub struct RatingSummary {
 }
 
 impl RatingSummary {
+    /// Adds another summary's counts, e.g. the FTP folder's raws to the card's.
+    pub fn add(&mut self, other: &Self) {
+        self.rated += other.rated;
+        self.locked += other.locked;
+        self.camera += other.camera;
+        self.computed += other.computed;
+        self.kept += other.kept;
+        for (stars, more) in self.stars.iter_mut().zip(other.stars) {
+            *stars += more;
+        }
+    }
+
     pub(crate) fn record(&mut self, rating: &InitialRating, written: xmp::Written) {
         self.rated += 1;
         match rating.source {

@@ -212,6 +212,8 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .opt input { margin-top: 2px; }
 .opt b { font-weight: 500; display: block; }
 .opt span { font-size: 13px; color: var(--muted); }
+.options:empty { display: none; }
+.hint.warn { color: var(--warn); }
 
 /* Action bar */
 .actions { display: flex; align-items: center; justify-content: space-between; gap: 14px 20px; flex-wrap: wrap; background: var(--sunken); }
@@ -479,6 +481,16 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       </div>
     </section>
 
+    <section aria-labelledby="ftp-h">
+      <div class="sec-head"><h2 class="sec-title" id="ftp-h">Camera FTP folder</h2><span class="muted">Optional</span></div>
+      <div class="list nas-panel">
+        <label for="ftp-path">Folder the camera sends photos to</label>
+        <div class="nas-row"><input id="ftp-path" type="text" spellcheck="false" autocomplete="off" placeholder="\\NAS\FTP"><button class="btn-small" id="ftp-save" type="button">Save</button></div>
+        <p class="nas-note">Photos already in this folder or its subfolders needn’t be copied from the card again, and can be moved into the card’s shoots. Clear it and save to turn this off.</p>
+        <p class="nas-note" id="ftp-status" role="status"></p>
+      </div>
+    </section>
+
 
     <section aria-labelledby="offline-h">
       <div class="sec-head"><h2 class="sec-title" id="offline-h">Offline copies</h2></div>
@@ -613,8 +625,10 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     error: null,
     report: null,
     shoots: [],
-    opts: { verify: true, video: true, eject: false, offline: false, backup: false },
+    opts: { verify: true, video: true, eject: false, offline: false, backup: false, ftpSkip: true, ftpMerge: false },
     nas: null,
+    ftp: { root: "", edited: false },
+    ftpPreview: null,      // what the FTP folder has of the inserted card: { card, loading, data, error }
     offline: { folder: "", drives: [], candidates: [] },
     offlineEdited: false,
     copyJob: null,
@@ -1039,6 +1053,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     invoke("read_card", { root: root }).then(function (report) {
       if (state.current !== root) return;
       state.report = report;
+      // The FTP options start as Skip on and Merge off for every card.
+      state.opts.ftpSkip = true; state.opts.ftpMerge = false;
       // NVMe cards answer straight away; others need "Read card health".
       if (report.health) state.health[root] = { kind: "read", health: report.health, inserted: true };
       if (!nasReady()) state.opts.offline = true;
@@ -1059,7 +1075,101 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       renderDesk();
       refreshLedger().then(matchPending).catch(function (e) { console.error(e); });
       if (state.report && state.report.photos) readCardShutter(root);
+      if (state.report) loadFtpPreview(root);
     });
+  }
+
+  /* ---------- Camera FTP folder ---------- */
+  function loadFtpPreview(root) {
+    state.ftpPreview = null;
+    if (!state.ftp.root) { renderFtpOptions(); return; }
+    var mine = state.ftpPreview = { card: root, loading: true, data: null, error: null };
+    renderFtpOptions();
+    invoke("ftp_preview", { root: root }).then(function (res) {
+      if (state.ftpPreview !== mine) return;
+      mine.data = res.preview || null; mine.error = res.error || null;
+      if (!res.root) state.ftpPreview = null;
+    }).catch(function (e) {
+      if (state.ftpPreview === mine) mine.error = String(e);
+    }).then(function () {
+      if (state.ftpPreview !== mine && state.ftpPreview !== null) return;
+      mine.loading = false;
+      renderFtpOptions();
+      updateSummary();
+    });
+  }
+  // The selected shoots' photos already in the FTP folder, and the camera's other FTP
+  // photos of those days. Only for an import to the NAS.
+  function ftpCounts() {
+    var p = state.ftpPreview, c = { onCard: 0, onCardBytes: 0, ftpOnly: 0, ftpOnlyBytes: 0 };
+    if (!p || !p.data || p.card !== state.current || state.opts.offline) return c;
+    var byDate = {};
+    p.data.dates.forEach(function (d) { byDate[d.date] = d; });
+    state.shoots.forEach(function (s) {
+      var d = s.on ? byDate[s.date] : null;
+      if (!d) return;
+      c.onCard += d.on_card; c.onCardBytes += d.on_card_bytes;
+      c.ftpOnly += d.ftp_only; c.ftpOnlyBytes += d.ftp_only_bytes;
+    });
+    return c;
+  }
+  // Merge needs Skip: the card's photos that FTP has come from there instead.
+  function ftpChoice() {
+    var c = ftpCounts();
+    if (!c.onCard && !c.ftpOnly) return null;
+    var skip = c.onCard > 0 && state.opts.ftpSkip;
+    var merge = state.opts.ftpMerge && (skip || !c.onCard);
+    return { counts: c, skip: skip, merge: merge, moves: (skip ? c.onCard : 0) + c.ftpOnly };
+  }
+  function renderFtpOptions() {
+    var box = $("#ftp-opts");
+    if (!box) return;
+    var p = state.ftpPreview, locked = !!state.run || !!state.resumable;
+    if (!p || p.card !== state.current || state.opts.offline) { box.innerHTML = ""; return; }
+    if (p.loading) { box.innerHTML = '<p class="hint">Comparing the card with the FTP folder…</p>'; return; }
+    if (!p.data) { box.innerHTML = '<p class="hint warn">' + esc(p.error || "The FTP folder couldn’t be read.") + ". Every photo is copied from the card.</p>"; return; }
+    var choice = ftpChoice(), root = p.data.root;
+    if (!choice) { box.innerHTML = '<p class="hint">Nothing from the selected shoots is in ' + esc(root) + ".</p>"; return; }
+    var c = choice.counts, merging = c.onCard ? c.onCard + c.ftpOnly : c.ftpOnly;
+    box.innerHTML = (c.onCard ? opt("opt-ftp-skip", state.opts.ftpSkip, "Skip photos already in FTP",
+        plural(c.onCard, "photo", "photos") + " (" + gbOf(c.onCardBytes) + ") on this card are already in " + root + ". They aren’t copied from the card.") : "") +
+      opt("opt-ftp-merge", choice.merge, "Merge FTP photos into this import",
+        "Moves " + plural(merging, "photo", "photos") + " from " + root + " taken by this camera on the selected days into the shoots, sorted by capture date. Each copy is checked before the FTP file is deleted." +
+        (c.onCard ? " Needs Skip photos already in FTP." : ""));
+    var skip = $("#opt-ftp-skip"), merge = $("#opt-ftp-merge");
+    if (skip) {
+      skip.disabled = locked;
+      skip.addEventListener("change", function (e) {
+        state.opts.ftpSkip = e.target.checked;
+        if (!state.opts.ftpSkip) state.opts.ftpMerge = false;
+        renderFtpOptions(); updateSummary();
+      });
+    }
+    merge.disabled = locked || (c.onCard > 0 && !state.opts.ftpSkip);
+    merge.addEventListener("change", function (e) { state.opts.ftpMerge = e.target.checked; updateSummary(); });
+  }
+  function saveFtp() {
+    var b = $("#ftp-save"); b.disabled = true;
+    invoke("save_ftp_folder", { path: $("#ftp-path").value }).then(function (res) {
+      $("#ftp-status").textContent = res.detail;
+      $("#ftp-status").classList.toggle("warn", !res.ok);
+      if (!res.ok) return;
+      state.ftp.root = res.root || ""; state.ftp.edited = false;
+      $("#ftp-path").value = state.ftp.root;
+      if (state.report && !(state.run && state.run.active)) loadFtpPreview(state.current);
+    }).catch(function (e) { toast(String(e)); }).finally(function () { b.disabled = false; });
+  }
+  // What the import did with the FTP folder.
+  function ftpResult(r) {
+    var f = r.ftp;
+    if (!f) return "";
+    var parts = [];
+    if (f.skipped) parts.push(plural(f.skipped, "photo was", "photos were") + " already there and stayed on the card");
+    if (f.moved) parts.push(plural(f.moved, "photo was", "photos were") + " moved into the shoots");
+    if (f.already_there) parts.push(plural(f.already_there, "photo was", "photos were") + " already in the shoots and deleted from FTP");
+    if (f.duplicates_removed) parts.push(plural(f.duplicates_removed, "duplicate copy was", "duplicate copies were") + " deleted");
+    if (f.left) parts.push(plural(f.left, "photo was", "photos were") + " left in the FTP folder");
+    return parts.length ? '<p class="health-note' + (f.left ? " warn" : "") + '">' + esc("FTP folder " + f.root + ": " + andList(parts) + ".") + "</p>" : "";
   }
 
   function refreshLedger() {
@@ -1358,6 +1468,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     bindPicker();
     bindShoots();
     bindOptions();
+    renderFtpOptions();
     $("#start").addEventListener("click", startImport);
     $("#health-read").addEventListener("click", readHealth);
     $("#eject").addEventListener("click", ejectCard);
@@ -1703,7 +1814,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       opt("opt-verify", state.opts.verify, "Check every file after copying", "Reads each copy back and compares it with the card, so you know it's safe to format.") +
       opt("opt-video", state.opts.video, "Copy videos too", "Clips go into a <code>video</code> folder inside each shoot.", true) +
       opt("opt-eject", state.opts.eject, "Eject the card when done", "Only after every file has been checked.") +
-      '</div></div>';
+      '</div><div class="options" id="ftp-opts"></div></div>';
   }
   function opt(id, on, title, text, rawText) {
     return '<label class="opt" for="' + id + '"><input type="checkbox" id="' + id + '"' + (on ? " checked" : "") + '>' +
@@ -1721,6 +1832,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       $("#inc-" + i).addEventListener("change", function (e) {
         s.on = e.target.checked;
         $("#shoot-" + i).classList.toggle("off", !s.on);
+        renderFtpOptions();
         updateSummary();
       });
       $("#name-" + i).addEventListener("input", function (e) { s.name = e.target.value; updatePath(i); updateSummary(); });
@@ -1786,6 +1898,13 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       }
       t.folders += 1; t.list.push(s);
     });
+    // Photos the FTP folder has stay on the card.
+    var ftp = ftpChoice();
+    if (ftp && ftp.skip) {
+      t.ftp = ftp.counts.onCard;
+      t.photos = Math.max(0, t.photos - ftp.counts.onCard);
+      t.bytes = Math.max(0, t.bytes - ftp.counts.onCardBytes);
+    }
     return t;
   }
 
@@ -1812,10 +1931,14 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (t.videos) what.push(plural(t.videos, "clip", "clips"));
     $("#summary").textContent = what.length
       ? what.join(" + ") + " · " + gbOf(t.bytes) + " → " + plural(t.folders, "folder", "folders")
+      : t.ftp ? "Nothing to copy from the card: the rest is in the FTP folder"
       : "Everything selected is already on " + (state.opts.offline ? "this computer" : "the NAS");
     var speed = lastSpeed();
     var estimate = speed && t.bytes ? "About " + dur(t.bytes / speed) + " at " + fmt(speed / 1e6) + " MB/s, the speed of your last import." : "";
     if (t.skipped) estimate += (estimate ? " " : "") + plural(t.skipped, "file is", "files are") + " already on " + (state.opts.offline ? "this computer" : "the NAS") + ": compared with the card, then skipped.";
+    if (t.ftp) estimate += (estimate ? " " : "") + plural(t.ftp, "photo stays", "photos stay") + " on the card: the FTP folder has " + (t.ftp === 1 ? "it" : "them") + ".";
+    var ftp = ftpChoice();
+    if (ftp && ftp.merge) estimate += (estimate ? " " : "") + "Then " + plural(ftp.moves, "photo moves", "photos move") + " from the FTP folder into the shoots.";
     if (!state.opts.verify) estimate += (estimate ? " " : "") + "New copies won't be read back: check them before formatting the card.";
     $("#estimate").textContent = state.offlineEdited && state.opts.offline ? "Save the offline folder before importing." : !state.opts.offline && state.nasEdited ? "Save the NAS path before importing."
       : !state.opts.offline && state.nasBusy ? "Waiting for the NAS check to finish…"
@@ -1827,8 +1950,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
   /* ---------- Import ---------- */
   function importRequest() {
-    var cam = state.report.camera;
-    return {
+    var cam = state.report.camera, ftp = ftpChoice();
+    var request = {
       root: state.current, expected_card_id: state.report.volume.id,
       shoots: totals().list.map(function (s) { return { date: s.date, name: s.name }; }),
       include_videos: state.opts.video, verify: state.opts.verify, eject: state.opts.eject,
@@ -1836,6 +1959,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       offline: state.opts.offline, also_backup: state.opts.backup,
       backup_uuids: state.resumable && state.resumable.request.backup_drives ? state.resumable.request.backup_drives.map(function (d) { return d.uuid; }) : null
     };
+    // Only when the FTP folder has something of the selected shoots.
+    if (ftp) { request.ftp_skip = ftp.skip || ftp.merge; request.ftp_merge = ftp.merge; }
+    return request;
   }
 
   function refreshPending() {
@@ -1855,7 +1981,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
         s.on = !!saved;
         if (saved) s.name = saved.name;
       });
-      state.opts = { verify: p.request.verify, video: p.request.include_videos, eject: p.eject, offline: !!p.request.offline, backup: !!(p.request.backup_drives && p.request.backup_drives.length) };
+      state.opts = { verify: p.request.verify, video: p.request.include_videos, eject: p.eject, offline: !!p.request.offline, backup: !!(p.request.backup_drives && p.request.backup_drives.length),
+        ftpSkip: p.ftp ? !!p.ftp.skip : true, ftpMerge: !!(p.ftp && p.ftp.merge) };
       switchDestinations(true);
       renderDesk();
     } else {
@@ -1892,6 +2019,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       if ($("#inc-" + i)) { $("#inc-" + i).disabled = locked; $("#name-" + i).disabled = locked; }
     });
     ["#opt-verify", "#opt-video", "#opt-eject", "#opt-offline", "#opt-backup"].forEach(function (id) { if ($(id)) $(id).disabled = locked; });
+    renderFtpOptions();
     if (!locked) updateOptionRules();
   }
 
@@ -2003,7 +2131,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     checking_existing: "Comparing with existing copies",
     backup: "Copying to backup drive",
     card_done: "Card read and checked on this computer · the NAS is catching up",
-    sending: "Card read and checked on this computer · the NAS is catching up"
+    sending: "Card read and checked on this computer · the NAS is catching up",
+    ftp_checking: "Comparing the card with the FTP folder",
+    ftp_merging: "Moving photos from the FTP folder into the shoots"
   };
 
   function updateProgress() {
@@ -2018,11 +2148,13 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     var viaLaptop = run.request.offline || !!(p && p.nas);
     if (viaLaptop && run.phase === "copying") phaseText = run.request.offline ? "Copying to this computer" : "Reading the card into this computer";
     if (viaLaptop && run.phase === "verifying") phaseText = "Checking files on this computer";
+    var ftpPhase = run.phase === "ftp_checking" || run.phase === "ftp_merging";
+    if (ftpPhase) { phaseText = PHASES[run.phase]; uploadDone = false; }
     $("#phase").textContent = phaseText + (run.phase === "backup" && p && p.current_file ? " · " + p.current_file : "");
     $("#stop").disabled = run.stopping || uploadDone;
-    $("#stop").textContent = uploadDone ? "Finishing…" : run.stopping ? "Stopping…" : run.cardDone ? "Stop upload" : "Stop";
+    $("#stop").textContent = uploadDone ? "Finishing…" : run.stopping ? "Stopping…" : run.cardDone && !ftpPhase ? "Stop upload" : "Stop";
     $("#stopped").hidden = !run.stopping;
-    $("#stopped").textContent = run.stopping ? (run.cardDone ? "Stopping the upload. The photos are safe on this computer; Send to NAS finishes the job." : "Stopping after the files being copied now…") : "";
+    $("#stopped").textContent = run.stopping ? (ftpPhase ? "Stopping after the photos being moved now. The rest stay in the FTP folder." : run.cardDone ? "Stopping the upload. The photos are safe on this computer; Send to NAS finishes the job." : "Stopping after the files being copied now…") : "";
     if (!p) return;
     var frac = p.total_bytes ? p.processed_bytes / p.total_bytes : (p.total_files ? p.completed_files / p.total_files : 0);
     var percent = Math.min(100, Math.floor(frac * 100));
@@ -2038,7 +2170,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       if (p.eta_secs != null && !run.cardDone && run.phase !== "sending") line.push("about " + dur(p.eta_secs) + " left");
       if (p.skipped_files) line.push(fmt(p.skipped_files) + " already on " + (run.phase === "backup" ? "the drive" : viaLaptop ? "this computer" : "NAS"));
     }
-    $("#pline").textContent = line.length ? line.join(" · ") : "Scanning selected shoots…";
+    $("#pline").textContent = line.length ? line.join(" · ") : run.phase === "ftp_checking" ? "Reading the FTP folder…" : "Scanning selected shoots…";
     updateNasProgress(p.nas);
   }
 
@@ -2165,6 +2297,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     } else if (r.skipped_files) {
       body += " " + plural(r.skipped_files, "file was", "files were") + " already on " + (r.offline ? "this computer" : "the NAS") + ".";
     }
+    if (!r.total_files && r.ftp) body = "Nothing needed copying from the card.";
     if (r.ejected) body += " The card has been ejected.";
     var ratings = r.ratings;
     var ratingText = ratings && ratings.rated ? "Rated " + plural(ratings.rated, "raw", "raws") + ": " +
@@ -2180,6 +2313,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     }).join("");
     d.innerHTML = '<div class="done-head">' + CHECK + '<div><h3>Import complete</h3><p>' + esc(body) + '</p></div></div>' +
       (ratingText ? '<p class="health-note">' + esc(ratingText) + '</p>' : "") +
+      ftpResult(r) +
       timingLine(r) +
       backupSummary(r) +
       r.warnings.map(function (w) { return '<p class="health-note warn">' + esc(w) + '</p>'; }).join("") +
@@ -2810,6 +2944,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
   $("#deliver-save").addEventListener("click", saveDeliverySetup);
   $("#deliver-confirm").addEventListener("click", confirmDelivery);
   $("#deliver-cancel").addEventListener("click", cancelDelivery);
+  $("#ftp-save").addEventListener("click", saveFtp);
+  $("#ftp-path").addEventListener("input", function () { state.ftp.edited = true; });
+  $("#ftp-path").addEventListener("keydown", function (e) { if (e.key === "Enter") saveFtp(); });
   bindOfflinePanel();
   document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !$("#deliver-dialog").hidden) cancelDelivery(); });
   if (invoke) {
@@ -2819,6 +2956,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     invoke("get_settings").then(function (s) {
       (s.folded || []).forEach(function (k) { state.folded[k] = true; });
       applyNotMine(s);
+      state.ftp.root = s.ftp_root || "";
+      if (!state.ftp.edited) $("#ftp-path").value = state.ftp.root;
+      if (state.ftp.root && state.report && !state.ftpPreview) loadFtpPreview(state.current);
       state.settingsReady = true;
       updateSummary();
     }).catch(function (e) { console.error(e); });
@@ -2832,7 +2972,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     setInterval(function () { if (!state.run || !state.run.active) refreshNas().catch(function (e) { console.error(e); }); }, 15000);
   } else {
     $("#nas").innerHTML = '<span class="dot"></span><span>Not running in the app</span>';
-    ["#nas-path", "#nas-check", "#nas-save", "#lr-save"].forEach(function (id) { $(id).disabled = true; });
+    ["#nas-path", "#nas-check", "#nas-save", "#lr-save", "#ftp-path", "#ftp-save"].forEach(function (id) { $(id).disabled = true; });
     renderLedger();
   }
 })();

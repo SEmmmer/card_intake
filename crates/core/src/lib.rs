@@ -10,6 +10,7 @@ pub mod destinations;
 pub mod eject;
 pub mod exif;
 pub mod exiftool;
+pub mod ftp;
 pub mod grouping;
 pub mod health;
 pub mod import;

@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         verify: true,
         workers: 0,
         camera: None,
+        skip: Vec::new(),
     };
     let mut phase = "";
     let result = import::import_to_folder(&request, Some(&tool), &AtomicBool::new(false), |p| {

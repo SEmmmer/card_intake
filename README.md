@@ -57,6 +57,15 @@ Lightroom Classic can't open catalogs on a network drive, so a catalog stays on 
 - Unselected shoots, excluded videos, clip thumbnails, `MEDIAPRO.XML`, LUTs and unrelated files are not imported.
 - Only one import, delivery, backup or Send job runs at a time.
 
+### A camera that sends photos over FTP
+
+Under **Camera FTP folder**, save the folder the camera uploads to (`\\NAS\FTP`). Its subfolders are searched too; `#recycle`, `@eaDir` and other hidden folders are left out. When an import to the NAS selects shoots the FTP folder has photos of, two options appear:
+
+- **Skip photos already in FTP** (on by default) leaves on the card each photo the FTP folder has a file of with the same name and size. `EM_04408_1.JPG`, the FTP server's second `EM_04408.JPG`, counts as the same name.
+- **Merge FTP photos into this import** (off each time, and only with Skip on) moves the FTP folder's photos from the same camera (by EXIF serial number) taken on the selected days into the shoots, sorted by capture date like the card's, under the camera's own names. Before relying on an FTP copy, it is hashed and compared with the card's: one that differs isn't the card's photo, so the card's is imported and the FTP file stays. Each photo is copied (between two shares of one server, the server copies it), its copy read back, and only then is the FTP file deleted, with any identical duplicates. A photo the shoot already has is just deleted from FTP; one that differs from the shoot's is left with a warning. Raws are rated as from the card, and folders left empty in the FTP folder are removed.
+
+Copy to this computer ignores the FTP folder: a trip's laptop copy holds every photo on the card.
+
 ## Trips without the NAS
 
 Under **Offline copies**, choose the offline folder (`Pictures\Card Intake Offline` by default). Tick **Copy to this computer**, which the app does itself when a card is read without a confirmed NAS, and press **Import to this computer**. Photos get the same folders, sidecars, checks and ratings as on the NAS.
@@ -163,6 +172,7 @@ cargo run -p card_intake_desktop -- --shutter <folder>      # shutter counts of 
 cargo run -p card_intake_desktop -- --deliver-plan <shoot> <finished photos> [catalog.lrcat]
 cargo run -p card_intake_core --example card_storage -- E:\   # Windows: bus, reader, serial, health log
 cargo run -p card_intake_core --example scan_card -- E:\
+cargo run -p card_intake_core --example ftp_preview -- E:\ \\NAS\FTP  # what the camera's FTP folder has of a card
 cargo run -p card_intake_core --example rate_card -- E:\ <temp folder> <exiftool>       # a rated import, into system temp only
 cargo run -p card_intake_core --example deliver_temp -- <shoot> <finished photos> <exiftool>  # a real delivery, in system temp only
 ```

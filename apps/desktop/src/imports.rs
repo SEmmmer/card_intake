@@ -1,8 +1,8 @@
 use super::{AppState, nas_root};
 use card_intake_core::{
-    eject,
+    eject, ftp,
     import::{self, ImportProgress, ImportRequest, ImportResult, ImportStatus, ShootSelection},
-    volume_info,
+    naming, volume_info,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
@@ -199,12 +199,20 @@ pub struct StartImport {
     backup_uuids: Option<Vec<String>>,
     #[serde(default)]
     resume: bool,
+    /// Leave the card's photos the camera's FTP folder already has.
+    #[serde(default)]
+    ftp_skip: bool,
+    /// Move the FTP folder's photos of this camera and these dates into the shoots.
+    #[serde(default)]
+    ftp_merge: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingImport {
     request: ImportRequest,
     eject: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ftp: Option<ftp::Options>,
 }
 
 /// The last import that didn't finish, saved so the app can offer to resume it with
@@ -309,8 +317,21 @@ fn core_request(request: StartImport, state: &AppState) -> Result<PendingImport,
     let card_id = request
         .expected_card_id
         .or_else(|| volume_info::volume_info(&request.root).id);
+    // Only to the NAS: a trip's laptop copy holds every photo from the card.
+    let ftp = if request.offline || !(request.ftp_skip || request.ftp_merge) {
+        None
+    } else if request.ftp_merge && !request.ftp_skip {
+        return Err("Merging the FTP folder needs Skip photos already in FTP.".into());
+    } else {
+        state.ftp_root()?.map(|root| ftp::Options {
+            root,
+            skip: request.ftp_skip,
+            merge: request.ftp_merge,
+        })
+    };
     Ok(PendingImport {
         eject: request.eject,
+        ftp,
         request: ImportRequest {
             root: request.root,
             nas_root: destination,
@@ -323,6 +344,7 @@ fn core_request(request: StartImport, state: &AppState) -> Result<PendingImport,
             verify: request.verify,
             workers: 0,
             camera: request.camera,
+            skip: Vec::new(),
         },
     })
 }
@@ -364,12 +386,24 @@ async fn run_import(
     app: AppHandle,
 ) -> Result<ImportResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let PendingImport { request, eject } = job;
+        let PendingImport { mut request, eject, ftp } = job;
         let mut last = Instant::now();
         let mut phase = "";
         let exiftool = app.state::<AppState>().exiftool.clone();
         let heartbeat = HeartbeatWorker::start(active.control.clone());
-        let mut result = import::import_card_with_recovery(&request, exiftool.as_deref(), &active.cancel, |snapshot| {
+        let mut report = |progress: ImportProgress| {
+            if progress.phase != phase || progress.phase == "file_complete" || last.elapsed() >= Duration::from_millis(100) {
+                phase = progress.phase;
+                last = Instant::now();
+                if on_progress.send(progress).is_err() {
+                    active.cancel.store(true, Ordering::Relaxed);
+                }
+            }
+        };
+        let (ftp_plan, mut ftp_warnings) = plan_ftp(&request, ftp.as_ref(), &active.cancel, &mut report);
+        if let Some(plan) = &ftp_plan { request.skip.clone_from(&plan.skip); }
+        let nothing_left = ftp_plan.as_ref().is_some_and(|p| p.left_on_card == 0) && !active.cancel.load(Ordering::Relaxed);
+        let mut result = if nothing_left { import::nothing_to_copy(&request) } else { import::import_card_with_recovery(&request, exiftool.as_deref(), &active.cancel, |snapshot| {
             // Insertion may still be reading shutter counts or health. Wait for
             // those readers too, then prevent any new card reads during upload.
             let waiting = Instant::now();
@@ -382,15 +416,11 @@ async fn run_import(
             *active.control.ready.lock().map_err(|e| e.to_string())? = Some(snapshot.clone());
             active.control.card_done.store(true, Ordering::Relaxed);
             Ok(())
-        }, |progress| {
-            if progress.phase != phase || progress.phase == "file_complete" || last.elapsed() >= Duration::from_millis(100) {
-                phase = progress.phase;
-                last = Instant::now();
-                if on_progress.send(progress).is_err() {
-                    active.cancel.store(true, Ordering::Relaxed);
-                }
-            }
-        });
+        }, &mut report) };
+        if let (Some(options), Some(plan)) = (&ftp, &ftp_plan) {
+            finish_ftp(&request, options, plan, exiftool.as_deref(), &active.cancel, &mut result, &mut report);
+        }
+        result.warnings.append(&mut ftp_warnings);
         drop(heartbeat);
         // Serialize with Lightroom registration: a catalog prepared at the same
         // instant either gets the final list here or sees the completed history.
@@ -436,6 +466,114 @@ async fn run_import(
 #[tauri::command]
 pub fn cancel_import(state: State<'_, AppState>) -> Result<(), String> {
     state.imports.cancel()
+}
+
+/// Progress through the FTP folder: `phase` is `ftp_checking` or `ftp_merging`.
+fn ftp_progress(
+    phase: &'static str,
+    done: usize,
+    total: usize,
+    photo: Option<&Path>,
+) -> ImportProgress {
+    ImportProgress {
+        card_done: None,
+        phase,
+        current_file: photo.map(Path::to_path_buf),
+        completed_files: done,
+        skipped_files: 0,
+        total_files: total,
+        processed_bytes: 0,
+        total_bytes: 0,
+        bytes_per_sec: None,
+        eta_secs: None,
+        nas: None,
+    }
+}
+
+/// Which card photos the FTP folder has, before anything is copied. An FTP folder that
+/// can't be read changes nothing: every photo is copied from the card.
+fn plan_ftp(
+    request: &ImportRequest,
+    options: Option<&ftp::Options>,
+    cancel: &AtomicBool,
+    report: &mut (impl FnMut(ImportProgress) + Send),
+) -> (Option<ftp::Plan>, Vec<String>) {
+    let Some(options) = options else {
+        return (None, Vec::new());
+    };
+    report(ftp_progress("ftp_checking", 0, 0, None));
+    let dates = request.shoots.iter().map(|s| s.date).collect();
+    let planned = ftp::plan(
+        &request.root,
+        options,
+        &dates,
+        request.include_videos,
+        cancel,
+        |done, total| report(ftp_progress("ftp_checking", done, total, None)),
+    );
+    match planned {
+        Ok(plan) => (Some(plan), Vec::new()),
+        Err(_) if cancel.load(Ordering::Relaxed) => (None, Vec::new()),
+        Err(error) => (
+            None,
+            vec![format!(
+                "{}. Every photo was copied from the card, and the FTP folder was left as it is.",
+                error.trim_end_matches('.')
+            )],
+        ),
+    }
+}
+
+/// Once the card's photos are on the NAS, moves the FTP folder's into the shoots.
+fn finish_ftp(
+    request: &ImportRequest,
+    options: &ftp::Options,
+    plan: &ftp::Plan,
+    exiftool: Option<&Path>,
+    cancel: &AtomicBool,
+    result: &mut ImportResult,
+    report: &mut (impl FnMut(ImportProgress) + Send),
+) {
+    let mut summary = ftp::Summary {
+        root: options.root.clone(),
+        skipped: plan.skip.len(),
+        ..ftp::Summary::default()
+    };
+    result.warnings.extend(plan.warnings.iter().cloned());
+    if options.merge && !plan.moves.is_empty() {
+        if result.status != ImportStatus::Complete || cancel.load(Ordering::Relaxed) {
+            summary.left = plan.moves.len();
+        } else {
+            let nas = request.relay_to.as_ref().unwrap_or(&request.nas_root);
+            let shoots = request
+                .shoots
+                .iter()
+                .map(|s| (s.date, naming::shoot_dir(s.date, &s.name)))
+                .collect();
+            let merged = ftp::merge(
+                nas,
+                &options.root,
+                &shoots,
+                &plan.moves,
+                exiftool,
+                cancel,
+                |done, total, photo| report(ftp_progress("ftp_merging", done, total, Some(photo))),
+            );
+            summary = ftp::Summary {
+                skipped: summary.skipped,
+                ..merged.summary
+            };
+            result.warnings.extend(merged.warnings);
+            result.ratings.add(&merged.ratings);
+            for shoot in merged.shoots {
+                if !result.shoots.contains(&shoot) {
+                    result.shoots.push(shoot);
+                }
+            }
+            result.shoots.sort();
+        }
+    }
+    result.ftp = Some(summary);
 }
 
 #[cfg(test)]
@@ -550,8 +688,14 @@ pub(crate) mod tests {
                     label: "Trip backup".into(),
                     root: dir.path().join("drive"),
                 }],
+                skip: Vec::new(),
             },
             eject: true,
+            ftp: Some(ftp::Options {
+                root: dir.path().join("FTP"),
+                skip: true,
+                merge: true,
+            }),
         };
         job.save(&path).unwrap();
         let loaded = PendingImport::load(&path).unwrap().unwrap();
