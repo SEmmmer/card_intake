@@ -1318,6 +1318,7 @@ pub async fn open_in_lightroom(
     app: AppHandle,
 ) -> Result<LightroomLaunch, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = super::busy::start("open catalog")?;
         let state = app.state::<AppState>();
         let during_upload = state.imports.ready_import(import_id).is_some();
         if state.imports.is_active() && !during_upload && !state.imports.card_is_done() {
@@ -1405,7 +1406,7 @@ pub async fn finish_catalog(
         if state.imports.is_active() {
             return Err("Wait for the NAS upload to finish before Finish.".into());
         }
-        let _busy = super::busy::start("finish");
+        let _busy = super::busy::start("finish")?;
         let folder = import_folder(&state, import_id, shoot)?;
         let root = catalog_root(&resolved(&state)?)?;
         finish(&Catalog::for_record(

@@ -290,6 +290,7 @@ async fn eject_card(
     let root = PathBuf::from(root);
     let control = state.imports.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy::start("eject card")?;
         control.eject_when_ready(|| {
             if expected_id.is_some() && volume_info::volume_info(&root).id != expected_id {
                 return Err(
@@ -316,6 +317,7 @@ async fn eject_card(
 /// runs, and saved once registered.
 #[tauri::command]
 async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardReport, String> {
+    let job = busy::start("read card")?;
     let exiftool = state.exiftool.clone();
     let root = PathBuf::from(root);
     let nas = state.shared_root();
@@ -323,7 +325,7 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
         .map(Ok)
         .unwrap_or_else(|| state.offline_root())?;
     let control = state.imports.clone();
-    let (mut report, wifi) = tauri::async_runtime::spawn_blocking(move || {
+    let (mut report, wifi, _busy) = tauri::async_runtime::spawn_blocking(move || {
         let _reading = control.reading_card()?;
         if scan::check_card_shows_itself(&root)? {
             log::line(format!(
@@ -333,7 +335,7 @@ async fn read_card(root: String, state: State<'_, AppState>) -> Result<CardRepor
             ));
         }
         let report = build_report(&root, exiftool.as_deref(), nas.as_deref(), Some(&offline))?;
-        Ok::<_, String>((report, card_intake_core::camera_wifi::read_card(&root)))
+        Ok::<_, String>((report, card_intake_core::camera_wifi::read_card(&root), job))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -417,12 +419,13 @@ async fn read_card_health(
 ) -> Result<HealthResponse, String> {
     let smartctl = state.smartctl.clone();
     let control = state.imports.clone();
-    let (volume, outcome) = tauri::async_runtime::spawn_blocking(move || {
+    let (volume, outcome, _busy) = tauri::async_runtime::spawn_blocking(move || {
+        let job = busy::start("read card health")?;
         let _reading = control.reading_card()?;
         let root = Path::new(&root);
         let volume = volume_info::volume_info(root);
         let outcome = health::read_health(root, &volume, smartctl.as_deref());
-        Ok::<_, String>((volume, outcome))
+        Ok::<_, String>((volume, outcome, job))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -514,21 +517,20 @@ async fn read_card_shutter(
         return Err(exiftool_note());
     };
     let control = state.imports.clone();
-    let samples = tauri::async_runtime::spawn_blocking(move || {
-        let _reading = control.reading_card()?;
-        let files = scan::scan_card(Path::new(&root))
-            .map_err(|e| format!("Couldn't read the card: {e}"))?;
-        let photos = exiftool::one_per_shot(
-            files
-                .into_iter()
-                .filter(|f| f.kind == MediaKind::Photo)
-                .map(|f| f.path),
-        );
-        shutter_samples_parallel(&exiftool, &photos)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy::start("read shutter counts")?;
+        let samples = {
+            let _reading = control.reading_card()?;
+            let files = scan::scan_card(Path::new(&root))
+                .map_err(|e| format!("Couldn't read the card: {e}"))?;
+            let photos = exiftool::one_per_shot(
+                files
+                    .into_iter()
+                    .filter(|f| f.kind == MediaKind::Photo)
+                    .map(|f| f.path),
+            );
+            shutter_samples_parallel(&exiftool, &photos)?
+        };
         app.state::<AppState>()
             .update_shutter(&ShutterDb::default(), &samples)
             .map(|(response, _)| response)
@@ -1182,13 +1184,6 @@ fn main() {
 
     let context = tauri::generate_context!();
     log::open(&log::folder(&context.config().identifier));
-    // Only the installed app, which opens once: a `cargo run` copy beside it must not
-    // remove the installed app's file.
-    if !cfg!(debug_assertions)
-        && let Some(local) = log::folder(&context.config().identifier).parent()
-    {
-        busy::open(local);
-    }
     let mut builder = tauri::Builder::default();
     // The installed app opens once: starting it again shows the window that's already
     // open, so two copies never save over each other's cards and imports. `cargo run`
@@ -1205,6 +1200,10 @@ fn main() {
         .setup(|app| {
             log::line(format!("Card Intake {} started", env!("CARGO_PKG_VERSION")));
             let state = open_state(app).unwrap_or_else(|reason| fail_to_start(&reason));
+            // Only the primary release instance may clear the previous session's status.
+            if !cfg!(debug_assertions) {
+                busy::open(&state.local_data);
+            }
             app.manage(state);
             // The window opens only now (`create` is false in tauri.conf.json), so its
             // page never asks for what isn't there yet.

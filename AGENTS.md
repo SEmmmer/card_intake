@@ -3,11 +3,11 @@
 - Checks: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`, `npm test --prefix tests/ui`. After changing `ui/index.html`,
   run `node prototype/build-demo.cjs`.
-- After every fix, build and install the latest version: `pwsh scripts/install-windows.ps1`.
-  Don't ask for Card Intake to be closed: the script closes it itself. With a job running
-  (import, backup, Send, delivery, Finish) it waits for the job to end first, then closes,
-  installs and reopens it; with none, it closes it straight away. A wait can be long, so
-  run it in the background.
+- Build after every fix. Use `pwsh scripts/install-windows.ps1` for every Windows
+  release build so the new version is installed on this PC. Run it in the background
+  and verify installation finishes. The script closes an idle Card Intake immediately.
+  If jobs are running, it waits for all of them to finish, then closes the app,
+  installs the update and reopens it if it was running.
 - Push only to `main`: no pull requests, other branches or HTTPS. `origin` goes to port 22,
   which doesn't work, so name the URL. It sometimes times out: try again before changing anything.
 

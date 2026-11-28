@@ -81,6 +81,7 @@ impl ImportControl {
         if active.is_some() {
             return Err("A copy job is already running. Stop it or wait for it to finish.".into());
         }
+        let busy = super::busy::start("copy")?;
         let cancel = Arc::new(AtomicBool::new(false));
         self.card_done.store(false, Ordering::Relaxed);
         *self.ready.lock().map_err(|e| e.to_string())? = None;
@@ -88,7 +89,7 @@ impl ImportControl {
         Ok(ActiveImport {
             control: self.clone(),
             cancel,
-            _busy: super::busy::start("copy"),
+            _busy: busy,
         })
     }
 }

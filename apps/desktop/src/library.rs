@@ -63,6 +63,7 @@ pub async fn scan_library(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<LibraryScanResult, String> {
+    let busy = super::busy::start("library scan")?;
     let exiftool = state.exiftool.clone().ok_or_else(exiftool_note)?;
     let root = state.shared_root().ok_or(
         "Connect the photo share first: shutter counts are read from its photos and saved in it.",
@@ -72,6 +73,7 @@ pub async fn scan_library(
     }
     state.library.cancel.store(false, Ordering::Relaxed);
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy;
         let state = app.state::<AppState>();
         let _active = Active(&state.library);
         let cancel = &state.library.cancel;

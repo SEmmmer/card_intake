@@ -94,6 +94,7 @@ pub async fn ftp_preview(root: String, app: AppHandle) -> Result<FtpPreview, Str
                 error: None,
             });
         };
+        let _busy = super::busy::start("FTP preview")?;
         let _reading = state.imports.reading_card()?;
         let (preview, error) = match ftp::preview(Path::new(&root), &ftp_root) {
             Ok(preview) => (Some(preview), None),
