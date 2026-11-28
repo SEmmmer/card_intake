@@ -280,6 +280,28 @@ test('pressing Deliver again with nothing new says so and copies nothing', async
   assert.equal(a.calls.some(c => c.command === 'deliver'), false);
 });
 
+test('a repeat delivery previews and confirms a PixCake replacement under the original name', async t => {
+  const r = result();
+  const a = await app(t, true, { ledger: { imports: [r] }, catalogs: [{ import_id: r.started_at, shoots: [0], name: 'Tokyo', trip: false, state: 'nas' }] });
+  const photo = { name: 'A.jpg', source: 'final\\A_(2).jpg', kind: 'pixcake', stars: 5, stars_from: 'catalog',
+    action: 'replace', previous_copy: { size: 32768, hash: 'fedcba9876543210' }, thumbnail: 'data:image/jpeg;base64,/9j/AAAA' };
+  const shoot = plannedShoot({ target_exists: true, new: 0, replacements: 1, photos: [photo], skipped: [] });
+  a.$('[data-deliver]').click();
+  a.fixture.plan({ shoots: [shoot], errors: [] }); await settle();
+  assert.equal(a.$('#deliver-title').textContent, 'Deliver 1 photo?');
+  assert.match(a.$('#deliver-body .dest').textContent, /source exports stay in the shoot folder/);
+  assert.match(a.$('#deliver-body .thumb').textContent, /A\.jpg.*PixCake · Replaces delivered Lightroom copy/);
+  assert.equal(a.calls.some(c => c.command === 'deliver'), false);
+  a.$('#deliver-confirm').click();
+  assert.deepEqual(a.last('deliver').confirmed, [{ shoot: shoot.shoot, photos: [
+    { name: 'A.jpg', source: photo.source, previous_copy: photo.previous_copy }
+  ] }]);
+  a.fixture.deliver({ shoots: [{ ...shoot, delivered: 1, photos: [{ ...photo, action: 'delivered' }] }],
+    rescanning: true, warnings: [], errors: [] }); await settle();
+  assert.match(a.$('#toast').textContent, /Replaced 1 Lightroom copy\. Immich is rescanning/);
+  assert.match(a.$('#delivery-details').textContent, /replaced delivered Lightroom copy/);
+});
+
 test('Cancel or Escape closes the confirmation without copying anything', async t => {
   const r = result();
   const a = await app(t, true, { ledger: { imports: [r] }, catalogs: [{ import_id: r.started_at, shoots: [0], name: 'Tokyo', trip: false, state: 'none' }] });

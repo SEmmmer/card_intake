@@ -3,8 +3,8 @@
 //!
 //! Copies are made and checked in a hidden folder inside the shoot, then moved into the
 //! finished photos folder: the whole folder in one rename when it's new, otherwise file
-//! by file. Nothing already there is ever replaced or removed. Catalogs are only ever
-//! opened after copying them (and their WAL) to system temp.
+//! by file. A later PixCake export can replace its delivered Lightroom copy. Catalogs
+//! are opened after copying them and their WAL to system temp.
 
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
@@ -61,14 +61,22 @@ pub struct Photo {
     pub kind: Kind,
     pub stars: Option<i32>,
     pub stars_from: StarsFrom,
-    /// `new` (will be copied), `exists` (that name is already in the folder and is left
-    /// alone), `delivered` or `failed`.
+    /// `new`, `replace` (upgrade a delivered Lightroom copy), `exists`, `delivered` or `failed`.
     pub action: String,
+    /// The exact delivered Lightroom copy shown in the replacement preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_copy: Option<LightroomCopy>,
     /// A `data:image/jpeg;base64,` URL of the JPEG's embedded thumbnail, for confirming.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail: Option<String>,
     #[serde(skip)]
     identities: Vec<String>,
+}
+
+impl Photo {
+    fn pending(&self) -> bool {
+        matches!(self.action.as_str(), "new" | "replace")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +90,8 @@ pub struct Skipped {
 pub struct Confirmed {
     pub name: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_copy: Option<LightroomCopy>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -92,8 +102,11 @@ pub struct DeliveryResult {
     /// Whether that folder was already there when planning.
     pub target_exists: bool,
     pub plan_only: bool,
-    /// Photos to copy (plan) or left to copy (after a failure).
+    /// New files offered in the preview.
     pub new: usize,
+    /// Delivered Lightroom files offered for replacement by PixCake.
+    #[serde(default)]
+    pub replacements: usize,
     /// Photos whose name is already in the folder; they are left alone.
     pub existing: usize,
     /// Photos copied by this delivery.
@@ -109,10 +122,11 @@ impl DeliveryResult {
         let mut list: Vec<Confirmed> = self
             .photos
             .iter()
-            .filter(|p| p.action == "new")
+            .filter(|p| p.pending())
             .map(|p| Confirmed {
                 name: p.name.clone(),
                 source: p.source.clone(),
+                previous_copy: p.previous_copy.clone(),
             })
             .collect();
         list.sort();
@@ -120,10 +134,30 @@ impl DeliveryResult {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct LightroomCopy {
+    size: u64,
+    /// Hexadecimal xxHash64 of the delivered bytes, including their final star tags.
+    hash: String,
+}
+
+impl LightroomCopy {
+    fn new(size: u64, hash: u64) -> Self {
+        Self {
+            size,
+            hash: format!("{hash:016x}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Assignment {
     name: String,
     identities: Vec<String>,
+    /// Known Lightroom outputs, including copies delivered to another destination.
+    /// An empty set means PixCake only. Older manifests omitted this field entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lightroom_copies: Option<BTreeSet<LightroomCopy>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -282,9 +316,7 @@ fn classify(meta: &Value) -> Result<Kind, &'static str> {
 fn metadata(exiftool: &Path, paths: &[PathBuf]) -> io::Result<BTreeMap<String, Value>> {
     let mut found = BTreeMap::new();
     for chunk in paths.chunks(128) {
-        let bytes = crate::exiftool::read_batch(exiftool, chunk, TAGS)?;
-        let rows: Vec<Value> = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-        for row in rows {
+        for row in metadata_rows(exiftool, chunk, TAGS)? {
             if let Some(e) = row.get("ExifTool:Error").or_else(|| row.get("Error")) {
                 return Err(io::Error::other(format!(
                     "Couldn't read JPEG metadata: {e}. Existing deliveries were left alone."
@@ -296,6 +328,11 @@ fn metadata(exiftool: &Path, paths: &[PathBuf]) -> io::Result<BTreeMap<String, V
         }
     }
     Ok(found)
+}
+
+fn metadata_rows(exiftool: &Path, paths: &[PathBuf], tags: &[&str]) -> io::Result<Vec<Value>> {
+    let bytes = crate::exiftool::read_batch(exiftool, paths, tags)?;
+    serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
 #[derive(Debug)]
@@ -430,6 +467,68 @@ fn overlap(a: &[String], b: &[String]) -> bool {
     a.iter().any(|k| b.contains(k))
 }
 
+// Old manifests identify the photo but do not say which export was delivered.
+// Prefer Lightroom's document ID. When it is missing, compare the JPEG image data
+// with any surviving Lightroom twin: Deliver may have changed the copy's star tags.
+fn legacy_lightroom(
+    exiftool: &Path,
+    path: &Path,
+    meta: &Value,
+    assignment: &Assignment,
+    twins: &[PathBuf],
+) -> io::Result<bool> {
+    if meta
+        .get("ExifTool:Error")
+        .or_else(|| meta.get("Error"))
+        .is_some()
+        || classify(meta) != Ok(Kind::Lightroom)
+    {
+        return Ok(false);
+    }
+    if let Some(doc) = tag(meta, "XMP-xmpMM:DocumentID").filter(|s| !s.is_empty())
+        && assignment.identities.iter().any(|s| s.starts_with("doc:"))
+    {
+        return Ok(assignment
+            .identities
+            .contains(&format!("doc:{}", doc.to_lowercase())));
+    }
+    if twins.is_empty() {
+        // Old records can outlive their source export. Use the recorded assignment
+        // and Lightroom tag unless a preserved original filename identifies another photo.
+        return Ok(tag(meta, "XMP-xmpMM:PreservedFileName")
+            .and_then(|name| Path::new(name).file_stem())
+            .is_none_or(|stem| {
+                assignment
+                    .identities
+                    .iter()
+                    .filter_map(|id| id.strip_prefix("stem:"))
+                    .any(|id| clean_stem(id).eq_ignore_ascii_case(&stem.to_string_lossy()))
+            }));
+    }
+    let mut paths = twins.to_vec();
+    paths.push(path.to_owned());
+    let rows = metadata_rows(exiftool, &paths, &["-G1", "-ImageDataHash"])?;
+    let target = normal_path(&path.to_string_lossy());
+    let is_target = |row: &Value| tag(row, "SourceFile").is_some_and(|p| normal_path(p) == target);
+    let digest = rows
+        .iter()
+        .find(|r| is_target(r))
+        .and_then(|r| tag(r, "File:ImageDataHash"));
+    Ok(digest.is_some_and(|d| {
+        rows.iter()
+            .any(|r| !is_target(r) && tag(r, "File:ImageDataHash") == Some(d))
+    }))
+}
+
+fn separate_folders(shoot: &Path, target: &Path) -> io::Result<()> {
+    if target.starts_with(shoot) || shoot.starts_with(target) {
+        return Err(io::Error::other(
+            "The finished photos folder must be outside the shoot folder.",
+        ));
+    }
+    Ok(())
+}
+
 /// A read-only plan for delivering `shoot` into `target`, its folder among the finished
 /// photos. ExifTool argument files and catalog copies live in system temp.
 pub fn plan(
@@ -443,11 +542,7 @@ pub fn plan(
             "The shoot folder is unavailable. Reconnect the photo share.",
         ));
     }
-    if target.starts_with(shoot) || shoot.starts_with(target) {
-        return Err(io::Error::other(
-            "The finished photos folder must be outside the shoot folder.",
-        ));
-    }
+    separate_folders(shoot, target)?;
     let target_exists = match fs::symlink_metadata(target) {
         Ok(m) if m.is_dir() && !m.file_type().is_symlink() => true,
         Ok(_) => {
@@ -465,6 +560,17 @@ pub fn plan(
             target.parent().unwrap_or(target).display()
         )));
     }
+    // A mapped path or a junction to the shoot must not turn a delivery into a source edit.
+    let resolved_target = if target_exists {
+        target.canonicalize()?
+    } else {
+        target.parent().unwrap().canonicalize()?.join(
+            target
+                .file_name()
+                .ok_or_else(|| io::Error::other("Invalid delivery folder"))?,
+        )
+    };
+    separate_folders(&shoot.canonicalize()?, &resolved_target)?;
     let old = manifest(shoot)?;
     let mut result = DeliveryResult {
         shoot: shoot.to_path_buf(),
@@ -572,8 +678,10 @@ pub fn plan(
                 .then(a.relative.cmp(&b.relative))
         });
         let mut winner = group.remove(0);
+        let mut lightroom_twins = Vec::new();
         for older in group {
             let reason = if winner.kind == Kind::PixCake && older.kind == Kind::Lightroom {
+                lightroom_twins.push(shoot.join(&older.relative));
                 "replaced by PixCake"
             } else {
                 "older version"
@@ -586,9 +694,9 @@ pub fn plan(
         }
         winner.identities.sort();
         winner.identities.dedup();
-        chosen.push(winner);
+        chosen.push((winner, lightroom_twins));
     }
-    chosen.sort_by(|a, b| {
+    chosen.sort_by(|(a, _), (b, _)| {
         a.identities
             .cmp(&b.identities)
             .then(a.relative.cmp(&b.relative))
@@ -646,7 +754,7 @@ pub fn plan(
                 .push(format!("Couldn't read fallback stars: {e}")),
         }
     }
-    // Names already in the folder, whoever put them there, are never overwritten.
+    // Only an assigned name can be considered for a Lightroom-to-PixCake replacement.
     let mut present = BTreeSet::new();
     if target_exists {
         for e in fs::read_dir(target)? {
@@ -654,15 +762,15 @@ pub fn plan(
         }
     }
     let mut taken = BTreeSet::new();
-    for c in chosen {
+    let mut legacy = Vec::new();
+    for (c, twins) in chosen {
         // A photo keeps the name it was delivered under, even if that file was deleted.
         let assigned = old
             .assignments
             .iter()
             .find(|a| overlap(&a.identities, &c.identities))
-            .map(|a| a.name.clone())
-            .filter(|n| !taken.contains(&n.to_lowercase()));
-        let name = assigned.unwrap_or_else(|| {
+            .filter(|a| !taken.contains(&a.name.to_lowercase()));
+        let name = assigned.map(|a| a.name.clone()).unwrap_or_else(|| {
             let base = clean_stem(&c.stem);
             let base = if base.trim().is_empty() {
                 c.stem.clone()
@@ -689,23 +797,69 @@ pub fn plan(
         });
         taken.insert(name.to_lowercase());
         let (stars, stars_from) = stars(&c, &ratings, &fallback);
-        let action = if present.contains(&name.to_lowercase()) {
-            result.existing += 1;
-            "exists"
-        } else {
-            result.new += 1;
-            "new"
-        };
+        let exists = present.contains(&name.to_lowercase());
+        let mut previous_copy = None;
+        if exists
+            && c.kind == Kind::PixCake
+            && let Some(a) = assigned
+        {
+            let dest = target.join(&name);
+            if let Ok(stat) = fs::symlink_metadata(&dest)
+                && stat.file_type().is_file()
+            {
+                match &a.lightroom_copies {
+                    Some(copies) if copies.iter().any(|copy| copy.size == stat.len()) => {
+                        let copy = LightroomCopy::new(stat.len(), hash_file(&dest)?);
+                        if copies.contains(&copy) {
+                            previous_copy = Some(copy);
+                        }
+                    }
+                    None => legacy.push((result.photos.len(), dest, a, twins)),
+                    _ => {}
+                }
+            }
+        }
         result.photos.push(Photo {
             name,
             source: c.relative,
             kind: c.kind,
             stars,
             stars_from,
-            action: action.into(),
+            action: if exists { "exists" } else { "new" }.into(),
+            previous_copy,
             thumbnail: None,
             identities: c.identities,
         });
+    }
+    // Inspect only recorded destinations from earlier builds. Read their tags in batches.
+    for batch in legacy.chunks(128) {
+        let paths: Vec<_> = batch.iter().map(|(_, p, _, _)| p.clone()).collect();
+        let mut rows = BTreeMap::new();
+        for row in metadata_rows(exiftool, &paths, TAGS)? {
+            if let Some(path) = tag(&row, "SourceFile") {
+                rows.insert(normal_path(path), row);
+            }
+        }
+        for (i, path, assignment, twins) in batch {
+            if let Some(meta) = rows.get(&normal_path(&path.to_string_lossy()))
+                && legacy_lightroom(exiftool, path, meta, assignment, twins)?
+            {
+                result.photos[*i].previous_copy = Some(LightroomCopy::new(
+                    fs::metadata(path)?.len(),
+                    hash_file(path)?,
+                ));
+            }
+        }
+    }
+    for p in &mut result.photos {
+        if p.previous_copy.is_some() {
+            p.action = "replace".into();
+            result.replacements += 1;
+        } else if p.action == "exists" {
+            result.existing += 1;
+        } else {
+            result.new += 1;
+        }
     }
     result
         .photos
@@ -714,13 +868,13 @@ pub fn plan(
     Ok(result)
 }
 
-/// Adds each new photo's embedded EXIF thumbnail, so the user sees what they confirm.
+/// Adds the embedded EXIF thumbnails for the additions and replacements in the preview.
 /// Thumbnails are small (about 10 KB) and read without loading the whole JPEG.
 pub fn add_thumbnails(exiftool: &Path, result: &mut DeliveryResult) {
     let paths: Vec<PathBuf> = result
         .photos
         .iter()
-        .filter(|p| p.action == "new")
+        .filter(|p| p.pending())
         .map(|p| result.shoot.join(&p.source))
         .collect();
     let mut found = BTreeMap::new();
@@ -749,7 +903,7 @@ pub fn add_thumbnails(exiftool: &Path, result: &mut DeliveryResult) {
         }
     }
     let shoot = result.shoot.clone();
-    for p in result.photos.iter_mut().filter(|p| p.action == "new") {
+    for p in result.photos.iter_mut().filter(|p| p.pending()) {
         p.thumbnail = found
             .get(&normal_path(&shoot.join(&p.source).to_string_lossy()))
             .cloned();
@@ -772,21 +926,34 @@ pub fn hash_file(path: &Path) -> io::Result<u64> {
     }
 }
 
-fn verify(source: &Path, copy: &Path) -> io::Result<()> {
-    if hash_file(source)? != hash_file(copy)? {
+fn verify(source: &Path, copy: &Path) -> io::Result<u64> {
+    let hash = hash_file(copy)?;
+    if hash_file(source)? != hash {
         return Err(io::Error::other(
             "The delivered copy doesn't match its source. Check the connection and try again.",
         ));
     }
-    Ok(())
+    Ok(hash)
 }
 
-fn write_stars(exiftool: &Path, staged: &Path, stars: i32) -> io::Result<()> {
+/// Checks that the staged upgrade is still a PixCake JPEG and applies the chosen stars.
+/// Returns true when the star tags changed the staged bytes.
+fn prepare_tags(exiftool: &Path, staged: &Path, photo: &Photo) -> io::Result<bool> {
+    let stars = photo.stars.filter(|_| photo.stars_from != StarsFrom::None);
+    if stars.is_none() && photo.previous_copy.is_none() {
+        return Ok(false);
+    }
     let meta = metadata(exiftool, &[staged.to_path_buf()])?;
     let meta = meta
         .values()
         .next()
-        .ok_or_else(|| io::Error::other("No rating metadata returned"))?;
+        .ok_or_else(|| io::Error::other("No JPEG metadata returned"))?;
+    if photo.previous_copy.is_some() && classify(meta) != Ok(Kind::PixCake) {
+        return Err(io::Error::other(
+            "The PixCake export changed during delivery. Check the preview again.",
+        ));
+    }
+    let Some(stars) = stars else { return Ok(false) };
     let percent = [0, 1, 25, 50, 75, 99][stars as usize];
     let agrees = |value: &Value, key: &str, expected: i32| {
         value
@@ -797,7 +964,7 @@ fn write_stars(exiftool: &Path, staged: &Path, stars: i32) -> io::Result<()> {
         && agrees(meta, "IFD0:Rating", stars)
         && agrees(meta, "IFD0:RatingPercent", percent)
     {
-        return Ok(());
+        return Ok(false);
     }
     let mut args = tempfile::NamedTempFile::new()?;
     writeln!(args, "-overwrite_original\n-XMP-xmp:Rating={stars}")?;
@@ -832,7 +999,7 @@ fn write_stars(exiftool: &Path, staged: &Path, stars: i32) -> io::Result<()> {
             "The delivered stars didn't read back correctly.",
         ));
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Renames `from` to `to`, never replacing anything already at `to`.
@@ -866,8 +1033,7 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-/// Delivers what the user confirmed. Nothing in the finished photos folder is replaced
-/// or removed: a name that's already there is skipped.
+/// Publishes the confirmed additions and PixCake upgrades to the finished photos folder.
 pub fn deliver(
     shoot: &Path,
     exiftool: &Path,
@@ -884,8 +1050,27 @@ fn deliver_with(
     catalog: Option<&Path>,
     target: &Path,
     confirmed: &[Confirmed],
-    verify_copy: impl Fn(&Path, &Path) -> io::Result<()>,
+    verify_copy: impl Fn(&Path, &Path) -> io::Result<u64>,
 ) -> io::Result<DeliveryResult> {
+    // The staging directory and manifest belong to the shoot, including when another
+    // computer delivers from the same NAS. The OS releases this lock on process exit.
+    let _lock = if confirmed.is_empty() {
+        None
+    } else {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(shoot.join(".card-intake-deliver.lock"))?;
+        file.try_lock().map_err(|e| match e {
+            fs::TryLockError::WouldBlock => {
+                io::Error::other("A delivery for this shoot is already running.")
+            }
+            fs::TryLockError::Error(e) => e,
+        })?;
+        Some(file)
+    };
     let mut result = plan(shoot, exiftool, catalog, target)?;
     let mut wanted = confirmed.to_vec();
     wanted.sort();
@@ -896,10 +1081,10 @@ fn deliver_with(
         ));
     }
     result.plan_only = false;
-    if result.new == 0 {
+    if wanted.is_empty() {
         return Ok(result);
     }
-    // 1. Copy and check each new photo in a hidden folder inside the shoot.
+    // 1. Copy and check each confirmed export in a hidden folder inside the shoot.
     let staging = shoot.join(STAGING);
     match fs::symlink_metadata(&staging) {
         // Left by an interrupted delivery: it only ever holds copies.
@@ -913,15 +1098,19 @@ fn deliver_with(
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
-    fs::create_dir(&staging)?;
+    let staging_dir = tempfile::Builder::new()
+        .prefix(STAGING)
+        .rand_bytes(0)
+        .tempdir_in(shoot)?;
+    let staging = staging_dir.path();
     let mut staged = Vec::new();
     for (i, p) in result.photos.iter_mut().enumerate() {
-        if p.action != "new" {
+        if !p.pending() {
             continue;
         }
         let copy = staging.join(&p.name);
         match stage(&shoot.join(&p.source), &copy, exiftool, p, &verify_copy) {
-            Ok(()) => staged.push(i),
+            Ok(output) => staged.push((i, output)),
             Err(e) => {
                 result.errors.push(format!("{}: {e}", p.source));
                 p.action = "failed".into();
@@ -932,31 +1121,51 @@ fn deliver_with(
     // 2. Move the copies in: a new folder in one rename, so Immich never sees half of
     // it, or file by file into a folder that's already there.
     let mut whole = false;
-    if !staged.is_empty() && !target.exists() {
-        match rename_new(&staging, target) {
+    if !staged.is_empty() && !result.target_exists && !target.exists() {
+        match rename_new(staging, target) {
             Ok(()) => whole = true,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             // Another volume: make the folder and move file by file.
             Err(_) => match fs::create_dir(target) {
                 Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
-                    let _ = fs::remove_dir_all(&staging);
                     return Err(e);
                 }
                 _ => {}
             },
         }
     }
-    for i in staged {
+    if !whole && !staged.is_empty() {
+        if !fs::symlink_metadata(target)?.file_type().is_dir() {
+            return Err(io::Error::other(
+                "The finished photos folder changed during delivery.",
+            ));
+        }
+        separate_folders(&shoot.canonicalize()?, &target.canonicalize()?)?;
+    }
+    let mut assignments = Vec::new();
+    for (i, output) in staged {
         let p = &mut result.photos[i];
         let placed = if whole {
             Ok(true)
         } else {
-            place(&staging.join(&p.name), &target.join(&p.name), &verify_copy)
+            place(
+                &staging.join(&p.name),
+                &target.join(&p.name),
+                p.previous_copy.as_ref(),
+                &verify_copy,
+            )
         };
         match placed {
             Ok(true) => {
                 p.action = "delivered".into();
                 result.delivered += 1;
+                assignments.push(Assignment {
+                    name: p.name.clone(),
+                    identities: p.identities.clone(),
+                    lightroom_copies: Some(
+                        output.into_iter().chain(p.previous_copy.clone()).collect(),
+                    ),
+                });
             }
             // Something with this name arrived meanwhile: leave it alone.
             Ok(false) => {
@@ -969,12 +1178,9 @@ fn deliver_with(
             }
         }
     }
-    if !whole {
-        let _ = fs::remove_dir_all(&staging);
-    }
     // 3. Remember the names, so each photo keeps its name next time.
     if result.delivered > 0
-        && let Err(e) = remember(shoot, target, &result)
+        && let Err(e) = remember(shoot, target, assignments)
     {
         result.warnings.push(format!(
             "The photos were delivered, but Card Intake couldn't record them in the shoot folder: {e}"
@@ -988,8 +1194,8 @@ fn stage(
     copy: &Path,
     exiftool: &Path,
     photo: &Photo,
-    verify_copy: impl Fn(&Path, &Path) -> io::Result<()>,
-) -> io::Result<()> {
+    verify_copy: impl Fn(&Path, &Path) -> io::Result<u64>,
+) -> io::Result<Option<LightroomCopy>> {
     // Reject a path ExifTool's argument file can't hold instead of silently dropping it.
     if source.to_string_lossy().contains(['\r', '\n'])
         || copy.to_string_lossy().contains(['\r', '\n'])
@@ -1011,62 +1217,88 @@ fn stage(
         permissions.set_mode(permissions.mode() | 0o200);
     }
     fs::set_permissions(copy, permissions)?;
-    verify_copy(source, copy)?;
-    if photo.stars_from != StarsFrom::None
-        && let Some(n) = photo.stars
-    {
-        write_stars(exiftool, copy, n)?;
+    let verified = verify_copy(source, copy)?;
+    let tags_changed = prepare_tags(exiftool, copy, photo)?;
+    fs::OpenOptions::new().write(true).open(copy)?.sync_all()?;
+    if photo.kind == Kind::Lightroom {
+        return Ok(Some(LightroomCopy::new(
+            fs::metadata(copy)?.len(),
+            if tags_changed {
+                hash_file(copy)?
+            } else {
+                verified
+            },
+        )));
     }
-    fs::OpenOptions::new().write(true).open(copy)?.sync_all()
+    Ok(None)
 }
 
-/// Moves a checked copy into place. `Ok(false)` when something with its name is there.
+/// Recheck the confirmed Lightroom copy immediately before replacing its directory entry.
+fn publish(from: &Path, to: &Path, previous_copy: Option<&LightroomCopy>) -> io::Result<()> {
+    let Some(expected) = previous_copy else {
+        return rename_new(from, to);
+    };
+    let stat = fs::symlink_metadata(to)?;
+    if !stat.file_type().is_file()
+        || stat.len() != expected.size
+        || format!("{:016x}", hash_file(to)?) != expected.hash
+    {
+        return Err(io::Error::other(
+            "The delivered Lightroom copy changed. Check it and press Deliver again.",
+        ));
+    }
+    fs::rename(from, to)
+}
+
 fn place(
     from: &Path,
     to: &Path,
-    verify_copy: impl Fn(&Path, &Path) -> io::Result<()>,
+    previous_copy: Option<&LightroomCopy>,
+    verify_copy: impl Fn(&Path, &Path) -> io::Result<u64>,
 ) -> io::Result<bool> {
-    match rename_new(from, to) {
+    match publish(from, to, previous_copy) {
         Ok(()) => return Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) if previous_copy.is_none() && e.kind() == io::ErrorKind::AlreadyExists => {
+            return Ok(false);
+        }
         Err(e) if e.kind() != io::ErrorKind::CrossesDevices => return Err(e),
         Err(_) => {}
     }
     // Another volume: copy beside it under a hidden name, check it, then rename it.
-    let name = to.file_name().unwrap_or_default().to_string_lossy();
-    let temp = to.with_file_name(format!("{TEMP}{name}"));
-    let _ = fs::remove_file(&temp);
+    let temp = tempfile::Builder::new()
+        .prefix(TEMP)
+        .tempfile_in(
+            to.parent()
+                .ok_or_else(|| io::Error::other("Missing delivery folder"))?,
+        )?
+        .into_temp_path();
     fs::copy(from, &temp)?;
-    match verify_copy(from, &temp).and_then(|()| rename_new(&temp, to)) {
+    verify_copy(from, &temp)?;
+    File::options().write(true).open(&temp)?.sync_all()?;
+    match publish(&temp, to, previous_copy) {
         Ok(()) => Ok(true),
-        Err(e) => {
-            let _ = fs::remove_file(&temp);
-            if e.kind() == io::ErrorKind::AlreadyExists {
-                Ok(false)
-            } else {
-                Err(e)
-            }
-        }
+        Err(e) if previous_copy.is_none() && e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
-fn remember(shoot: &Path, target: &Path, result: &DeliveryResult) -> io::Result<()> {
+fn remember(shoot: &Path, target: &Path, delivered: Vec<Assignment>) -> io::Result<()> {
     let mut m = manifest(shoot)?;
-    for p in result.photos.iter().filter(|p| p.action == "delivered") {
+    for entry in delivered {
         match m
             .assignments
             .iter_mut()
-            .find(|a| a.name.eq_ignore_ascii_case(&p.name))
+            .find(|a| a.name.eq_ignore_ascii_case(&entry.name))
         {
             Some(a) => {
-                a.identities.extend(p.identities.iter().cloned());
+                a.lightroom_copies
+                    .get_or_insert_with(BTreeSet::new)
+                    .extend(entry.lightroom_copies.into_iter().flatten());
+                a.identities.extend(entry.identities);
                 a.identities.sort();
                 a.identities.dedup();
             }
-            None => m.assignments.push(Assignment {
-                name: p.name.clone(),
-                identities: p.identities.clone(),
-            }),
+            None => m.assignments.push(entry),
         }
     }
     m.version = 2;

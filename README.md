@@ -110,10 +110,10 @@ When a catalog Card Intake made opens, the plug-in adds every raw and DxO PureRA
 
 ## Deliver and Immich
 
-Export JPEGs from Lightroom Classic into any folder inside the shoot, retouch them in PixCake if needed, then press **Deliver** in Recent imports. It shows the finished JPEGs that are new and, once you confirm, copies them with their current Lightroom stars into the shoot's folder among your finished photos, such as `\\NAS\Picture\MyPhoto\2026-11-06_夜景`. A trip's button covers every shoot in the trip.
+Export JPEGs from Lightroom Classic into any folder inside the shoot, retouch them in PixCake if needed, then press **Deliver** in Recent imports. The preview shows new JPEGs and any PixCake versions ready to replace earlier Lightroom deliveries. Once you confirm, Deliver copies them with their current Lightroom stars into the shoot's folder among your finished photos, such as `\\NAS\Picture\MyPhoto\2026-11-06_夜景`. A trip's button covers every shoot in the trip.
 
 - Lightroom and PixCake JPEGs are recognised from their metadata, and a PixCake version replaces its Lightroom twin. Camera JPEGs, unrecognised JPEGs and raws are never delivered.
-- Nothing in the finished photos folder is ever replaced or removed, so pressing Deliver again only offers what's new.
+- If you add the PixCake export after delivering the Lightroom JPEG, press **Deliver** again. The PixCake copy takes the same filename in the delivery folder. Both exports stay in the shoot folder. Later deliveries skip the finished PixCake copy.
 - Copies are read back with xxHash64, and a new folder is moved in with one rename, so Immich never sees half of it.
 
 Under **Deliver → Finished photos folder and Immich**, choose the folder Immich's external library watches. Optionally enter the Immich URL and an **admin API key** with `library.read` and `library.update` permissions, then choose the library to rescan after each delivery. The key is kept only in this computer's `settings.json`, and a failed rescan doesn't fail the delivery.

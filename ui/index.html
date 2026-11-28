@@ -2486,6 +2486,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
 
   function starsLabel(p) { return p.stars ? "★★★★★".slice(0, p.stars) : "No stars"; }
   function kindLabel(p) { return p.kind === "pixcake" ? "PixCake" : "Lightroom"; }
+  function pendingDelivery(p) { return p.action === "new" || p.action === "replace"; }
 
   function skippedNotes(s) {
     var count = function (reason) { return s.skipped.filter(function (p) { return p.reason === reason; }).length; };
@@ -2507,6 +2508,8 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
       ? "Delivered " + plural(done.length, "photo", "photos") + " to " + destination + ": " +
         [pixcake ? pixcake + " from PixCake" : "", lr ? lr + " from Lightroom" : ""].filter(Boolean).join(", ") + "."
       : "Nothing was delivered.";
+    var replaced = done.filter(function (p) { return p.previous_copy; }).length;
+    if (replaced) text += " Replaced " + plural(replaced, "Lightroom copy", "Lightroom copies") + ".";
     var errors = (result.errors || []).length + c.errors, warnings = (result.warnings || []).length + c.warnings;
     if (errors) text += " " + plural(errors, "problem", "problems") + "; see Last delivery.";
     if (result.rescanning) text += " Immich is rescanning.";
@@ -2522,8 +2525,9 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     result.shoots.forEach(function (s) {
       html += '<p><code>' + esc(s.target) + '</code> from <code>' + esc(s.shoot) + '</code></p>' + messages(s.errors.concat(s.warnings)) + '<ul>' +
         s.photos.map(function (p) {
+          var outcome = p.action === "delivered" && p.previous_copy ? "replaced delivered Lightroom copy" : action[p.action] || p.action;
           return '<li><code>' + esc(p.name) + '</code> ← ' + esc(p.source) + ' · ' + kindLabel(p) + ' · ' +
-            (p.stars == null ? 'stars as exported' : p.stars + ' stars') + ' (' + esc(p.stars_from === "none" ? "exported" : p.stars_from) + ') · ' + esc(action[p.action] || p.action) + '</li>';
+            (p.stars == null ? 'stars as exported' : p.stars + ' stars') + ' (' + esc(p.stars_from === "none" ? "exported" : p.stars_from) + ') · ' + esc(outcome) + '</li>';
         }).join("") +
         s.skipped.map(function (p) { return '<li>Skipped <code>' + esc(p.source) + '</code>: ' + esc(p.reason) + '</li>'; }).join("") + '</ul>';
     });
@@ -2546,7 +2550,7 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (state.delivering || state.copyJob || (state.run && state.run.active)) return;
     state.delivering = record.started_at + ":" + shoot; renderHistory(); updateSummary();
     invoke("plan_delivery", { importId: record.started_at, shoot: shoot }).then(function (plan) {
-      var fresh = deliveryCounts(plan.shoots).photos.filter(function (p) { return p.action === "new"; });
+      var fresh = deliveryCounts(plan.shoots).photos.filter(pendingDelivery);
       if (!fresh.length) { toast(nothingNew(plan)); endDelivery(); return; }
       state.deliveryPlan = { record: record, shoot: shoot, plan: plan };
       showDeliverDialog(plan, fresh.length);
@@ -2560,16 +2564,19 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     $("#deliver-title").textContent = "Deliver " + plural(count, "photo", "photos") + "?";
     var html = plan.errors.map(function (e) { return '<p class="note warn">' + esc(e) + '</p>'; }).join("");
     plan.shoots.forEach(function (s) {
-      var mine = s.photos.filter(function (p) { return p.action === "new"; });
+      var mine = s.photos.filter(pendingDelivery);
       var notes = skippedNotes(s);
       if (!mine.length) {
         html += '<p class="note">' + esc(baseName(s.shoot) + ": nothing new" + (notes.length ? " (" + notes.join(", ") + ")" : "") + ".") + '</p>';
         return;
       }
-      html += '<p class="dest">To <code>' + esc(s.target) + '</code> · ' + (s.target_exists ? "adds to the folder that’s already there" : "a new folder") + '</p>' +
+      var folderNote = mine.some(function (p) { return p.action === "replace"; }) ? "source exports stay in the shoot folder" :
+        s.target_exists ? "adds to the folder that’s already there" : "a new folder";
+      html += '<p class="dest">To <code>' + esc(s.target) + '</code> · ' + folderNote + '</p>' +
         '<div class="thumbs">' + mine.map(function (p) {
           return '<figure class="thumb">' + (p.thumbnail ? '<img src="' + esc(p.thumbnail) + '" alt="">' : '<div class="noimg">No preview</div>') +
-            '<figcaption>' + esc(p.name) + '<small>' + esc(starsLabel(p) + " · " + kindLabel(p)) + '</small></figcaption></figure>';
+            '<figcaption>' + esc(p.name) + '<small>' + esc(starsLabel(p) + " · " + kindLabel(p)) +
+            (p.action === "replace" ? ' · Replaces delivered Lightroom copy' : '') + '</small></figcaption></figure>';
         }).join("") + '</div>';
       if (notes.length) html += '<p class="note">Skipped: ' + esc(notes.join(" · ")) + '.</p>';
       html += s.warnings.map(function (w) { return '<p class="note warn">' + esc(w) + '</p>'; }).join("");
@@ -2597,7 +2604,11 @@ td .btn-quiet { padding: 3px 10px; font-size: 12.5px; }
     if (!d) return;
     $("#deliver-dialog").hidden = true; $("#deliver-body").innerHTML = "";
     var confirmed = d.plan.shoots.map(function (s) {
-      return { shoot: s.shoot, photos: s.photos.filter(function (p) { return p.action === "new"; }).map(function (p) { return { name: p.name, source: p.source }; }) };
+      return { shoot: s.shoot, photos: s.photos.filter(pendingDelivery).map(function (p) {
+        var photo = { name: p.name, source: p.source };
+        if (p.action === "replace") photo.previous_copy = p.previous_copy;
+        return photo;
+      }) };
     }).filter(function (s) { return s.photos.length; });
     invoke("deliver", { importId: d.record.started_at, shoot: d.shoot, confirmed: confirmed }).then(function (result) {
       showDelivery(result); toast(deliverySummary(result)); return refreshDeliveries();

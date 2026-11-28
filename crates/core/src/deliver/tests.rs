@@ -271,7 +271,8 @@ fn night_layout_moves_seven_pixcake_jpegs_into_a_new_folder_and_a_repeat_adds_no
             source: Path::new("final")
                 .join("EM_01228-DxO_DeepPRIME XD3.jpg")
                 .to_string_lossy()
-                .into_owned()
+                .into_owned(),
+            previous_copy: None,
         }]
     );
     assert_eq!(run(&p, &tool, None).delivered, 1);
@@ -279,7 +280,7 @@ fn night_layout_moves_seven_pixcake_jpegs_into_a_new_folder_and_a_repeat_adds_no
 }
 
 #[test]
-fn an_existing_folder_gets_only_new_names_and_nothing_there_is_replaced() {
+fn a_late_pixcake_export_replaces_only_its_delivered_lightroom_copy() {
     let Some(tool) = tool() else {
         return;
     };
@@ -320,23 +321,216 @@ fn an_existing_folder_gets_only_new_names_and_nothing_there_is_replaced() {
     );
     assert!(!p.shoot.join(STAGING).exists());
 
-    // A PixCake redo of a photo already delivered from Lightroom keeps its name and is
-    // skipped: delivered files are never overwritten.
+    // Both exports stay in the shoot. Only Card Intake's Lightroom copy in MyPhoto changes.
+    let lr = p.shoot.join("topix/DSC00003.jpg");
+    let pixcake = p.shoot.join("final/DSC00003_(2).jpg");
+    let lr_before = fs::read(&lr).unwrap();
+    jpeg(&pixcake, &["-Software=PixCake"], &tool);
+    let pix_before = fs::read(&pixcake).unwrap();
+    let dest = p.target.join("DSC00003.jpg");
+    let redo = plan(&p.shoot, &tool, None, &p.target).unwrap();
+    assert_eq!((redo.new, redo.replacements, redo.existing), (0, 1, 1));
+    let confirmed = redo.confirmed();
+    assert_eq!(confirmed.len(), 1);
+    assert_eq!(confirmed[0].name, "DSC00003.jpg");
+    assert!(confirmed[0].previous_copy.is_some());
+    assert_eq!(fs::read(&dest).unwrap(), lr_before);
+    let done = deliver(&p.shoot, &tool, None, &p.target, &confirmed).unwrap();
+    assert_eq!((done.delivered, done.existing), (1, 1));
+    assert_eq!(fs::read(&dest).unwrap(), pix_before);
+    assert_eq!(fs::read(lr).unwrap(), lr_before);
+    assert_eq!(fs::read(pixcake).unwrap(), pix_before);
+    assert_eq!(
+        fs::read(p.target.join("DSC00001.jpg")).unwrap(),
+        b"delivered by hand"
+    );
+    assert_eq!(
+        names(&p.target),
+        ["DSC00001.jpg", "DSC00003.jpg", "other.jpg"]
+    );
+    assert_eq!(state(&p.shoot).unwrap().count, 1);
+    assert!(
+        plan(&p.shoot, &tool, None, &p.target)
+            .unwrap()
+            .confirmed()
+            .is_empty()
+    );
+}
+
+#[test]
+fn previous_delivery_records_can_upgrade_with_stars_written_only_on_the_delivery() {
+    let Some(tool) = tool() else { return };
+    let p = place_for("before-upgrade");
+    let lr = p.shoot.join("topix/EM_01624.jpg");
+    let pc = p.shoot.join("final/EM_01624_(2).jpg");
+    let dest = p.target.join("EM_01624.jpg");
+    jpeg(&lr, &["-Software=Lightroom", "-XMP-xmp:Rating=1"], &tool);
+    let cat = p.shoot.parent().unwrap().join("stars.lrcat");
+    let _db = tiny_catalog(&cat, &p.shoot.to_string_lossy(), false);
+    assert_eq!(run(&p, &tool, Some(&cat)).delivered, 1);
+    assert_ne!(hash_file(&dest).unwrap(), hash_file(&lr).unwrap());
+    let manifest_path = p.shoot.join(MANIFEST);
+    let mut old: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    old["assignments"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("lightroom_copies");
+    fs::write(manifest_path, serde_json::to_vec(&old).unwrap()).unwrap();
+    jpeg(&pc, &["-Software=PixCake", "-XMP-xmp:Rating=0"], &tool);
+    let sources = [hash_file(&lr).unwrap(), hash_file(&pc).unwrap()];
+    let done = run(&p, &tool, Some(&cat));
+    assert_eq!(
+        (done.replacements, done.delivered),
+        (1, 1),
+        "{:?}",
+        done.errors
+    );
+    let meta = metadata(&tool, &[dest]).unwrap();
+    let meta = meta.values().next().unwrap();
+    assert_eq!(classify(meta), Ok(Kind::PixCake));
+    assert_eq!(rating(meta), Some(5));
+    assert_eq!(sources, [hash_file(&lr).unwrap(), hash_file(&pc).unwrap()]);
+    assert!(
+        plan(&p.shoot, &tool, None, &p.target)
+            .unwrap()
+            .confirmed()
+            .is_empty()
+    );
+}
+
+#[test]
+fn legacy_deliveries_can_outlive_their_source_but_conflicting_documents_are_preserved() {
+    let Some(tool) = tool() else { return };
+    let p = place_for("legacy-names");
+    let owned = p.target.join("A.jpg");
+    let unrelated = p.target.join("B.jpg");
+    jpeg(&owned, &["-Software=Lightroom"], &tool);
     jpeg(
-        &p.shoot.join("final/DSC00003_(2).jpg"),
+        &unrelated,
+        &[
+            "-Software=Lightroom",
+            "-XMP-xmpMM:DocumentID=xmp.did:different",
+        ],
+        &tool,
+    );
+    let keep = fs::read(&unrelated).unwrap();
+    fs::write(
+        p.shoot.join(MANIFEST),
+        serde_json::to_vec(&json!({
+            "version": 2, "target": "legacy-names", "assignments": [
+                {"name":"A.jpg", "identities":["stem:a"]},
+                {"name":"B.jpg", "identities":["stem:b", "doc:xmp.did:original"]}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    for name in ["A", "B"] {
+        jpeg(
+            &p.shoot.join(format!("final/{name}_(2).jpg")),
+            &["-Software=PixCake"],
+            &tool,
+        );
+    }
+    let done = run(&p, &tool, None);
+    assert_eq!((done.delivered, done.existing), (1, 1));
+    assert_eq!(
+        fs::read(owned).unwrap(),
+        fs::read(p.shoot.join("final/A_(2).jpg")).unwrap()
+    );
+    assert_eq!(fs::read(unrelated).unwrap(), keep);
+}
+
+#[test]
+fn a_failed_or_stale_pixcake_upgrade_preserves_the_existing_file() {
+    let Some(tool) = tool() else { return };
+    let p = place_for("retry");
+    jpeg(&p.shoot.join("lr/A.jpg"), &["-Software=Lightroom"], &tool);
+    run(&p, &tool, None);
+    let dest = p.target.join("A.jpg");
+    let initial = fs::read(&dest).unwrap();
+    jpeg(
+        &p.shoot.join("final/A_(2).jpg"),
         &["-Software=PixCake"],
         &tool,
     );
-    let redo = plan(&p.shoot, &tool, None, &p.target).unwrap();
-    assert_eq!((redo.new, redo.existing), (0, 2));
-    assert_eq!(
-        redo.photos
-            .iter()
-            .find(|p| p.source.contains("DSC00003_(2)"))
-            .unwrap()
-            .name,
-        "DSC00003.jpg"
+    let confirmed = plan(&p.shoot, &tool, None, &p.target).unwrap().confirmed();
+    let lock = File::open(p.shoot.join(".card-intake-deliver.lock")).unwrap();
+    lock.lock().unwrap();
+    assert!(
+        deliver(&p.shoot, &tool, None, &p.target, &confirmed)
+            .unwrap_err()
+            .to_string()
+            .contains("already running")
     );
+    drop(lock);
+    let failed = deliver_with(&p.shoot, &tool, None, &p.target, &confirmed, |_, _| {
+        Err(io::Error::other("injected verification failure"))
+    })
+    .unwrap();
+    assert_eq!((failed.delivered, failed.errors.len()), (0, 1));
+    assert_eq!(fs::read(&dest).unwrap(), initial);
+    assert_eq!(
+        plan(&p.shoot, &tool, None, &p.target).unwrap().confirmed(),
+        confirmed
+    );
+
+    let changed = deliver_with(
+        &p.shoot,
+        &tool,
+        None,
+        &p.target,
+        &confirmed,
+        |source, copy| {
+            fs::write(&dest, b"changed outside Card Intake").unwrap();
+            verify(source, copy)
+        },
+    )
+    .unwrap();
+    assert_eq!((changed.delivered, changed.errors.len()), (0, 1));
+    assert_eq!(fs::read(&dest).unwrap(), b"changed outside Card Intake");
+    assert!(
+        deliver(&p.shoot, &tool, None, &p.target, &confirmed)
+            .unwrap_err()
+            .to_string()
+            .contains("changed since you checked")
+    );
+    assert!(
+        plan(&p.shoot, &tool, None, &p.target)
+            .unwrap()
+            .confirmed()
+            .is_empty()
+    );
+    fs::write(&dest, initial).unwrap();
+    assert_eq!(run(&p, &tool, None).delivered, 1);
+}
+
+#[test]
+fn upgrading_one_delivery_folder_still_allows_the_other_copy_to_be_upgraded() {
+    let Some(tool) = tool() else { return };
+    let p = place_for("two-destinations");
+    let other = p
+        ._temp
+        .path()
+        .join("other MyPhoto")
+        .join("two-destinations");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    jpeg(&p.shoot.join("lr/A.jpg"), &["-Software=Lightroom"], &tool);
+    let send = |target: &Path| {
+        let planned = plan(&p.shoot, &tool, None, target).unwrap();
+        deliver(&p.shoot, &tool, None, target, &planned.confirmed()).unwrap()
+    };
+    assert_eq!(send(&p.target).delivered, 1);
+    assert_eq!(send(&other).delivered, 1);
+    jpeg(
+        &p.shoot.join("final/A_(2).jpg"),
+        &["-Software=PixCake"],
+        &tool,
+    );
+    assert_eq!(send(&other).replacements, 1);
+    assert_eq!(send(&p.target).replacements, 1);
+    assert_eq!(send(&other).delivered, 0);
+    assert_eq!(state(&p.shoot).unwrap().count, 1);
 }
 
 #[test]
