@@ -3,7 +3,7 @@
 local LrTasks = import "LrTasks"
 local logger = import "LrLogger"("CardIntake")
 logger:enable("logfile")
-logger:info("Init.lua started; Card Intake 0.4.0")
+logger:info("Init.lua started; Card Intake 0.5.0")
 
 LrTasks.startAsyncTask(function()
   local ok, problem = LrTasks.pcall(function()

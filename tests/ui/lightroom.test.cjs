@@ -16,7 +16,25 @@ const harness = String.raw`
 folder = '/NAS/2026/2026-11-06_東京'
 listing = '/Catalogs/2026/2026-11-06_東京/2026-11-06_東京.card-intake.txt'
 heartbeat = listing:gsub('%.txt$', '.uploading')
+addedList = listing:gsub('%.txt$', '-added.txt')
 files = { [listing] = '# Card Intake: shoot folders\n' .. folder .. '\n' }
+-- Lightroom plug-ins write files with Lua's io; here they land in files.
+io = { open = function(p, mode)
+  assert(mode == 'wb', mode)
+  if writeError == p then return nil, 'Access is denied' end
+  local chunks = {}
+  return {
+    write = function(self, text) table.insert(chunks, text); return self end,
+    close = function() files[p] = table.concat(chunks) end,
+  }
+end }
+function addedNames()
+  local names = {}
+  for line in (files[addedList] or ''):gmatch('[^\n]+') do
+    if line:sub(1, 1) ~= '#' then table.insert(names, (line:gsub('^.*/', ''))) end
+  end
+  return table.concat(names, ',')
+end
 listed = {}
 inCatalog, pending, pendingOrder, added = {}, {}, {}, {}
 gates, dialogs, bezels, smart, keywords = {}, {}, {}, {}, {}
@@ -214,6 +232,37 @@ test('opening the catalog adds new raws in place with the presets, and nothing e
     assert(next(smart) == nil, 'made a collection')
     assert(bezels[1] == 'Card Intake added 1 file', bezels[1])
     assert(#dialogs == 0, dialogs[1])
+  `);
+});
+
+test('a photo removed from the catalog is never added again, and the menu says how to bring it back', () => {
+  // A new catalog remembers what it adds.
+  run(String.raw`listed = { 'DSC0001.ARW', 'DSC0001_DxO.dng' }`, 'Init.lua', String.raw`
+    assert(addedPaths() == 'DSC0001.ARW,DSC0001_DxO.dng', addedPaths())
+    assert(addedNames() == 'DSC0001.ARW,DSC0001_DxO.dng', addedNames())
+  `);
+  // DSC0001 and its DNG were removed by hand; DSC0002 was in the catalog before the
+  // list existed; DSC0003 is new.
+  const removed = String.raw`
+    files[addedList] = '# list\n' .. file('DSC0001.ARW') .. '\n' .. file('DSC0001_DxO.dng'):upper() .. '\n'
+    listed = { 'DSC0001.ARW', 'DSC0001_DxO.dng', 'DSC0002.ARW', 'DSC0003.ARW' }
+    have('DSC0002.ARW')
+  `;
+  run(removed, 'Init.lua', String.raw`
+    assert(addedPaths() == 'DSC0003.ARW', addedPaths())
+    assert(addedNames():lower() == 'dsc0001.arw,dsc0001_dxo.dng,dsc0002.arw,dsc0003.arw', addedNames())
+    assert(table.concat(logs, '\n'):match('removed from the catalog=2'))
+  `);
+  run(removed + `have('DSC0003.ARW')`, 'AddNewFiles.lua', String.raw`
+    assert(#added == 0 and #gates == 0, addedPaths())
+    assert(dialogs[1] == 'Nothing new | Nothing new arrived. 2 photos you removed from this catalog stay out. To bring one back, use Library > Synchronize Folder.', dialogs[1])
+  `);
+  // A busy Lightroom commits nothing, so nothing is remembered and the next try adds it.
+  run(String.raw`listed = { 'DSC0001.ARW' }; busy = true`, 'Init.lua', `assert(files[addedList] == nil)`);
+  // A list that can't be saved is reported; the photos are still added.
+  run(String.raw`listed = { 'DSC0001.ARW' }; writeError = addedList`, 'Init.lua', String.raw`
+    assert(addedPaths() == 'DSC0001.ARW')
+    assert(dialogs[1]:match('Access is denied'), dialogs[1])
   `);
 });
 
@@ -644,7 +693,7 @@ test('the manifest requests eager initialization and keeps the Library command',
     assert(info.LrExportServiceProvider.file == 'StartupService.lua')
     assert(info.URLHandler == 'UrlHandler.lua')
     assert(info.LrLibraryMenuItems[1].file == 'AddNewFiles.lua')
-    assert(info.VERSION.major == 0 and info.VERSION.minor == 4)
+    assert(info.VERSION.major == 0 and info.VERSION.minor == 5)
   `;
   const status = lauxlib.luaL_dostring(L, to_luastring(code));
   const error = status === lua.LUA_OK ? null : lua.lua_tojsstring(L, -1);

@@ -741,15 +741,23 @@ impl Catalog {
         self.dir.join(format!("{}.card-intake.txt", self.name))
     }
 
+    /// The files the catalog has had, written by the plug-in: one removed from the
+    /// catalog by hand isn't added again.
+    fn added(&self) -> PathBuf {
+        self.dir
+            .join(format!("{}.card-intake-added.txt", self.name))
+    }
+
     /// What holds the edits, copied by Finish and Reopen: the catalog, its AI mask
-    /// data, its Smart Previews and its list of shoot folders.
-    fn kept(&self) -> [String; 4] {
+    /// data, its Smart Previews, its list of shoot folders and of the files it has had.
+    fn kept(&self) -> [String; 5] {
         let n = &self.name;
         [
             format!("{n}.lrcat"),
             format!("{n}.lrcat-data"),
             format!("{n} Smart Previews.lrdata"),
             format!("{n}.card-intake.txt"),
+            format!("{n}.card-intake-added.txt"),
         ]
     }
 
@@ -837,6 +845,8 @@ fn prepare(
             let tmp = catalog.dir.join(format!(".{}.lrcat.part", catalog.name));
             copy_closed_file(template, &tmp)?;
             check_template(template)?;
+            // A new catalog has had no photos: a list left from a deleted one goes.
+            remove_any(&catalog.added()).map_err(|e| e.to_string())?;
             fs::rename(&tmp, &lrcat).map_err(|e| format!("Couldn't create the catalog: {e}"))?;
         }
     }
@@ -1979,6 +1989,11 @@ mod tests {
         prepare(&f.settings, &catalog, std::slice::from_ref(&folder)).unwrap();
         let dir = &catalog.dir;
         fs::write(catalog.lrcat(), b"edits").unwrap();
+        fs::write(
+            catalog.added(),
+            b"# had\n//NAS/2026/2026-10-31_Halloween/DSC1.ARW\n",
+        )
+        .unwrap();
         for (path, bytes) in [
             (
                 "2026-10-31_Halloween Smart Previews.lrdata/A/x.dng",
@@ -2032,6 +2047,12 @@ mod tests {
         // Reopen copies it back, and finishing again replaces the NAS copy.
         let launch = prepare(&f.settings, &catalog, std::slice::from_ref(&folder)).unwrap();
         assert_eq!(fs::read(&launch.catalog).unwrap(), b"edits");
+        // The photos removed from it stay out after Reopen too.
+        assert!(
+            fs::read_to_string(catalog.added())
+                .unwrap()
+                .contains("DSC1.ARW")
+        );
         assert!(
             dir.join("2026-10-31_Halloween.lrcat-data/masks/m")
                 .is_file()

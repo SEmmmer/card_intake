@@ -31,5 +31,5 @@ return {
   LrLibraryMenuItems = {
     { title = "Add new files from NAS", file = "AddNewFiles.lua" },
   },
-  VERSION = { major = 0, minor = 4, revision = 0 },
+  VERSION = { major = 0, minor = 5, revision = 0 },
 }

@@ -7,6 +7,9 @@ presets and XMP Pick requests, stacks DxO DNGs, and builds Smart Previews. A fre
 missing/stale heartbeats cause one final pass and stop. There is no idle watcher.
 One session worker owns the progress indicator, retries busy write blocks during
 uploads, and reports the aggregate result once. Diagnostics use CardIntake.log.
+
+<catalog>.card-intake-added.txt remembers every file the catalog has had, so a photo
+removed from the catalog isn't added again: only files it has never had are new.
 ]]
 local LrApplication = import "LrApplication"
 local LrDate = import "LrDate"
@@ -101,6 +104,34 @@ function Intake.dxoBase(name)
   return stem:match("^(.-)[_%-][Dd][Xx][Oo]")
 end
 
+-- The files this catalog has had, by lower-case path: what the plug-in added and
+-- what it found already in the catalog. A file in it that the catalog no longer
+-- has was removed by hand, and stays out.
+local ADDED_HEADER = "# Card Intake: photos this catalog has had. One removed from the catalog isn't added again.\n"
+
+function Intake.loadAdded(catalog)
+  local known, path = {}, companion(catalog, ".card-intake-added.txt")
+  if LrFileUtils.exists(path) ~= "file" then return known end
+  local text = LrFileUtils.readFile(path)
+  if not text then error("Couldn't read the list of photos this catalog has had: " .. path, 0) end
+  for line in text:gsub("^\239\187\191", ""):gmatch("[^\r\n]+") do
+    if line:sub(1, 1) ~= "#" then known[string.lower(line)] = line end
+  end
+  return known
+end
+
+function Intake.saveAdded(catalog, known)
+  local lines = {}
+  for _, line in pairs(known) do table.insert(lines, line) end
+  table.sort(lines)
+  local path = companion(catalog, ".card-intake-added.txt")
+  local file, problem = io.open(path, "wb")
+  if not file then error("Couldn't save the list of photos this catalog has had: " .. tostring(problem), 0) end
+  local ok, writeProblem = file:write(ADDED_HEADER .. table.concat(lines, "\n") .. "\n")
+  file:close()
+  if not ok then error("Couldn't save the list of photos this catalog has had: " .. tostring(writeProblem), 0) end
+end
+
 local function list(folders, uploading)
   local raws, dngs, sidecars, seen, skipped = {}, {}, {}, {}, 0
   for _, folder in ipairs(folders) do
@@ -160,16 +191,28 @@ function Intake.addNew(catalog, folders, progress, uploading, state)
   state = stateForPass(state)
   local prefs = LrPrefs.prefsForPlugin()
   local raws, dngs, sidecars, skipped = list(folders, uploading)
+  local known, changed, removed = Intake.loadAdded(catalog), false, 0
+  local function remember(path)
+    local key = string.lower(path)
+    if not known[key] then known[key] = path; changed = true end
+  end
+  -- New: not in the catalog, and never had by it.
+  local function isNew(path)
+    if catalog:findPhotoByPath(path) then remember(path); return false end
+    if known[string.lower(path)] then removed = removed + 1; return false end
+    return true
+  end
   local rawForStem, newRaws, newDngs = {}, {}, {}
   for _, path in ipairs(raws) do
     rawForStem[string.lower(LrPathUtils.removeExtension(path))] = path
-    if not catalog:findPhotoByPath(path) then table.insert(newRaws, path) end
+    if isNew(path) then table.insert(newRaws, path) end
   end
   for _, dng in ipairs(dngs) do
-    if not catalog:findPhotoByPath(dng.path) then table.insert(newDngs, dng) end
+    if isNew(dng.path) then table.insert(newDngs, dng) end
   end
-  local scan = string.format("Scan: raws=%d new=%d; DNGs=%d new=%d; missing folders skipped=%d",
-    #raws, #newRaws, #dngs, #newDngs, skipped)
+  state.removed = removed
+  local scan = string.format("Scan: raws=%d new=%d; DNGs=%d new=%d; removed from the catalog=%d; missing folders skipped=%d",
+    #raws, #newRaws, #dngs, #newDngs, removed, skipped)
   if scan ~= state.scan then logger:info(scan); state.scan = scan end
   local result = { added = 0, failed = 0, errors = {}, photos = {}, busy = false }
   local paths = {}
@@ -300,6 +343,12 @@ function Intake.addNew(catalog, folders, progress, uploading, state)
   if #result.photos > 0 and not canceled() then
     local ok, problem = LrTasks.pcall(function() catalog:buildSmartPreviews(result.photos) end)
     if not ok then failure(state, "previews", "Smart Previews: " .. tostring(problem)) end
+  end
+  -- Only committed photos are remembered: a rolled-back one is tried again.
+  for _, photo in ipairs(result.photos) do remember(paths[photo]) end
+  if changed then
+    local ok, problem = LrTasks.pcall(function() Intake.saveAdded(catalog, known) end)
+    if ok then state.failures.added = nil else failure(state, "added", tostring(problem)) end
   end
   return result
 end
@@ -459,7 +508,12 @@ function Intake.run(catalog, fromMenu)
   elseif summary.added > 0 then
     LrDialogs.showBezel("Card Intake added " .. files)
   elseif isIntake and fromMenu and not canceled then
-    LrDialogs.message("Nothing new", "Every raw photo and DxO DNG in this catalog's shoot folders is already in it.", "info")
+    local message = "Every raw photo and DxO DNG in this catalog's shoot folders is already in it."
+    if (state.removed or 0) > 0 then
+      local photos = state.removed == 1 and "1 photo you removed from this catalog stays" or (state.removed .. " photos you removed from this catalog stay")
+      message = "Nothing new arrived. " .. photos .. " out. To bring one back, use Library > Synchronize Folder."
+    end
+    LrDialogs.message("Nothing new", message, "info")
   end
   if fatal and summary.added == 0 then return nil end
   if not isIntake then return nil end
