@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod alert;
+mod busy;
 mod camera_wifi;
 mod delivery;
 mod ftp;
@@ -1181,6 +1182,13 @@ fn main() {
 
     let context = tauri::generate_context!();
     log::open(&log::folder(&context.config().identifier));
+    // Only the installed app, which opens once: a `cargo run` copy beside it must not
+    // remove the installed app's file.
+    if !cfg!(debug_assertions)
+        && let Some(local) = log::folder(&context.config().identifier).parent()
+    {
+        busy::open(local);
+    }
     let mut builder = tauri::Builder::default();
     // The installed app opens once: starting it again shows the window that's already
     // open, so two copies never save over each other's cards and imports. `cargo run`

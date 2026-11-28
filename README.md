@@ -160,7 +160,7 @@ Tests use temporary folders: they don't eject cards or write to configured share
 
 **ExifTool** is needed for Deliver, shutter counts and computed ratings. On Windows, put `exiftool.exe` on `PATH` or set `CARD_INTAKE_EXIFTOOL` to its full path. On macOS and Linux, run `scripts/fetch-exiftool.sh` once.
 
-**Installing on Windows.** `cargo install tauri-cli --version "^2" --locked` once, then `pwsh scripts/install-windows.ps1` builds the installer and installs it for this user without prompts, in `%LOCALAPPDATA%\Card Intake`. It refuses while the installed app is open, because a silent install would stop it, and an import with it: close the app, then run it again with `-NoBuild`. The installed app opens once: starting it again shows the window that's already open. `cargo run` builds start regardless. On other systems, `cargo tauri build` inside `apps/desktop` makes the bundles.
+**Installing on Windows.** `cargo install tauri-cli --version "^2" --locked` once, then `pwsh scripts/install-windows.ps1` builds the installer and installs it for this user without prompts, in `%LOCALAPPDATA%\Card Intake`. When the installed app is open, the script closes it, installs and opens it again; while it has a job running (an import, backup, Send, delivery or Finish, which the app notes in `%LOCALAPPDATA%\io.github.semmmer.cardintake\busy.json`), it waits for the job to end first. `-NoBuild` installs the installer built last. The installed app opens once: starting it again shows the window that's already open. `cargo run` builds start regardless. On other systems, `cargo tauri build` inside `apps/desktop` makes the bundles.
 
 **Checks without a window.** Each prints JSON and exits; nothing is written to the card:
 

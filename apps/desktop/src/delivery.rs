@@ -226,8 +226,10 @@ pub async fn deliver(
         }
         Active(state.delivering.clone())
     };
+    let busy = super::busy::start("delivery");
     tauri::async_runtime::spawn_blocking(move || {
         let _active = active;
+        let _busy = busy;
         let state = app.state::<AppState>();
         let tool = state.exiftool.as_deref().ok_or("Deliver needs ExifTool. Install it or set CARD_INTAKE_EXIFTOOL to exiftool.exe, then reopen Card Intake.")?;
         let job = job(&state, import_id, shoot)?;

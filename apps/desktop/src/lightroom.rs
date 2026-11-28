@@ -1405,6 +1405,7 @@ pub async fn finish_catalog(
         if state.imports.is_active() {
             return Err("Wait for the NAS upload to finish before Finish.".into());
         }
+        let _busy = super::busy::start("finish");
         let folder = import_folder(&state, import_id, shoot)?;
         let root = catalog_root(&resolved(&state)?)?;
         finish(&Catalog::for_record(

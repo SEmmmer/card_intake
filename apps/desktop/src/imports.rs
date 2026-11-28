@@ -88,6 +88,7 @@ impl ImportControl {
         Ok(ActiveImport {
             control: self.clone(),
             cancel,
+            _busy: super::busy::start("copy"),
         })
     }
 }
@@ -96,6 +97,7 @@ impl ImportControl {
 pub(super) struct ActiveImport {
     control: Arc<ImportControl>,
     pub(super) cancel: Arc<AtomicBool>,
+    _busy: super::busy::Job,
 }
 
 impl Drop for ActiveImport {
